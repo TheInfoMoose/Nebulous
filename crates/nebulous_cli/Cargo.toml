@@ -1,0 +1,26 @@
+[package]
+name = "nebulous_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Companion CLI (`neb`) for the Nebulous project and bug tracker"
+
+[lib]
+name = "nebulous_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "neb"
+path = "src/main.rs"
+
+[dependencies]
+arboard = "3"
+backend_core.workspace = true
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }
+serde.workspace = true
+serde_json = "1"
+
+[dev-dependencies]
+git2 = { version = "0.19", default-features = false }
+tempfile = "3"

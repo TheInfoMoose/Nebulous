@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/backend_core",
+    "crates/nebulous_cli",
+    "crates/cosmic_interface",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Nebulous Contributors"]
+
+[workspace.dependencies]
+backend_core = { path = "crates/backend_core" }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+thiserror = "1.0"
+chrono = { version = "0.4", features = ["serde"] }

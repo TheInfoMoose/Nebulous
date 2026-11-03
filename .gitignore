@@ -1,0 +1,15 @@
+# Rust / Cargo build artifacts
+/target/
+**/*.rs.bk
+
+# Nebulous tracker runtime state (if initialized in workspace)
+/.tracker/.timer.toml
+/.tracker/.keyring_fallback
+
+# OS & editor files
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

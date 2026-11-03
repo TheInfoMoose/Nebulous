@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  release-linux-x86_64:
+    name: Build & Package Linux x86_64 Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            cmake \
+            clang \
+            libssl-dev \
+            libdbus-1-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libexpat1-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry and target directory
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run verification suite
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+
+      - name: Build release binaries (`neb` and `nebulous`)
+        run: cargo build --workspace --release
+
+      - name: Verify release GUI headless self-test
+        run: ./target/release/nebulous --self-test
+
+      - name: Package `.tar.gz` archive and `.sha256` checksum
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          ARCHIVE_BASENAME="nebulous-${TAG}-x86_64-unknown-linux-gnu"
+          STAGING_DIR="dist/${ARCHIVE_BASENAME}"
+
+          mkdir -p "${STAGING_DIR}"
+          cp target/release/neb "${STAGING_DIR}/"
+          cp target/release/nebulous "${STAGING_DIR}/"
+          cp README.md LICENSE "${STAGING_DIR}/"
+          cp -r docs "${STAGING_DIR}/"
+
+          tar -C dist -czf "dist/${ARCHIVE_BASENAME}.tar.gz" "${ARCHIVE_BASENAME}"
+          (cd dist && sha256sum "${ARCHIVE_BASENAME}.tar.gz" > "${ARCHIVE_BASENAME}.tar.gz.sha256")
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256

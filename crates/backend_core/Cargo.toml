@@ -1,0 +1,19 @@
+[package]
+name = "backend_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core 4-tier TOML/Markdown persistence, workflow, and analytics engine for Nebulous"
+
+[dependencies]
+chrono.workspace = true
+git2 = { version = "0.19", default-features = false, features = ["https"] }
+keyring = { version = "3", features = ["linux-native"] }
+notify = "6"
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
