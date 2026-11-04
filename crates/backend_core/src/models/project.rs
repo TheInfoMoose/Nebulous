@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TrackerError};
+use crate::models::component::ComponentRegistry;
 use crate::models::{deserialize_datetime_string, parse_timestamp_utc};
 
 /// Tier 1: Root project manifest (`.tracker/project.toml`).
@@ -19,6 +20,8 @@ pub struct ProjectManifest {
     pub metrics: MetricsConfig,
     #[serde(default)]
     pub git: GitConfig,
+    #[serde(default, skip_serializing_if = "ComponentRegistry::is_empty")]
+    pub components: ComponentRegistry,
 }
 
 impl ProjectManifest {
@@ -143,6 +146,10 @@ pub struct GitConfig {
     pub branch: String,
     #[serde(default)]
     pub auto_commit_on_close: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_key_account: Option<String>,
+    #[serde(default)]
+    pub commit_policy: CommitPolicyConfig,
 }
 
 impl Default for GitConfig {
@@ -153,6 +160,38 @@ impl Default for GitConfig {
             remote: default_git_remote(),
             branch: default_git_branch(),
             auto_commit_on_close: false,
+            ssh_key_account: None,
+            commit_policy: CommitPolicyConfig::default(),
+        }
+    }
+}
+
+/// `[git.commit_policy]` table inside `.tracker/project.toml` enforcing documented commits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitPolicyConfig {
+    #[serde(default = "default_true")]
+    pub require_item_id: bool,
+    #[serde(default = "default_true")]
+    pub require_scope: bool,
+    #[serde(default = "default_true")]
+    pub require_summary: bool,
+    #[serde(default = "default_min_summary_length")]
+    pub min_summary_length: usize,
+    #[serde(default = "default_true")]
+    pub auto_append_to_desc: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_key_account: Option<String>,
+}
+
+impl Default for CommitPolicyConfig {
+    fn default() -> Self {
+        Self {
+            require_item_id: default_true(),
+            require_scope: default_true(),
+            require_summary: default_true(),
+            min_summary_length: default_min_summary_length(),
+            auto_append_to_desc: default_true(),
+            ssh_key_account: None,
         }
     }
 }
@@ -184,3 +223,12 @@ fn default_git_remote() -> String {
 fn default_git_branch() -> String {
     "main".to_string()
 }
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_min_summary_length() -> usize {
+    12
+}
+

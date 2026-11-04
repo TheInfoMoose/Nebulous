@@ -1,7 +1,10 @@
 pub mod args;
 pub mod commands;
 
-pub use args::{Cli, Commands, PhaseCommand, ScopeCommand, TimerCommand};
+pub use args::{
+    Cli, Commands, ComponentCommand, GitCommand, PhaseCommand, ProjectCommand, ScopeCommand,
+    TimerCommand,
+};
 pub use commands::{execute, execute_to_string, resolve_storage};
 
 #[cfg(test)]
@@ -177,5 +180,66 @@ mod tests {
                 action: ScopeCommand::Add { .. }
             }
         ));
+
+        // 17. project
+        let cli =
+            Cli::try_parse_from(["neb", "project", "add", "/tmp/novos", "--name", "NovOS"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Project {
+                action: ProjectCommand::Add { .. }
+            }
+        ));
+
+        // 18. ingest
+        let cli = Cli::try_parse_from([
+            "neb",
+            "ingest",
+            "--path",
+            "crates",
+            "--write-manifests",
+            "--promote-all",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ingest {
+                write_manifests: true,
+                promote_all: true,
+                ..
+            }
+        ));
+
+        // 19. component
+        let cli = Cli::try_parse_from(["neb", "component", "pin", "novos_iso"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Component {
+                action: ComponentCommand::Pin { .. }
+            }
+        ));
+
+        // 20. git
+        let cli = Cli::try_parse_from([
+            "neb",
+            "git",
+            "commit",
+            "-i",
+            "BUG-0001",
+            "-m",
+            "Fix deserialization",
+            "--all",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Git {
+                action: GitCommand::Commit { all: true, .. }
+            }
+        ));
+
+        // 21. mcp
+        let cli = Cli::try_parse_from(["neb", "mcp"]).unwrap();
+        assert!(matches!(cli.command, Commands::Mcp));
     }
 }

@@ -139,8 +139,10 @@ fn seed_dogfood_tracker(root: &Path) -> TrackerStorage {
 }
 
 fn run_neb(args: &[&str], current_dir: Option<&Path>) -> Output {
+    let isolated_config = TempDir::new().expect("should create isolated NEBULOUS_CONFIG_DIR");
     let mut cmd = Command::new(neb_bin());
     cmd.args(args);
+    cmd.env("NEBULOUS_CONFIG_DIR", isolated_config.path());
     if let Some(dir) = current_dir {
         cmd.current_dir(dir);
     }
@@ -692,4 +694,934 @@ fn test_git_sync_and_error_edge_cases() {
     );
     assert!(sync_json["committed_or_head_sha"].as_str().is_some());
     assert_eq!(sync_json["tracker_dirty_after"], false);
+}
+
+fn run_neb_with_env(args: &[&str], current_dir: Option<&Path>, config_dir: &Path) -> Output {
+    let mut cmd = Command::new(neb_bin());
+    cmd.args(args);
+    cmd.env("NEBULOUS_CONFIG_DIR", config_dir);
+    if let Some(dir) = current_dir {
+        cmd.current_dir(dir);
+    }
+    cmd.output().expect("should execute neb binary")
+}
+
+fn run_neb_json_with_env(args: &[&str], current_dir: Option<&Path>, config_dir: &Path) -> Value {
+    let mut full_args = vec!["--json"];
+    full_args.extend_from_slice(args);
+    let output = run_neb_with_env(&full_args, current_dir, config_dir);
+    if !output.status.success() {
+        panic!(
+            "neb {:?} failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+            full_args,
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be valid UTF-8");
+    serde_json::from_str(&stdout).unwrap_or_else(|err| {
+        panic!(
+            "Failed to parse JSON output from neb {:?}: {err}\nRaw stdout:\n{stdout}",
+            full_args
+        )
+    })
+}
+
+#[test]
+fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
+    let temp = TempDir::new().expect("should create temp dir");
+    let cfg_dir = temp.path().join("nebulous_config");
+    let proj_alpha = temp.path().join("novos_alpha");
+    let proj_beta = temp.path().join("neb_beta");
+    fs::create_dir_all(&proj_alpha).unwrap();
+    fs::create_dir_all(&proj_beta).unwrap();
+
+    // Initialize Git repository in proj_alpha
+    let repo = Repository::init(&proj_alpha).expect("should init git repo");
+    {
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "NovOS Bot").unwrap();
+        cfg.set_str("user.email", "bot@novos.dev").unwrap();
+        let sig = Signature::now("NovOS Bot", "bot@novos.dev").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
+            .unwrap();
+    }
+
+    // Create sample multi-ecosystem directories in proj_alpha
+    fs::create_dir_all(proj_alpha.join("crates/core_lib/src")).unwrap();
+    fs::write(
+        proj_alpha.join("crates/core_lib/Cargo.toml"),
+        "[package]\nname = \"core_lib\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        proj_alpha.join("crates/core_lib/src/lib.rs"),
+        "pub fn boot() -> bool { true }\n",
+    )
+    .unwrap();
+
+    fs::create_dir_all(proj_alpha.join("iso")).unwrap();
+    fs::write(
+        proj_alpha.join("iso/build_iso.sh"),
+        "#!/usr/bin/env bash\necho 'Building NovOS ISO'\n",
+    )
+    .unwrap();
+
+    let alpha_str = proj_alpha.to_str().unwrap();
+    let beta_str = proj_beta.to_str().unwrap();
+
+    // 1. `neb project add | list | switch | remove`
+    let add_alpha = run_neb_json_with_env(
+        &[
+            "project",
+            "add",
+            alpha_str,
+            "--name",
+            "NovOS Alpha",
+            "--tag",
+            "distro,sid,xanmod",
+        ],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(add_alpha["action"], "add");
+    assert_eq!(add_alpha["id"], "novos_alpha");
+    assert_eq!(add_alpha["name"], "NovOS Alpha");
+    assert_eq!(add_alpha["active_project_id"], "novos_alpha");
+
+    let add_beta = run_neb_json_with_env(
+        &["project", "add", beta_str, "--name", "Neb Beta"],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(add_beta["id"], "neb_beta");
+    assert_eq!(add_beta["active_project_id"], "neb_beta");
+
+    let list_projects = run_neb_json_with_env(&["project", "list"], None, &cfg_dir);
+    assert_eq!(list_projects["total"], 2);
+    assert_eq!(list_projects["active_project_id"], "neb_beta");
+
+    let switch_alpha =
+        run_neb_json_with_env(&["project", "switch", "NovOS Alpha"], None, &cfg_dir);
+    assert_eq!(switch_alpha["action"], "switch");
+    assert_eq!(switch_alpha["active_project_id"], "novos_alpha");
+
+    let remove_beta = run_neb_json_with_env(&["project", "remove", "neb_beta"], None, &cfg_dir);
+    assert_eq!(remove_beta["action"], "remove");
+    assert_eq!(remove_beta["id"], "neb_beta");
+    assert_eq!(remove_beta["active_project_id"], "novos_alpha");
+
+    // 2. `neb ingest --write-manifests --promote-all`
+    let ingest_json = run_neb_json_with_env(
+        &[
+            "--root",
+            alpha_str,
+            "ingest",
+            "--write-manifests",
+            "--promote-all",
+        ],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(ingest_json["total_components"], 2);
+    assert_eq!(ingest_json["promoted_scopes"].as_array().unwrap().len(), 2);
+    assert!(proj_alpha
+        .join("crates/core_lib/nebulous.component.toml")
+        .is_file());
+    assert!(proj_alpha.join("iso/nebulous.component.toml").is_file());
+
+    // 3. `neb component list | show | init | pin | rollback`
+    let comp_list =
+        run_neb_json_with_env(&["--root", alpha_str, "component", "list"], None, &cfg_dir);
+    assert_eq!(comp_list["total"], 2);
+
+    let comp_init = run_neb_json_with_env(
+        &[
+            "--root",
+            alpha_str,
+            "component",
+            "init",
+            "iso",
+            "--id",
+            "iso",
+            "--name",
+            "NovOS Live ISO",
+            "--type",
+            "os_image",
+            "--flag",
+            "--xanmod-lto,--zstd",
+        ],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(comp_init["id"], "iso");
+    assert_eq!(comp_init["component_type"], "os_image");
+
+    // Pin stable release with dependency versions
+    let comp_pin = run_neb_json_with_env(
+        &[
+            "--root",
+            alpha_str,
+            "component",
+            "pin",
+            "iso",
+            "--commit",
+            "good123",
+            "--script",
+            "iso/build_iso.sh",
+            "--dep",
+            "linux-xanmod=6.12.4-1,systemd=256.8-1",
+        ],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(comp_pin["action"], "pin");
+    assert_eq!(comp_pin["last_known_good"]["commit_sha"], "good123");
+    assert_eq!(
+        comp_pin["last_known_good"]["dependency_pins"]["linux-xanmod"],
+        "6.12.4-1"
+    );
+
+    let comp_show = run_neb_json_with_env(
+        &["--root", alpha_str, "component", "show", "iso"],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(comp_show["pinned_release"]["commit_sha"], "good123");
+
+    // Create an active bug on `iso` scope and simulate a broken rolling update, then rollback
+    let bug_json = run_neb_json_with_env(
+        &[
+            "--root",
+            alpha_str,
+            "bug",
+            "Boot failure after XanMod 6.13-rc1 bump",
+            "-s",
+            "iso",
+            "--severity",
+            "critical",
+        ],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(bug_json["id"], "BUG-0001");
+
+    // Verify `neb context --copy` gracefully falls back on headless CI without failing
+    let ctx_copy = run_neb_json_with_env(
+        &["--root", alpha_str, "context", "BUG-0001", "--copy"],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(ctx_copy["item_id"], "BUG-0001");
+    assert!(ctx_copy["output"]
+        .as_str()
+        .unwrap()
+        .contains("Bounded Agent Task: BUG-0001"));
+
+    // Mutate dependency version on disk, then run `neb component rollback iso -i BUG-0001`
+    let storage = TrackerStorage::new(&proj_alpha);
+    storage
+        .record_component_rolling_update(
+            "iso",
+            backend_core::RollingUpdateEntry {
+                dependency_name: "linux-xanmod".to_string(),
+                kind: "kernel_xanmod".to_string(),
+                previous_version: Some("6.12.4-1".to_string()),
+                new_version: "6.13.0-rc1".to_string(),
+                tracked_item_id: Some("BUG-0001".to_string()),
+                status: "failed".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let rollback_json = run_neb_json_with_env(
+        &[
+            "--root",
+            alpha_str,
+            "component",
+            "rollback",
+            "iso",
+            "-i",
+            "BUG-0001",
+            "-r",
+            "QEMU boot panicked in initramfs with 6.13.0-rc1",
+        ],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(rollback_json["action"], "rollback");
+    assert_eq!(rollback_json["restored"], true);
+    assert_eq!(rollback_json["regression_recorded"], true);
+    assert_eq!(rollback_json["item_id"], "BUG-0001");
+    assert_eq!(rollback_json["recurrence_count"], 1);
+
+    let restored_iso = storage.read_component_manifest("iso").unwrap();
+    let xanmod_dep = restored_iso
+        .dependencies
+        .iter()
+        .find(|d| d.name == "linux-xanmod")
+        .unwrap();
+    assert_eq!(xanmod_dep.current_version, "6.12.4-1");
+
+    // 4. `neb git status` and `neb git commit -i <ITEM_ID> -m <SUMMARY> --all`
+    let git_status_before =
+        run_neb_json_with_env(&["--root", alpha_str, "git", "status"], None, &cfg_dir);
+    assert_eq!(git_status_before["workspace_dirty"], true);
+    assert_eq!(git_status_before["tracker_dirty"], true);
+
+    // Policy check: attempting to commit workspace code without `-i <ITEM_ID>` fails when require_item_id is true
+    let missing_item_commit = run_neb_with_env(
+        &[
+            "--root",
+            alpha_str,
+            "git",
+            "commit",
+            "-m",
+            "Undocumented workspace commit attempt",
+            "--all",
+        ],
+        None,
+        &cfg_dir,
+    );
+    assert!(
+        !missing_item_commit.status.success(),
+        "undocumented workspace commit must be rejected by commit_policy"
+    );
+
+    // Documented commit with `-i BUG-0001 -m <SUMMARY> --all` succeeds and updates item.toml + desc.md atomically
+    let commit_json = run_neb_json_with_env(
+        &[
+            "--root",
+            alpha_str,
+            "git",
+            "commit",
+            "-i",
+            "BUG-0001",
+            "-m",
+            "Restore XanMod 6.12.4-1 pin and stabilize ISO build script",
+            "--all",
+        ],
+        None,
+        &cfg_dir,
+    );
+    assert!(commit_json["commit_sha"].as_str().is_some());
+    assert_eq!(commit_json["item_id"], "BUG-0001");
+    assert_eq!(commit_json["scope_id"], "iso");
+    assert_eq!(commit_json["documentation_updated"], true);
+    assert!(commit_json["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("[BUG-0001](iso) Restore XanMod 6.12.4-1 pin"));
+
+    let git_status_after =
+        run_neb_json_with_env(&["--root", alpha_str, "git", "status"], None, &cfg_dir);
+    assert_eq!(git_status_after["workspace_dirty"], false);
+    assert_eq!(git_status_after["tracker_dirty"], false);
+
+    let (_, detail_after) = storage.load_item_detail_by_id("BUG-0001").unwrap();
+    assert_eq!(detail_after.manifest.history.previous_fixes.len(), 1);
+    assert!(detail_after
+        .description_markdown
+        .contains("Restore XanMod 6.12.4-1 pin and stabilize ISO build script"));
+}
+
+#[test]
+fn test_mcp_stdio_jsonrpc_session_end_to_end() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let temp = TempDir::new().expect("should create temp dir for MCP test");
+    let cfg_dir = temp.path().join("mcp_config");
+    let root = temp.path().join("novos_workspace");
+    fs::create_dir_all(&root).unwrap();
+
+    // Initialize Git repository + files for ingestion
+    let repo = Repository::init(&root).expect("should init git repo");
+    {
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "MCP Agent").unwrap();
+        cfg.set_str("user.email", "agent@nebulous.dev").unwrap();
+        let sig = Signature::now("MCP Agent", "agent@nebulous.dev").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
+            .unwrap();
+    }
+
+    fs::create_dir_all(root.join("crates/kernel_mgr/src")).unwrap();
+    fs::write(
+        root.join("crates/kernel_mgr/Cargo.toml"),
+        "[package]\nname = \"kernel_mgr\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("crates/kernel_mgr/src/lib.rs"),
+        "pub fn verify_boot() -> bool { true }\n",
+    )
+    .unwrap();
+
+    fs::create_dir_all(root.join("iso")).unwrap();
+    fs::write(
+        root.join("iso/build.sh"),
+        "#!/usr/bin/env bash\necho 'building iso'\n",
+    )
+    .unwrap();
+
+    let storage = TrackerStorage::init(
+        &root,
+        "NovOS",
+        "01_rolling_core",
+        "Rolling Release Core",
+    )
+    .expect("should init NovOS tracker");
+    let _ = backend_core::register_project_in(
+        &cfg_dir,
+        storage.project_root(),
+        Some("NovOS"),
+        vec!["distro".to_string()],
+        true,
+    )
+    .unwrap();
+
+    // Build a sequence of JSON-RPC 2.0 requests exercising the full MCP lifecycle and all 4 tool suites
+    let requests = vec![
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "test-agent", "version": "1.0.0" }
+            }
+        }),
+        // Notification (no id) -> must not emit a response line
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list"
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "ingest_project_directory",
+                "arguments": {
+                    "write_manifests": true,
+                    "promote_all": true
+                }
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "list_crate_boundaries",
+                "arguments": {}
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "pin_stable_release",
+                "arguments": {
+                    "component_id": "iso",
+                    "commit_sha": "stable01",
+                    "build_script_path": "iso/build.sh",
+                    "build_flags": ["--xanmod-signed", "--squashfs-zstd"],
+                    "dependency_pins": {
+                        "linux-xanmod": "6.12.4-1",
+                        "live-build": "20261101"
+                    }
+                }
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "record_rolling_update",
+                "arguments": {
+                    "component_id": "iso",
+                    "dependency_name": "linux-xanmod",
+                    "kind": "kernel_xanmod",
+                    "previous_version": "6.12.4-1",
+                    "new_version": "6.13.0-rc2",
+                    "upstream_source": "https://deb.xanmod.org",
+                    "build_script_path": "iso/build.sh",
+                    "summary": "Bump XanMod kernel to 6.13.0-rc2"
+                }
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "get_active_task",
+                "arguments": {}
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {
+                "name": "record_verification_run",
+                "arguments": {
+                    "component_id": "iso",
+                    "passed": false,
+                    "exit_code": 134,
+                    "command": "qemu-system-x86_64 -cdrom novos.iso --nographic",
+                    "summary": "Kernel panic mounting overlayfs in live boot",
+                    "logs_excerpt": "VFS: Cannot open root device overlay"
+                }
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "rollback_to_pinned_release",
+                "arguments": {
+                    "component_id": "iso",
+                    "restore_manifest": true,
+                    "reason": "Auto-rollback triggered after QEMU exit code 134"
+                }
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "git_commit_documented",
+                "arguments": {
+                    "item_id": "FEAT-0001",
+                    "summary": "Rollback linux-xanmod to 6.12.4-1 after QEMU boot failure"
+                }
+            }
+        }),
+        // Edge case: unknown tool returns JSON-RPC error -32602
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "nonexistent_tool",
+                "arguments": {}
+            }
+        }),
+    ];
+
+    let mut stdin_payload = String::new();
+    for req in &requests {
+        stdin_payload.push_str(&serde_json::to_string(req).unwrap());
+        stdin_payload.push('\n');
+    }
+
+    let mut child = Command::new(neb_bin())
+        .args(["--root", root.to_str().unwrap(), "mcp"])
+        .env("NEBULOUS_CONFIG_DIR", &cfg_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("should spawn neb mcp subprocess");
+
+    {
+        let child_stdin = child.stdin.as_mut().expect("stdin should be piped");
+        child_stdin
+            .write_all(stdin_payload.as_bytes())
+            .expect("should write JSON-RPC lines to neb mcp stdin");
+    }
+
+    let output = child
+        .wait_with_output()
+        .expect("neb mcp should exit cleanly when stdin closes");
+    assert!(
+        output.status.success(),
+        "neb mcp failed:\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout_str = String::from_utf8(output.stdout).expect("valid UTF-8 stdout");
+    let responses: Vec<Value> = stdout_str
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| serde_json::from_str::<Value>(line).expect("each line must be valid JSON-RPC"))
+        .collect();
+
+    // 11 requests with `id` (the notification had no `id` and emitted no response)
+    assert_eq!(responses.len(), 11);
+
+    // 1. initialize
+    assert_eq!(responses[0]["id"], 1);
+    assert_eq!(responses[0]["result"]["serverInfo"]["name"], "nebulous-mcp");
+
+    // 2. tools/list
+    assert_eq!(responses[1]["id"], 2);
+    let tool_names: Vec<&str> = responses[1]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for expected_tool in [
+        "get_active_task",
+        "list_items",
+        "get_item_context",
+        "list_crate_boundaries",
+        "create_item",
+        "update_item_status",
+        "close_item_with_fix",
+        "record_regression",
+        "list_projects",
+        "switch_project",
+        "ingest_project_directory",
+        "upsert_component_manifest",
+        "promote_component_to_scope",
+        "record_rolling_update",
+        "record_verification_run",
+        "pin_stable_release",
+        "rollback_to_pinned_release",
+        "git_status",
+        "git_fetch",
+        "git_pull",
+        "git_push",
+        "git_commit_documented",
+        "git_sync",
+    ] {
+        assert!(
+            tool_names.contains(&expected_tool),
+            "tools/list missing expected tool '{expected_tool}'"
+        );
+    }
+
+    // 3. ingest_project_directory
+    assert_eq!(responses[2]["id"], 3);
+    assert_eq!(responses[2]["result"]["isError"], false);
+    assert_eq!(responses[2]["result"]["total_components"], 2);
+
+    // 4. list_crate_boundaries
+    assert_eq!(responses[3]["id"], 4);
+    let boundaries = responses[3]["result"]["boundaries"].as_array().unwrap();
+    assert!(boundaries.iter().any(|b| b["scope_id"] == "iso"));
+    assert!(boundaries.iter().any(|b| b["scope_id"] == "kernel_mgr"));
+
+    // 5. pin_stable_release
+    assert_eq!(responses[4]["id"], 5);
+    assert_eq!(
+        responses[4]["result"]["last_known_good"]["commit_sha"],
+        "stable01"
+    );
+    assert_eq!(
+        responses[4]["result"]["last_known_good"]["dependency_pins"]["linux-xanmod"],
+        "6.12.4-1"
+    );
+
+    // 6. record_rolling_update -> auto-created tracking item FEAT-0001
+    assert_eq!(responses[5]["id"], 6);
+    assert_eq!(responses[5]["result"]["tracked_item_id"], "FEAT-0001");
+    assert_eq!(
+        responses[5]["result"]["rolling_update"]["new_version"],
+        "6.13.0-rc2"
+    );
+
+    // 7. get_active_task -> returns FEAT-0001 with Bounded Agent Prompt
+    assert_eq!(responses[6]["id"], 7);
+    assert_eq!(responses[6]["result"]["active"], true);
+    assert_eq!(responses[6]["result"]["item_id"], "FEAT-0001");
+    assert_eq!(responses[6]["result"]["scope_id"], "iso");
+    assert!(responses[6]["result"]["bounded_prompt"]
+        .as_str()
+        .unwrap()
+        .contains("Bounded Agent Task: FEAT-0001"));
+
+    // 8. record_verification_run -> records failure on iso and FEAT-0001
+    assert_eq!(responses[7]["id"], 8);
+    assert_eq!(responses[7]["result"]["passed"], false);
+    assert_eq!(responses[7]["result"]["exit_code"], 134);
+    assert_eq!(responses[7]["result"]["tracked_item_id"], "FEAT-0001");
+
+    // 9. rollback_to_pinned_release -> restores 6.12.4-1 and records regression on FEAT-0001
+    assert_eq!(responses[8]["id"], 9);
+    assert_eq!(responses[8]["result"]["restored"], true);
+    assert_eq!(responses[8]["result"]["regression_recorded"], true);
+    assert_eq!(responses[8]["result"]["item_id"], "FEAT-0001");
+    assert_eq!(responses[8]["result"]["recurrence_count"], 1);
+    assert_eq!(
+        responses[8]["result"]["last_known_good"]["commit_sha"],
+        "stable01"
+    );
+
+    // 10. git_commit_documented -> commits workspace + .tracker/ and updates FEAT-0001
+    assert_eq!(responses[9]["id"], 10);
+    assert_eq!(responses[9]["result"]["isError"], false);
+    assert_eq!(responses[9]["result"]["item_id"], "FEAT-0001");
+    assert_eq!(responses[9]["result"]["documentation_updated"], true);
+
+    // 11. unknown tool -> JSON-RPC error -32602
+    assert_eq!(responses[10]["id"], 11);
+    assert_eq!(responses[10]["error"]["code"], -32602);
+}
+
+#[test]
+fn test_mcp_remaining_tools_resources_content_length_and_error_paths() {
+    use backend_core::McpServer;
+    use std::io::Cursor;
+
+    let temp = TempDir::new().expect("should create temp dir");
+    let cfg_dir = temp.path().join("mcp_cfg");
+    let proj_one = temp.path().join("proj_one");
+    let proj_two = temp.path().join("proj_two");
+    fs::create_dir_all(&proj_one).unwrap();
+    fs::create_dir_all(&proj_two).unwrap();
+
+    let s1 = TrackerStorage::init(&proj_one, "ProjOne", "01_core", "Core Phase").unwrap();
+    let s2 = TrackerStorage::init(&proj_two, "ProjTwo", "01_core", "Core Phase").unwrap();
+    backend_core::register_project_in(&cfg_dir, s1.project_root(), Some("ProjOne"), vec![], true)
+        .unwrap();
+    backend_core::register_project_in(&cfg_dir, s2.project_root(), Some("ProjTwo"), vec![], false)
+        .unwrap();
+
+    let mut server = McpServer::from_storage(s1.clone()).with_registry_path(&cfg_dir);
+
+    // 1. ping
+    let ping_resp: Value = serde_json::from_str(
+        &server
+            .handle_raw_message(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ping_resp["id"], 1);
+    assert!(ping_resp["result"].is_object());
+
+    // 2. list_projects & switch_project
+    let lp_val = server.call_tool("list_projects", serde_json::json!({})).unwrap();
+    assert_eq!(lp_val["total"], 2);
+    assert_eq!(lp_val["active_project_id"], "projone");
+
+    let sw_val = server
+        .call_tool("switch_project", serde_json::json!({ "id_or_name": "ProjTwo" }))
+        .unwrap();
+    assert_eq!(sw_val["active_project_id"], "projtwo");
+
+    // Switch back to ProjOne
+    server
+        .call_tool("switch_project", serde_json::json!({ "id_or_name": "projone" }))
+        .unwrap();
+
+    // 3. upsert_component_manifest & promote_component_to_scope
+    fs::create_dir_all(proj_one.join("scripts")).unwrap();
+    fs::write(proj_one.join("scripts/deploy.sh"), "#!/bin/sh\necho ok\n").unwrap();
+
+    let upsert_val = server
+        .call_tool(
+            "upsert_component_manifest",
+            serde_json::json!({
+                "id": "deploy_scripts",
+                "name": "Deploy Scripts",
+                "relative_path": "scripts",
+                "component_type": "build_scripts",
+                "tech_stack": ["shell"]
+            }),
+        )
+        .unwrap();
+    assert_eq!(upsert_val["component"]["id"], "deploy_scripts");
+
+    let promote_val = server
+        .call_tool(
+            "promote_component_to_scope",
+            serde_json::json!({
+                "component_id": "deploy_scripts"
+            }),
+        )
+        .unwrap();
+    assert_eq!(promote_val["scope_id"], "deploy_scripts");
+    assert_eq!(promote_val["bound_component"], "deploy_scripts");
+
+    // 4. create_item, list_items, get_item_context, update_item_status, close_item_with_fix, record_regression
+    let created = server
+        .call_tool(
+            "create_item",
+            serde_json::json!({
+                "item_type": "bug",
+                "title": "Deploy script fails on spaces in path",
+                "scope_id": "deploy_scripts",
+                "severity": "high"
+            }),
+        )
+        .unwrap();
+    assert_eq!(created["item_id"], "BUG-0001");
+
+    let listed = server
+        .call_tool(
+            "list_items",
+            serde_json::json!({
+                "scope_id": "deploy_scripts",
+                "status": "open"
+            }),
+        )
+        .unwrap();
+    assert_eq!(listed["total"], 1);
+
+    let ctx = server
+        .call_tool(
+            "get_item_context",
+            serde_json::json!({
+                "item_id": "BUG-0001"
+            }),
+        )
+        .unwrap();
+    assert_eq!(ctx["item_id"], "BUG-0001");
+    assert_eq!(ctx["target_path"], "scripts");
+
+    let updated = server
+        .call_tool(
+            "update_item_status",
+            serde_json::json!({
+                "item_id": "BUG-0001",
+                "status": "in_progress"
+            }),
+        )
+        .unwrap();
+    assert_eq!(updated["status"], "in_progress");
+
+    let closed = server
+        .call_tool(
+            "close_item_with_fix",
+            serde_json::json!({
+                "item_id": "BUG-0001",
+                "summary": "Quoted path variables in deploy.sh",
+                "commit": "fix1234"
+            }),
+        )
+        .unwrap();
+    assert_eq!(closed["status"], "closed");
+    assert_eq!(closed["previous_fixes_count"], 1);
+
+    let reg = server
+        .call_tool(
+            "record_regression",
+            serde_json::json!({
+                "item_id": "BUG-0001",
+                "reason": "Still fails when symlink target has spaces"
+            }),
+        )
+        .unwrap();
+    assert_eq!(reg["status"], "open");
+    assert_eq!(reg["recurrence_count"], 1);
+
+    // 5. resources/list & resources/read
+    let res_list: Value = serde_json::from_str(
+        &server
+            .handle_raw_message(r#"{"jsonrpc":"2.0","id":2,"method":"resources/list"}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    let uris: Vec<&str> = res_list["result"]["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["uri"].as_str().unwrap())
+        .collect();
+    assert!(uris.contains(&"nebulous://project"));
+    assert!(uris.contains(&"nebulous://items/BUG-0001"));
+
+    let res_read: Value = serde_json::from_str(
+        &server
+            .handle_raw_message(
+                r#"{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"nebulous://items/BUG-0001"}}"#,
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(res_read["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("BUG-0001"));
+
+    // 6. Error handling: malformed JSON (-32700), unknown method (-32601), rollback without pin (isError: true)
+    let parse_err: Value = serde_json::from_str(
+        &server.handle_raw_message("{not valid json").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(parse_err["error"]["code"], -32700);
+
+    let method_err: Value = serde_json::from_str(
+        &server
+            .handle_raw_message(r#"{"jsonrpc":"2.0","id":4,"method":"unknown/method"}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(method_err["error"]["code"], -32601);
+
+    let unpinned_rollback: Value = serde_json::from_str(
+        &server
+            .handle_raw_message(
+                r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"rollback_to_pinned_release","arguments":{"component_id":"deploy_scripts"}}}"#,
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(unpinned_rollback["result"]["isError"], true);
+
+    // 7. record_rolling_update on a brand-new dependency without previous_version keeps previous_version = null
+    let rolling_new_dep = server
+        .call_tool(
+            "record_rolling_update",
+            serde_json::json!({
+                "component_id": "deploy_scripts",
+                "dependency_name": "rsync",
+                "new_version": "3.3.0-1",
+                "create_tracking_item": false
+            }),
+        )
+        .unwrap();
+    assert!(rolling_new_dep["rolling_update"]["previous_version"].is_null());
+    assert_eq!(
+        rolling_new_dep["rolling_update"]["new_version"],
+        "3.3.0-1"
+    );
+
+    // 8. Content-Length framed stdio session AND newline-delimited malformed line recovery
+    let body = r#"{"jsonrpc":"2.0","id":99,"method":"ping"}"#;
+    let framed_input = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+    let mut out_buf = Vec::new();
+    server
+        .serve_io(Cursor::new(framed_input.into_bytes()), &mut out_buf)
+        .unwrap();
+    let framed_out = String::from_utf8(out_buf).unwrap();
+    assert!(framed_out.starts_with("Content-Length: "));
+    assert!(framed_out.contains(r#""id":99"#));
+
+    let mixed_lines = "{not valid json\n{\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"ping\"}\n";
+    let mut line_out_buf = Vec::new();
+    server
+        .serve_io(Cursor::new(mixed_lines.as_bytes()), &mut line_out_buf)
+        .unwrap();
+    let line_responses: Vec<Value> = String::from_utf8(line_out_buf)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(line_responses.len(), 2);
+    assert_eq!(line_responses[0]["error"]["code"], -32700);
+    assert_eq!(line_responses[1]["id"], 100);
 }

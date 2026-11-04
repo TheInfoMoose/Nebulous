@@ -54,8 +54,25 @@ pub fn view_header_bar(app: &NebulousApp) -> Element<'_, Message> {
 }
 
 fn view_phase_selector(app: &NebulousApp) -> Element<'_, Message> {
-    let brand_badge = widget::container(widget::text::heading(format!("◆ {}", app.project_name())))
-        .padding([4, 8]);
+    let selected_project_idx = app.selected_project_dropdown_index();
+    let project_dropdown: Element<'_, Message> = if app.project_labels.is_empty() {
+        widget::container(widget::text::heading(format!("◆ {}", app.project_name())))
+            .padding([4, 8])
+            .into()
+    } else {
+        widget::dropdown(
+            &app.project_labels,
+            selected_project_idx,
+            Message::SelectProjectIndex,
+        )
+        .width(Length::Shrink)
+        .into()
+    };
+
+    let add_project_btn = widget::button::standard("+ Project")
+        .padding([4, 8])
+        .height(Length::Fixed(28.0))
+        .on_press(Message::OpenAddProject);
 
     let selected_idx = app
         .phase_ids
@@ -70,8 +87,9 @@ fn view_phase_selector(app: &NebulousApp) -> Element<'_, Message> {
             .into()
     };
 
-    widget::row::with_capacity(3)
-        .push(brand_badge)
+    widget::row::with_capacity(4)
+        .push(project_dropdown)
+        .push(add_project_btn)
         .push(widget::text::caption("Phase:"))
         .push(phase_dropdown)
         .spacing(6)
@@ -125,6 +143,30 @@ fn view_filter_pills(app: &NebulousApp) -> Element<'_, Message> {
     row.into()
 }
 
+/// Formats the Git status button label including short SHA, dirty indicator (`*`), and ahead/behind counts (`↑N ↓M`).
+pub fn format_git_status_label(app: &NebulousApp) -> String {
+    let sha_display = app
+        .git_status
+        .as_ref()
+        .and_then(|st| st.head_short_sha.as_deref())
+        .unwrap_or("uncommitted");
+    let dirty_marker = if app
+        .git_status
+        .as_ref()
+        .is_some_and(|st| st.tracker_dirty || st.workspace_dirty)
+    {
+        "*"
+    } else {
+        ""
+    };
+    let (ahead, behind) = app
+        .git_status
+        .as_ref()
+        .map(|st| (st.ahead_count, st.behind_count))
+        .unwrap_or((0, 0));
+    format!("⇅ {sha_display}{dirty_marker} ↑{ahead} ↓{behind}")
+}
+
 fn view_right_controls(app: &NebulousApp) -> Element<'_, Message> {
     let mut row = widget::row::with_capacity(4)
         .spacing(8)
@@ -171,18 +213,8 @@ fn view_right_controls(app: &NebulousApp) -> Element<'_, Message> {
         .height(Length::Fixed(28.0))
         .on_press(Message::OpenQuickAdd(ItemType::Feature));
 
-    // Git sync button showing short SHA and dirty state
-    let sha_display = app
-        .git_status
-        .as_ref()
-        .and_then(|st| st.head_short_sha.as_deref())
-        .unwrap_or("uncommitted");
-    let dirty_marker = if app.git_status.as_ref().is_some_and(|st| st.tracker_dirty) {
-        "*"
-    } else {
-        ""
-    };
-    let sync_label = format!("⇅ {sha_display}{dirty_marker}");
+    // Git sync button showing short SHA, dirty state, and ahead/behind counts
+    let sync_label = format_git_status_label(app);
     let sync_btn = widget::button::standard(sync_label)
         .padding([4, 10])
         .height(Length::Fixed(28.0))

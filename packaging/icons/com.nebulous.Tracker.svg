@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+  <defs>
+    <linearGradient id="neb-bg" x1="24" y1="16" x2="232" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="50%" stop-color="#1E1B4B"/>
+      <stop offset="100%" stop-color="#090D16"/>
+    </linearGradient>
+    <linearGradient id="neb-accent" x1="48" y1="48" x2="208" y2="208" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="55%" stop-color="#818CF8"/>
+      <stop offset="100%" stop-color="#C084FC"/>
+    </linearGradient>
+    <linearGradient id="neb-node" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded Application Tile -->
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#neb-bg)" stroke="#334155" stroke-width="4"/>
+
+  <!-- Orbital Ring -->
+  <ellipse cx="128" cy="128" rx="84" ry="46" transform="rotate(-28 128 128)" stroke="url(#neb-accent)" stroke-width="5" stroke-dasharray="10 6" opacity="0.65"/>
+
+  <!-- 4-Tier Hierarchy Constellation Lines -->
+  <path d="M72 184 L72 72 L184 184 L184 72" stroke="url(#neb-accent)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Tier Nodes -->
+  <circle cx="72" cy="72" r="14" fill="url(#neb-node)" stroke="#F8FAFC" stroke-width="3"/>
+  <circle cx="72" cy="184" r="12" fill="#38BDF8" stroke="#F8FAFC" stroke-width="3"/>
+  <circle cx="184" cy="184" r="14" fill="url(#neb-node)" stroke="#F8FAFC" stroke-width="3"/>
+  <circle cx="184" cy="72" r="12" fill="#C084FC" stroke="#F8FAFC" stroke-width="3"/>
+  <circle cx="128" cy="128" r="10" fill="#F8FAFC"/>
+</svg>

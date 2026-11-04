@@ -13,3 +13,6 @@
 *~
 .idea/
 .vscode/
+
+# Dev md files
+STEPPED_IMPLEMENTATION_PLAN.md

@@ -29,7 +29,7 @@ impl ScopeManifest {
 }
 
 /// `[scope]` table inside `scope.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopeMetadata {
     pub id: String,
     pub target: String,
@@ -37,6 +37,10 @@ pub struct ScopeMetadata {
     pub tech_stack: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_component: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracked_files: Vec<String>,
 }
 
 /// `[items]` table inside `scope.toml` containing lightweight item stubs for fast index loading.

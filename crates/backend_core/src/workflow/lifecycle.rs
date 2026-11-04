@@ -283,6 +283,55 @@ impl TrackerStorage {
         Ok(detail)
     }
 
+    /// Records a regression on an item (`BUG-XXXX` or `FEAT-XXXX`).
+    ///
+    /// If the item is currently `closed` or `merged`, it is reopened to `open` via [`Self::reopen_item`].
+    /// If the item is already in an active state (`open`, `in_progress`, or `pending`), this increments
+    /// `history.recurrence_count` and `effort.iteration_count`, ensures the status is active (`open`
+    /// if `pending`), appends the optional regression note to `desc.md`, and atomically syncs
+    /// `item.toml`, `scope.toml`, and `phase.toml`.
+    pub fn record_regression(&self, item_id: &str, reason: Option<&str>) -> Result<ItemDetail> {
+        let (loc, mut detail) = self.load_item_detail_by_id(item_id)?;
+        if detail.manifest.item.status.is_completed() {
+            return self.reopen_item(item_id, reason);
+        }
+
+        if detail.manifest.item.status == ItemStatus::Pending {
+            detail.manifest.item.status = ItemStatus::Open;
+        }
+        detail.manifest.history.recurrence_count =
+            detail.manifest.history.recurrence_count.saturating_add(1);
+        detail.manifest.effort.iteration_count =
+            detail.manifest.effort.iteration_count.saturating_add(1);
+        detail.manifest.item.updated_at = now_rfc3339();
+
+        if let Some(note) = reason.map(str::trim).filter(|s| !s.is_empty()) {
+            let today = Utc::now().format("%Y-%m-%d").to_string();
+            if !detail.description_markdown.ends_with('\n') {
+                detail.description_markdown.push('\n');
+            }
+            detail
+                .description_markdown
+                .push_str(&format!("- Regression recorded ({today}): {note}\n"));
+            self.write_item_desc(
+                &loc.phase_id,
+                &loc.scope_id,
+                &detail.manifest.item.id,
+                &detail.description_markdown,
+            )?;
+        }
+
+        self.write_item_manifest(
+            &loc.phase_id,
+            &loc.scope_id,
+            &detail.manifest.item.id,
+            &detail.manifest,
+        )?;
+        self.sync_parent_indexes_for_item(&loc.phase_id, &loc.scope_id, &detail.manifest)?;
+
+        Ok(detail)
+    }
+
     /// Closes (or merges when `merged == true`) an item, appending a [`PreviousFix`] entry
     /// containing today's date, the Git `HEAD` short SHA (or `commit_override`, falling back to
     /// `"uncommitted"`), and `summary`, then atomically updating `scope.toml` and `phase.toml`.
@@ -446,6 +495,8 @@ impl TrackerStorage {
                 target: ".tracker".to_string(),
                 tech_stack: Vec::new(),
                 description: Some("Default unscoped triage inbox".to_string()),
+                bound_component: None,
+                tracked_files: Vec::new(),
             },
             items: ScopeItems::default(),
         };
@@ -493,12 +544,13 @@ impl TrackerStorage {
         description: Option<String>,
     ) -> Result<ScopeManifest> {
         validate_identifier("Scope", scope_id)?;
-        let target_trimmed = target.into().trim().to_string();
+        let target_trimmed = crate::storage::normalize_relative_path_str(&target.into());
         if target_trimmed.is_empty() {
             return Err(TrackerError::ValidationError(
                 "Scope target path must not be empty".to_string(),
             ));
         }
+
 
         let project = self.read_project()?;
         let resolved_phase = match phase_id.map(str::trim).filter(|s| !s.is_empty()) {
@@ -523,6 +575,8 @@ impl TrackerStorage {
                 target: target_trimmed,
                 tech_stack,
                 description,
+                bound_component: None,
+                tracked_files: Vec::new(),
             },
             items: ScopeItems::default(),
         };

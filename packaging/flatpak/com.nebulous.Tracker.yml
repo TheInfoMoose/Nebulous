@@ -1,0 +1,49 @@
+app-id: com.nebulous.Tracker
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: nebulous
+
+finish-args:
+  # Native Wayland + X11 fallback display sockets for libcosmic
+  - --socket=wayland
+  - --socket=fallback-x11
+  # GPU hardware acceleration (Vulkan / OpenGL / DRM)
+  - --device=dri
+  - --share=ipc
+  # Network access for Git fetch/pull/push over HTTPS/SSH
+  - --share=network
+  # Host filesystem access so users can open, ingest, and manage arbitrary repositories
+  - --filesystem=host
+  # Forward host SSH agent for git2 SSH remote authentication
+  - --socket=ssh-auth
+  # D-Bus Secret Service talk permission for OS keyring PAT and SSH key storage
+  - --talk-name=org.freedesktop.secrets
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  build-args:
+    - --share=network
+  env:
+    CARGO_HOME: /run/build/nebulous/cargo
+
+modules:
+  - name: nebulous
+    buildsystem: simple
+    build-commands:
+      - |
+        if [ -d vendor ] || [ -f .cargo/config.toml ] || [ -f cargo/config.toml ]; then
+          cargo build --workspace --release --offline
+        else
+          cargo build --workspace --release
+        fi
+      - install -Dm755 target/release/nebulous /app/bin/nebulous
+      - install -Dm755 target/release/neb /app/bin/neb
+      - install -Dm644 packaging/com.nebulous.Tracker.desktop /app/share/applications/com.nebulous.Tracker.desktop
+      - install -Dm644 packaging/com.nebulous.Tracker.metainfo.xml /app/share/metainfo/com.nebulous.Tracker.metainfo.xml
+      - install -Dm644 packaging/icons/com.nebulous.Tracker.svg /app/share/icons/hicolor/scalable/apps/com.nebulous.Tracker.svg
+    sources:
+      - type: dir
+        path: ../..

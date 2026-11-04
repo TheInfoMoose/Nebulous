@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Nebulous
+GenericName=Project & Bug Tracker
+Comment=Local-first 4-tier project, bug, and AI agent workflow tracker
+Exec=nebulous
+TryExec=nebulous
+Icon=com.nebulous.Tracker
+Terminal=false
+Categories=Development;ProjectManagement;RevisionControl;
+Keywords=tracker;bug;kanban;git;mcp;cosmic;agent;
+StartupNotify=true
+StartupWMClass=com.nebulous.Tracker

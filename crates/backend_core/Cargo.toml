@@ -6,14 +6,34 @@ license.workspace = true
 description = "Core 4-tier TOML/Markdown persistence, workflow, and analytics engine for Nebulous"
 
 [dependencies]
+aes-gcm = "0.10"
+base64 = "0.22"
 chrono.workspace = true
 git2 = { version = "0.19", default-features = false, features = ["https"] }
-keyring = { version = "3", features = ["linux-native"] }
+ignore = "0.4"
+keyring = "3"
 notify = "6"
+rand = "0.8"
+russh = { version = "0.64.1", default-features = false, features = ["flate2", "aws-lc-rs"] }
 serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+ssh-key = { version = "0.7.0-rc.11", features = ["ed25519", "rand_core", "encryption"] }
 thiserror.workspace = true
 toml.workspace = true
+zeroize = "1"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+keyring = { version = "3", features = ["linux-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+
 

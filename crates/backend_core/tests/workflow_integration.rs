@@ -7,8 +7,9 @@ use git2::{Repository, Signature};
 use tempfile::TempDir;
 
 use backend_core::{
-    build_pat_callbacks, CreateItemInput, ItemDetail, ItemEffort, ItemHistory, ItemManifest,
-    ItemMetadata, ItemStatus, ItemType, PreviousFix, Severity, TrackerError, TrackerStorage,
+    build_auth_callbacks, build_pat_callbacks, CommitPolicyConfig, CreateItemInput,
+    DocumentedCommitInput, ItemDetail, ItemEffort, ItemHistory, ItemManifest, ItemMetadata,
+    ItemStatus, ItemType, PreviousFix, Severity, TrackerError, TrackerStorage,
 };
 
 fn init_temp_tracker() -> (TempDir, TrackerStorage) {
@@ -876,3 +877,497 @@ fn test_phase_and_scope_management_and_metadata_updates() {
     let proj = storage.set_active_phase("01_core_engine").unwrap();
     assert_eq!(proj.project.active_phase, "01_core_engine");
 }
+
+#[test]
+fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
+    let (dir, storage) = init_temp_tracker();
+    let repo = Repository::init(dir.path()).expect("should init local git repo");
+    {
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test Developer").unwrap();
+        cfg.set_str("user.email", "dev@nebulous.local").unwrap();
+    }
+
+    let bare_dir = TempDir::new().unwrap();
+    let _bare_repo = Repository::init_bare(bare_dir.path()).expect("should init bare remote");
+    let bare_url = bare_dir.path().to_str().unwrap().to_string();
+    repo.remote("origin", &bare_url).unwrap();
+
+    // Commit initial .tracker state
+    let initial_sha = storage
+        .git_commit_tracker(Some("chore(tracker): initial commit"))
+        .unwrap()
+        .unwrap();
+    let current_branch = repo
+        .head()
+        .unwrap()
+        .shorthand()
+        .unwrap_or("main")
+        .to_string();
+
+    let mut project = storage.read_project().unwrap();
+    project.git.remote = "origin".to_string();
+    project.git.branch = current_branch.clone();
+    storage.write_project(&project).unwrap();
+    storage
+        .git_commit_tracker(Some("chore(tracker): set remote and branch"))
+        .unwrap();
+
+    // Push initial state -> ahead = 0, behind = 0
+    storage.git_push(None).expect("should push to bare remote");
+    let st_synced = storage.git_status().unwrap();
+    assert_eq!(st_synced.remote_url.as_deref(), Some(bare_url.as_str()));
+    assert_eq!(st_synced.ahead_count, 0);
+    assert_eq!(st_synced.behind_count, 0);
+    assert!(!st_synced.tracker_dirty);
+    assert!(!st_synced.workspace_dirty);
+    assert!(st_synced.dirty_workspace_files.is_empty());
+
+    // Clone bare remote into workspace 2
+    let clone_dir = TempDir::new().unwrap();
+    let cloned_repo = Repository::clone(&bare_url, clone_dir.path()).unwrap();
+    {
+        let mut cfg = cloned_repo.config().unwrap();
+        cfg.set_str("user.name", "Remote Developer").unwrap();
+        cfg.set_str("user.email", "remote@nebulous.local").unwrap();
+        let head_commit = cloned_repo.head().unwrap().peel_to_commit().unwrap();
+        let _ = cloned_repo.branch(&current_branch, &head_commit, true);
+        cloned_repo
+            .set_head(&format!("refs/heads/{current_branch}"))
+            .unwrap();
+    }
+    let cloned_storage = TrackerStorage::new(clone_dir.path());
+
+    // Workspace 2 creates an item, commits, and pushes to remote
+    cloned_storage
+        .create_bug(
+            "Upstream bug reported in workspace 2",
+            Some("01_core_engine"),
+            Some("backend_core"),
+            Severity::High,
+            None,
+        )
+        .unwrap();
+    cloned_storage
+        .git_commit_tracker(Some("chore(tracker): add BUG-0001 from workspace 2"))
+        .unwrap();
+    cloned_storage.git_push(None).unwrap();
+
+    // Workspace 1 modifies a workspace file (uncommitted) and runs `git_fetch`
+    let src_dir = dir.path().join("crates/backend_core/src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("lib.rs"), "pub fn placeholder() {}\n").unwrap();
+
+    let head_before_fetch = storage.git_head_short_sha();
+    let fetch_status = storage
+        .git_fetch(None)
+        .expect("git_fetch should succeed without modifying working tree");
+
+    // Verify `git_fetch` updated `behind_count` to 1, left `ahead_count` at 0, preserved `HEAD`,
+    // and reported the dirty workspace file without touching the working tree
+    assert_eq!(fetch_status.ahead_count, 0);
+    assert_eq!(fetch_status.behind_count, 1);
+    assert_eq!(storage.git_head_short_sha(), head_before_fetch);
+    assert_ne!(head_before_fetch, initial_sha);
+    assert!(fetch_status.workspace_dirty);
+    assert_eq!(
+        fetch_status.dirty_workspace_files,
+        vec!["crates/backend_core/src/lib.rs".to_string()]
+    );
+    assert!(
+        storage.load_item_detail_by_id("BUG-0001").is_err(),
+        "git_fetch must not merge remote changes into working tree"
+    );
+
+    // Clean up uncommitted workspace file, create a local tracker commit in workspace 1 so it both
+    // diverges ahead (1) and remains behind (1)
+    fs::remove_file(src_dir.join("lib.rs")).unwrap();
+    storage
+        .create_feature(
+            "Local feature in workspace 1",
+            Some("01_core_engine"),
+            Some("backend_core"),
+            Severity::Medium,
+            None,
+        )
+        .unwrap();
+    storage
+        .git_commit_tracker(Some("chore(tracker): local FEAT-0001"))
+        .unwrap();
+
+    let diverged_status = storage.git_status().unwrap();
+    assert_eq!(diverged_status.ahead_count, 1);
+    assert_eq!(diverged_status.behind_count, 1);
+
+    // Pull and push to bring ahead_count and behind_count back to 0
+    assert!(storage.git_pull(None).unwrap());
+    storage.git_push(None).unwrap();
+    let final_status = storage.git_status().unwrap();
+    assert_eq!(final_status.ahead_count, 0);
+    assert_eq!(final_status.behind_count, 0);
+
+    // Verify `git_pull` rejects overwriting an uncommitted dirty workspace file when remote modifies the same file,
+    // without advancing local HEAD first.
+    cloned_storage.git_pull(None).unwrap();
+    let remote_src = clone_dir.path().join("crates/backend_core/src");
+    fs::create_dir_all(&remote_src).unwrap();
+    fs::write(remote_src.join("conflict.rs"), "pub fn remote_version() {}\n").unwrap();
+    cloned_storage
+        .git_commit_documented(DocumentedCommitInput::for_item(
+            "BUG-0001",
+            "Add conflict.rs on remote workspace",
+        ))
+        .unwrap();
+    cloned_storage.git_push(None).unwrap();
+
+    // Create conflicting uncommitted file in workspace 1
+    fs::write(src_dir.join("conflict.rs"), "pub fn local_dirty_version() {}\n").unwrap();
+    let head_before_failed_pull = storage.git_head_short_sha();
+    let pull_err = storage
+        .git_pull(None)
+        .expect_err("git_pull must reject overwriting dirty workspace file");
+    assert!(matches!(pull_err, TrackerError::GitError(ref msg) if msg.contains("conflict.rs")));
+    assert_eq!(
+        storage.git_head_short_sha(),
+        head_before_failed_pull,
+        "failed git_pull must not advance local HEAD"
+    );
+    assert_eq!(
+        fs::read_to_string(src_dir.join("conflict.rs")).unwrap(),
+        "pub fn local_dirty_version() {}\n",
+        "failed git_pull must preserve local dirty file contents"
+    );
+
+    // Remove conflicting dirty file -> git_pull now succeeds cleanly
+    fs::remove_file(src_dir.join("conflict.rs")).unwrap();
+    assert!(storage.git_pull(None).unwrap());
+    assert_eq!(
+        fs::read_to_string(src_dir.join("conflict.rs")).unwrap(),
+        "pub fn remote_version() {}\n"
+    );
+}
+
+#[test]
+fn test_git_commit_documented_policy_enforcement_and_atomic_doc_updates() {
+    let (dir, storage) = init_temp_tracker();
+    let repo = Repository::init(dir.path()).expect("should init local git repo");
+    {
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Policy Tester").unwrap();
+        cfg.set_str("user.email", "policy@nebulous.local").unwrap();
+    }
+
+    // Verify default CommitPolicyConfig values in project.toml
+    let project = storage.read_project().unwrap();
+    assert_eq!(
+        project.git.commit_policy,
+        CommitPolicyConfig {
+            require_item_id: true,
+            require_scope: true,
+            require_summary: true,
+            min_summary_length: 12,
+            auto_append_to_desc: true,
+            ssh_key_account: None,
+        }
+    );
+
+    // 1. Create BUG-0001 in backend_core scope
+    storage
+        .create_bug(
+            "Parser rejects empty array in scope manifest",
+            Some("01_core_engine"),
+            Some("backend_core"),
+            Severity::High,
+            Some("Ensure empty arrays deserialize cleanly."),
+        )
+        .unwrap();
+
+    // 2. Pure `.tracker/` metadata commit with no item_id should auto-generate `[TRACKER](sync) ...`
+    let tracker_commit = storage
+        .git_commit_documented(DocumentedCommitInput::tracker_only(""))
+        .expect("pure .tracker/ commit without item_id should succeed");
+    assert_eq!(
+        tracker_commit.message,
+        "[TRACKER](sync) sync .tracker metadata state"
+    );
+    assert!(!tracker_commit.documentation_updated);
+    assert!(!storage.git_status().unwrap().tracker_dirty);
+
+    // 3. Committing when neither workspace nor .tracker/ has changes must fail
+    assert!(matches!(
+        storage.git_commit_documented(DocumentedCommitInput::for_item(
+            "BUG-0001",
+            "Attempt empty commit with no changes"
+        )),
+        Err(TrackerError::ValidationError(_))
+    ));
+
+    // 4. Modify a workspace code file in `crates/backend_core/src/parser.rs`
+    let code_dir = dir.path().join("crates/backend_core/src");
+    fs::create_dir_all(&code_dir).unwrap();
+    let code_file = code_dir.join("parser.rs");
+    fs::write(&code_file, "pub fn parse_scope() -> bool { true }\n").unwrap();
+
+    let status_with_code = storage.git_status().unwrap();
+    assert!(status_with_code.workspace_dirty);
+    assert_eq!(
+        status_with_code.dirty_workspace_files,
+        vec!["crates/backend_core/src/parser.rs".to_string()]
+    );
+
+    // 5. Policy Violation A: Missing item_id on workspace code commit when `require_item_id = true`
+    let missing_item_err = storage
+        .git_commit_documented(DocumentedCommitInput::new(
+            "Implement scope parser fix without item ID",
+        ))
+        .expect_err("must reject undocumented code commit without item_id");
+    assert!(matches!(
+        missing_item_err,
+        TrackerError::ValidationError(ref msg) if msg.contains("item_id")
+    ));
+
+    // 6. Policy Violation B: Non-existent item_id
+    let unknown_item_err = storage
+        .git_commit_documented(DocumentedCommitInput::for_item(
+            "BUG-9999",
+            "Fix scope parser with non-existent item",
+        ))
+        .expect_err("must reject unknown item_id");
+    assert!(matches!(
+        unknown_item_err,
+        TrackerError::NotFound { kind: "Item", .. }
+    ));
+
+    // 7. Policy Violation C: Summary shorter than `min_summary_length` (12 chars)
+    let short_summary_err = storage
+        .git_commit_documented(DocumentedCommitInput::for_item("BUG-0001", "Too short"))
+        .expect_err("must reject summary shorter than min_summary_length");
+    assert!(matches!(
+        short_summary_err,
+        TrackerError::ValidationError(ref msg) if msg.contains("at least 12 characters")
+    ));
+
+    // 8. Policy Violation D: Unsafe relative path (`..`)
+    let unsafe_path_err = storage
+        .git_commit_documented(
+            DocumentedCommitInput::for_item(
+                "BUG-0001",
+                "Valid summary length for path traversal test",
+            )
+            .with_paths(["../outside_workspace.rs"]),
+        )
+        .expect_err("must reject path traversal");
+    assert!(matches!(
+        unsafe_path_err,
+        TrackerError::ValidationError(ref msg) if msg.contains("..")
+    ));
+
+    // 9. Valid documented code commit linked to BUG-0001 with body notes
+    let outcome = storage
+        .git_commit_documented(
+            DocumentedCommitInput::for_item(
+                "BUG-0001",
+                "Add serde default fallback to ScopeItems arrays",
+            )
+            .with_body("Verified with empty bugs and features arrays in unit tests."),
+        )
+        .expect("valid documented code commit should succeed");
+
+    assert_eq!(outcome.item_id.as_deref(), Some("BUG-0001"));
+    assert_eq!(outcome.scope_id.as_deref(), Some("backend_core"));
+    assert!(outcome.documentation_updated);
+    assert_eq!(
+        outcome.message,
+        "[BUG-0001](backend_core) Add serde default fallback to ScopeItems arrays\n\nVerified with empty bugs and features arrays in unit tests."
+    );
+    assert!(outcome
+        .changed_files
+        .contains(&"crates/backend_core/src/parser.rs".to_string()));
+    assert!(outcome.changed_files.contains(
+        &".tracker/phases/01_core_engine/domains/backend_core/items/BUG-0001/item.toml".to_string()
+    ));
+    assert!(outcome.changed_files.contains(
+        &".tracker/phases/01_core_engine/domains/backend_core/items/BUG-0001/desc.md".to_string()
+    ));
+
+    // Verify working tree and `.tracker/` are completely clean after atomic re-stage & amend
+    let post_commit_status = storage.git_status().unwrap();
+    assert!(!post_commit_status.tracker_dirty);
+    assert!(!post_commit_status.workspace_dirty);
+    assert_eq!(
+        post_commit_status.head_short_sha.as_deref(),
+        Some(outcome.short_sha())
+    );
+
+    // Verify `item.toml` (`history.previous_fixes`) and `desc.md` (`## Fix Log & Agent Notes`) were updated
+    let (_, updated_bug) = storage.load_item_detail_by_id("BUG-0001").unwrap();
+    assert_eq!(updated_bug.manifest.history.previous_fixes.len(), 1);
+    let fix_entry = &updated_bug.manifest.history.previous_fixes[0];
+    assert_eq!(fix_entry.commit, outcome.recorded_fix_sha);
+    assert!(fix_entry
+        .summary
+        .contains("Add serde default fallback to ScopeItems arrays"));
+    assert!(fix_entry
+        .summary
+        .contains("crates/backend_core/src/parser.rs"));
+
+    assert!(updated_bug
+        .description_markdown
+        .contains("## Fix Log & Agent Notes"));
+    assert!(updated_bug
+        .description_markdown
+        .contains(&outcome.recorded_fix_sha));
+    assert!(updated_bug
+        .description_markdown
+        .contains("Add serde default fallback to ScopeItems arrays"));
+    assert!(updated_bug
+        .description_markdown
+        .contains("crates/backend_core/src/parser.rs"));
+    assert!(updated_bug
+        .description_markdown
+        .contains("Verified with empty bugs and features arrays in unit tests."));
+
+    // Verify Git HEAD commit message in repository matches formatted message
+    let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+    assert_eq!(
+        head_commit.message().unwrap().trim(),
+        outcome.message.trim()
+    );
+
+    // 10. Non-existent path in `with_paths` must fail with ValidationError
+    let nonexistent_err = storage
+        .git_commit_documented(
+            DocumentedCommitInput::for_item("BUG-0001", "Attempt commit with nonexistent path")
+                .with_paths(["crates/backend_core/src/does_not_exist.rs"]),
+        )
+        .expect_err("must reject nonexistent explicit path");
+    assert!(matches!(
+        nonexistent_err,
+        TrackerError::ValidationError(ref msg) if msg.contains("does_not_exist.rs")
+    ));
+
+    // 11. Selective `paths` staging: modify two files (`a.rs` and `b.rs`), commit only `a.rs`
+    let file_a = code_dir.join("a.rs");
+    let file_b = code_dir.join("b.rs");
+    fs::write(&file_a, "pub fn a() {}\n").unwrap();
+    fs::write(&file_b, "pub fn b() {}\n").unwrap();
+
+    let selective_outcome = storage
+        .git_commit_documented(
+            DocumentedCommitInput::for_item("BUG-0001", "Stage only module a while leaving b dirty")
+                .with_paths(["crates/backend_core/src/a.rs"]),
+        )
+        .expect("selective path commit should succeed");
+    assert!(selective_outcome
+        .changed_files
+        .contains(&"crates/backend_core/src/a.rs".to_string()));
+    assert!(!selective_outcome
+        .changed_files
+        .contains(&"crates/backend_core/src/b.rs".to_string()));
+
+    let status_after_selective = storage.git_status().unwrap();
+    assert!(!status_after_selective.tracker_dirty);
+    assert!(status_after_selective.workspace_dirty);
+    assert_eq!(
+        status_after_selective.dirty_workspace_files,
+        vec!["crates/backend_core/src/b.rs".to_string()]
+    );
+
+    // 12. Selective deletion via `with_paths`: delete `a.rs` on disk while `b.rs` is also dirty,
+    // and stage ONLY the deletion of `a.rs` linked to BUG-0001
+    fs::remove_file(&file_a).unwrap();
+    let selective_delete_outcome = storage
+        .git_commit_documented(
+            DocumentedCommitInput::for_item("BUG-0001", "Remove obsolete module a selectively")
+                .with_paths(["crates/backend_core/src/a.rs"]),
+        )
+        .expect("selective deletion commit should succeed even when file is removed from disk");
+    assert!(selective_delete_outcome
+        .changed_files
+        .contains(&"crates/backend_core/src/a.rs".to_string()));
+    assert!(!selective_delete_outcome
+        .changed_files
+        .contains(&"crates/backend_core/src/b.rs".to_string()));
+    assert_eq!(
+        storage.git_status().unwrap().dirty_workspace_files,
+        vec!["crates/backend_core/src/b.rs".to_string()]
+    );
+
+    // 13. Custom policy: `require_item_id = false`, `require_scope = true`, `auto_append_to_desc = false`
+    let mut proj = storage.read_project().unwrap();
+    proj.git.commit_policy.require_item_id = false;
+    proj.git.commit_policy.require_scope = true;
+    proj.git.commit_policy.auto_append_to_desc = false;
+    storage.write_project(&proj).unwrap();
+
+    // Missing scope_id when require_scope = true and item_id is None must fail
+    assert!(matches!(
+        storage.git_commit_documented(DocumentedCommitInput::new(
+            "Workspace commit missing required scope_id"
+        )),
+        Err(TrackerError::ValidationError(ref msg)) if msg.contains("scope_id")
+    ));
+
+    let workspace_scoped_outcome = storage
+        .git_commit_documented(
+            DocumentedCommitInput::new("Add module b in backend_core with custom policy")
+                .with_scope("backend_core"),
+        )
+        .expect("workspace commit with explicit scope should succeed when require_item_id is false");
+    assert_eq!(
+        workspace_scoped_outcome.message,
+        "[WORKSPACE](backend_core) Add module b in backend_core with custom policy"
+    );
+    assert!(!workspace_scoped_outcome.documentation_updated);
+    assert!(workspace_scoped_outcome
+        .changed_files
+        .contains(&"crates/backend_core/src/b.rs".to_string()));
+    assert!(!storage.git_status().unwrap().workspace_dirty);
+}
+
+#[test]
+fn test_git_auth_resolution_ssh_keypair_and_pat() {
+    let (dir, storage) = init_temp_tracker();
+    let vault_dir = dir.path().join("isolated_vault");
+    std::env::set_var("NEBULOUS_CONFIG_DIR", &vault_dir);
+
+    // Generate an Ed25519 SSH keypair for a custom account and configure `ssh_key_account` in `[git.commit_policy]`
+    let manager = backend_core::KeyPairManager::vault_only(&vault_dir)
+        .expect("should init isolated KeyPairManager");
+    let generated = manager
+        .generate_ed25519_keypair("nebulous/ssh-deploy", Some("deploy@nebulous.local"))
+        .expect("should generate Ed25519 SSH keypair");
+
+    let mut project = storage.read_project().unwrap();
+    project.git.commit_policy.ssh_key_account = Some("nebulous/ssh-deploy".to_string());
+    storage.write_project(&project).unwrap();
+
+    storage
+        .store_pat("ghp_auth_resolution_pat_token_456")
+        .expect("should store PAT");
+
+    let resolved = storage
+        .resolve_git_auth_with_manager(Some(&manager), None)
+        .expect("should resolve git auth from SecureStorage & KeyPairManager");
+    assert!(resolved.has_pat());
+    assert_eq!(
+        resolved.pat.as_deref(),
+        Some("ghp_auth_resolution_pat_token_456")
+    );
+    assert!(resolved.has_ssh_credentials());
+    assert_eq!(
+        resolved
+            .ssh_keypair
+            .as_ref()
+            .map(|k| k.fingerprint_sha256.as_str()),
+        Some(generated.fingerprint_sha256.as_str())
+    );
+
+    let _callbacks = build_auth_callbacks(resolved);
+
+    // Clean up stored credentials
+    let _ = manager.delete_ssh_keypair("nebulous/ssh-deploy");
+    let _ = storage.delete_pat();
+    std::env::remove_var("NEBULOUS_CONFIG_DIR");
+}
+

@@ -3,9 +3,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use backend_core::{
-    CreateItemInput, GitRepoStatus, GitSyncMode, ItemDetail, ItemLocation, ItemManifest,
-    ItemStatus, ItemType, PhaseIndex, ProjectMetricsReport, Result, Severity, TimerStatus,
-    TrackerError, TrackerIndex, TrackerStorage,
+    global_registry_path, load_global_registry_from, register_project_in, remove_project_in,
+    set_active_project_in, ComponentDependency, ComponentManifest, CreateItemInput,
+    DocumentedCommitInput, GitRepoStatus, GitSyncMode, GlobalProjectRegistry, IngestionOptions,
+    ItemDetail, ItemLocation, ItemManifest, ItemStatus, ItemType, PhaseIndex, ProjectMetricsReport,
+    Result, Severity, SshPublicKeyInfo, TimerStatus, TrackerError, TrackerIndex, TrackerStorage,
 };
 use chrono::Utc;
 use cosmic::app::{Core, Task};
@@ -14,7 +16,8 @@ use cosmic::{executor, widget, Application, Element};
 
 use crate::subscriptions;
 use crate::views::{
-    detail_drawer, header_bar, kanban_board, metrics_view, nav_sidebar, settings_view,
+    detail_drawer, header_bar, kanban_board, metrics_view, nav_sidebar, phases_scopes_view,
+    settings_view,
 };
 
 /// Startup flags passed into [`NebulousApp::init`].
@@ -133,7 +136,7 @@ impl Default for QuickAddState {
     }
 }
 
-/// Form state for the Phases & Scopes Manager and Project/Git/Keyring Settings view.
+/// Form state for the Phases & Scopes Manager and Project/Git/Keyring Settings views.
 #[derive(Debug, Clone)]
 pub struct SettingsFormState {
     pub new_phase_id: String,
@@ -152,12 +155,54 @@ pub struct SettingsFormState {
     pub git_branch_input: String,
     pub pat_input: String,
     pub has_stored_pat: bool,
+
+    // Multi-Project Registry form fields
+    pub new_project_path_input: String,
+    pub new_project_name_input: String,
+    pub new_project_ingest_on_add: bool,
+
+    // Directory Ingestion & Component Pinning form fields
+    pub ingest_subpath_input: String,
+    pub ingest_write_manifests: bool,
+    pub ingest_promote_all: bool,
+    pub selected_component_id: String,
+    pub component_tags_input: String,
+    pub component_flags_input: String,
+    pub component_build_script_input: String,
+    pub dep_name_input: String,
+    pub dep_kind_input: String,
+    pub dep_constraint_input: String,
+    pub dep_version_input: String,
+    pub dep_source_input: String,
+
+    // Documented Git Commit Builder & Commit Policy form fields
+    pub commit_item_id_input: String,
+    pub commit_scope_id_input: String,
+    pub commit_summary_input: String,
+    pub commit_body_input: String,
+    pub commit_tracker_only: bool,
+    pub commit_policy_require_item_id: bool,
+    pub commit_policy_require_scope: bool,
+    pub commit_policy_require_summary: bool,
+    pub commit_policy_min_summary_len_input: String,
+    pub commit_policy_auto_append_to_desc: bool,
+
+    // Cross-Platform SecureStorage SSH Ed25519 Credentials form fields
+    pub ssh_comment_input: String,
+    pub ssh_private_key_import_input: String,
+    pub ssh_passphrase_input: String,
+    pub has_stored_ssh_key: bool,
+    pub stored_ssh_public_key: Option<SshPublicKeyInfo>,
 }
 
 impl SettingsFormState {
     pub fn from_index_and_storage(index: &TrackerIndex, storage: &TrackerStorage) -> Self {
         let project = &index.project;
         let has_stored_pat = storage.get_pat().is_ok();
+        let stored_ssh_public_key = storage.get_ssh_public_key_info().ok();
+        let has_stored_ssh_key = stored_ssh_public_key.is_some();
+        let first_comp = project.components.registry.first();
+
         Self {
             new_phase_id: String::new(),
             new_phase_title: String::new(),
@@ -175,6 +220,43 @@ impl SettingsFormState {
             git_branch_input: project.git.branch.clone(),
             pat_input: String::new(),
             has_stored_pat,
+            new_project_path_input: String::new(),
+            new_project_name_input: String::new(),
+            new_project_ingest_on_add: true,
+            ingest_subpath_input: String::new(),
+            ingest_write_manifests: false,
+            ingest_promote_all: false,
+            selected_component_id: first_comp.map(|c| c.id.clone()).unwrap_or_default(),
+            component_tags_input: first_comp.map(|c| c.tags.join(", ")).unwrap_or_default(),
+            component_flags_input: first_comp.map(|c| c.flags.join(", ")).unwrap_or_default(),
+            component_build_script_input: first_comp
+                .and_then(|c| c.pinned_release.as_ref())
+                .and_then(|p| p.build_script_path.clone())
+                .unwrap_or_default(),
+            dep_name_input: String::new(),
+            dep_kind_input: "apt_sid".to_string(),
+            dep_constraint_input: String::new(),
+            dep_version_input: String::new(),
+            dep_source_input: String::new(),
+            commit_item_id_input: String::new(),
+            commit_scope_id_input: String::new(),
+            commit_summary_input: String::new(),
+            commit_body_input: String::new(),
+            commit_tracker_only: false,
+            commit_policy_require_item_id: project.git.commit_policy.require_item_id,
+            commit_policy_require_scope: project.git.commit_policy.require_scope,
+            commit_policy_require_summary: project.git.commit_policy.require_summary,
+            commit_policy_min_summary_len_input: project
+                .git
+                .commit_policy
+                .min_summary_length
+                .to_string(),
+            commit_policy_auto_append_to_desc: project.git.commit_policy.auto_append_to_desc,
+            ssh_comment_input: String::new(),
+            ssh_private_key_import_input: String::new(),
+            ssh_passphrase_input: String::new(),
+            has_stored_ssh_key,
+            stored_ssh_public_key,
         }
     }
 
@@ -189,12 +271,52 @@ impl SettingsFormState {
         self.git_remote_input = project.git.remote.clone();
         self.git_branch_input = project.git.branch.clone();
         self.has_stored_pat = storage.get_pat().is_ok();
+        self.commit_policy_require_item_id = project.git.commit_policy.require_item_id;
+        self.commit_policy_require_scope = project.git.commit_policy.require_scope;
+        self.commit_policy_require_summary = project.git.commit_policy.require_summary;
+        self.commit_policy_min_summary_len_input = project
+            .git
+            .commit_policy
+            .min_summary_length
+            .to_string();
+        self.commit_policy_auto_append_to_desc = project.git.commit_policy.auto_append_to_desc;
+        self.stored_ssh_public_key = storage.get_ssh_public_key_info().ok();
+        self.has_stored_ssh_key = self.stored_ssh_public_key.is_some();
+
+        let matched_comp = if self.selected_component_id.trim().is_empty() {
+            project.components.registry.first()
+        } else {
+            project
+                .components
+                .find(&self.selected_component_id)
+                .or_else(|| project.components.registry.first())
+        };
+        if let Some(comp) = matched_comp {
+            self.selected_component_id = comp.id.clone();
+            self.component_tags_input = comp.tags.join(", ");
+            self.component_flags_input = comp.flags.join(", ");
+            self.component_build_script_input = comp
+                .pinned_release
+                .as_ref()
+                .and_then(|p| p.build_script_path.clone())
+                .unwrap_or_default();
+        }
     }
 }
 
 /// Application messages dispatched by the native `libcosmic` GUI.
 #[derive(Debug, Clone)]
 pub enum Message {
+    // Top Header Bar & Multi-Project Switcher messages
+    SelectProjectIndex(usize),
+    SwitchProject(String),
+    OpenAddProject,
+    NewProjectPathChanged(String),
+    NewProjectNameChanged(String),
+    ToggleNewProjectIngest(bool),
+    AddProjectToRegistry,
+    RemoveProjectFromRegistry(String),
+
     SelectPhaseIndex(usize),
     SelectPhase(String),
     SelectScope(Option<String>),
@@ -247,7 +369,30 @@ pub enum Message {
     CopyAgentFileRefs,
     CopyBoundedAgentPrompt,
 
-    // Settings & Phase/Scope Manager messages
+    // Directory Ingestion & Component Pinning messages (`Phases & Scopes` view)
+    IngestSubpathChanged(String),
+    ToggleIngestWriteManifests(bool),
+    ToggleIngestPromoteAll(bool),
+    IngestProjectDirectory,
+    SelectComponentForPin(String),
+    WriteComponentManifest(String),
+    PromoteComponentToScope(String),
+    ComponentTagsInputChanged(String),
+    ComponentFlagsInputChanged(String),
+    ComponentBuildScriptInputChanged(String),
+    SaveComponentMetadata,
+    ComponentDepNameChanged(String),
+    ComponentDepKindChanged(String),
+    ComponentDepConstraintChanged(String),
+    ComponentDepVersionChanged(String),
+    ComponentDepSourceChanged(String),
+    UpsertComponentDependency,
+    PinComponentRelease(String),
+    PinSelectedComponentRelease,
+    RollbackComponentRelease(String),
+    RollbackSelectedComponentRelease,
+
+    // Phase & Scope Manager messages
     NewPhaseIdChanged(String),
     NewPhaseTitleChanged(String),
     ToggleNewPhaseSetActive(bool),
@@ -257,6 +402,21 @@ pub enum Message {
     NewScopeTechStackChanged(String),
     NewScopeDescriptionChanged(String),
     CreateScope,
+
+    // Git Operations, Documented Commit Builder, Commit Policy & SecureStorage messages (`Git & Settings` view)
+    GitFetch,
+    GitPull,
+    GitPush,
+    CommitItemIdChanged(String),
+    CommitScopeIdChanged(String),
+    CommitSummaryChanged(String),
+    CommitBodyChanged(String),
+    SetCommitTrackerOnly(bool),
+    SubmitDocumentedCommit,
+    ToggleCommitPolicyRequireItemId(bool),
+    ToggleCommitPolicyRequireScope(bool),
+    ToggleCommitPolicyAutoAppendDesc(bool),
+    CommitPolicyMinSummaryLengthChanged(String),
     TargetDailyHoursChanged(String),
     StagnantThresholdDaysChanged(String),
     DefaultScopeChanged(String),
@@ -269,6 +429,13 @@ pub enum Message {
     PatInputChanged(String),
     SavePatToKeyring,
     DeletePatFromKeyring,
+    SshKeyCommentChanged(String),
+    SshKeyImportInputChanged(String),
+    SshKeyPassphraseChanged(String),
+    GenerateSshKeypair,
+    ImportSshKeypair,
+    CopySshPublicKey,
+    DeleteSshKeypair,
 
     // Reactive background subscription messages
     TrackerFilesChanged(Vec<PathBuf>),
@@ -279,6 +446,14 @@ pub enum Message {
 pub struct NebulousApp {
     pub core: Core,
     pub storage: TrackerStorage,
+    /// Path to `projects.toml` used by this application instance.
+    pub registry_path: PathBuf,
+    /// Loaded multi-project registry (`projects.toml`).
+    pub project_registry: GlobalProjectRegistry,
+    /// Ordered project IDs for the top-bar Project Switcher dropdown.
+    pub project_ids: Vec<String>,
+    /// Formatted project labels (`◆ Nebulous`) for the top-bar Project Switcher dropdown.
+    pub project_labels: Vec<String>,
     /// Top-level `.tracker/` index (`project.toml`, `phase.toml`, `scope.toml`) loaded at startup.
     pub index: TrackerIndex,
     /// Currently selected phase ID (`project.active_phase`).
@@ -345,19 +520,64 @@ impl NebulousApp {
                 source,
             })?,
         };
+        let fallback_name = base_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("Nebulous");
+        Self::resolve_or_init_storage_named(&base_dir, Some(fallback_name))
+    }
 
-        match TrackerStorage::discover(&base_dir) {
+    /// Resolves `TrackerStorage` at `base_dir` or initializes `.tracker/` with `project_name_hint` if missing.
+    pub fn resolve_or_init_storage_named(
+        base_dir: &Path,
+        project_name_hint: Option<&str>,
+    ) -> Result<TrackerStorage> {
+        match TrackerStorage::discover(base_dir) {
             Ok(storage) => Ok(storage),
             Err(TrackerError::TrackerRootNotFound(_)) => {
-                TrackerStorage::init(&base_dir, "Nebulous", "01_core_engine", "Core Engine")
+                Self::open_or_init_project_root(base_dir, project_name_hint)
             }
             Err(err) => Err(err),
         }
     }
 
+    /// Opens `.tracker/` directly inside `base_dir` (or if `base_dir` is `.tracker/`), initializing it if missing
+    /// without walking up into parent directories.
+    pub fn open_or_init_project_root(
+        base_dir: &Path,
+        project_name_hint: Option<&str>,
+    ) -> Result<TrackerStorage> {
+        let storage = TrackerStorage::new(base_dir);
+        if storage.project_toml_path().is_file() {
+            return Ok(storage);
+        }
+        let name = project_name_hint
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                base_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or("Nebulous");
+        TrackerStorage::init(base_dir, name, "01_core_engine", "Core Engine")
+    }
+
     /// Bootstraps `NebulousApp` reading ONLY top-level `.tracker/` indexes (`project.toml`,
     /// `phase.toml`, `scope.toml`) without eagerly loading any `item.toml` + `desc.md` detail pairs.
     pub fn new_from_storage(core: Core, storage: TrackerStorage) -> Result<Self> {
+        let registry_path = resolve_app_registry_path(&storage);
+        Self::new_from_storage_with_registry(core, storage, registry_path)
+    }
+
+    /// Bootstraps `NebulousApp` with an explicit `projects.toml` registry file path.
+    pub fn new_from_storage_with_registry(
+        core: Core,
+        storage: TrackerStorage,
+        registry_path: PathBuf,
+    ) -> Result<Self> {
         // Startup strictly reads top-level indexes via `load_index()`.
         let index = storage.load_index()?;
         let active_phase_id = index.project.project.active_phase.clone();
@@ -366,9 +586,24 @@ impl NebulousApp {
         let git_status = storage.git_status().ok();
         let settings_form = SettingsFormState::from_index_and_storage(&index, &storage);
 
+        let _ = register_project_in(
+            &registry_path,
+            storage.project_root(),
+            Some(&index.project.project.name),
+            Vec::new(),
+            true,
+        );
+        let project_registry = load_global_registry_from(&registry_path).unwrap_or_default();
+        let (project_ids, project_labels) =
+            build_project_dropdown_lists(&project_registry, &index.project.project.name);
+
         Ok(Self {
             core,
             storage,
+            registry_path,
+            project_registry,
+            project_ids,
+            project_labels,
             index,
             active_phase_id,
             phase_ids,
@@ -401,6 +636,95 @@ impl NebulousApp {
     /// Returns the project name from `project.toml`.
     pub fn project_name(&self) -> &str {
         &self.index.project.project.name
+    }
+
+    /// Returns the selected index in `project_labels` for the top-bar Project Switcher dropdown.
+    pub fn selected_project_dropdown_index(&self) -> Option<usize> {
+        if let Some(ref active_id) = self.project_registry.active_project_id {
+            if let Some(idx) = self.project_ids.iter().position(|id| id == active_id) {
+                return Some(idx);
+            }
+        }
+        let current_root = self.storage.project_root().to_string_lossy().replace('\\', "/");
+        if let Some(proj) = self
+            .project_registry
+            .projects
+            .iter()
+            .find(|p| p.root_path == current_root)
+        {
+            if let Some(idx) = self.project_ids.iter().position(|id| id == &proj.id) {
+                return Some(idx);
+            }
+        }
+        (!self.project_labels.is_empty()).then_some(0)
+    }
+
+    /// Returns the currently selected [`ComponentManifest`] for the Pin Builder in `Phases & Scopes`.
+    pub fn selected_component_manifest(&self) -> Option<&ComponentManifest> {
+        let sel = self.settings_form.selected_component_id.trim();
+        if !sel.is_empty() {
+            if let Some(comp) = self.index.project.components.find(sel) {
+                return Some(comp);
+            }
+        }
+        self.index.project.components.registry.first()
+    }
+
+    fn effective_selected_component_id(&self) -> Option<String> {
+        let sel = self.settings_form.selected_component_id.trim();
+        if !sel.is_empty() {
+            return Some(sel.to_string());
+        }
+        self.index
+            .project
+            .components
+            .registry
+            .first()
+            .map(|c| c.id.clone())
+    }
+
+    fn refresh_project_registry(&mut self) {
+        let mut current = load_global_registry_from(&self.registry_path).unwrap_or_default();
+        let root_str = self
+            .storage
+            .project_root()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if current.find_project(&root_str).is_some() {
+            let _ = register_project_in(
+                &self.registry_path,
+                self.storage.project_root(),
+                Some(&self.index.project.project.name),
+                Vec::new(),
+                true,
+            );
+            current = load_global_registry_from(&self.registry_path).unwrap_or_default();
+        }
+        self.project_registry = current;
+        let (ids, labels) =
+            build_project_dropdown_lists(&self.project_registry, &self.index.project.project.name);
+        self.project_ids = ids;
+        self.project_labels = labels;
+    }
+
+    /// Returns the canonical section titles rendered by the currently active `view_mode`.
+    pub fn active_view_section_titles(&self) -> &'static [&'static str] {
+        match self.view_mode {
+            ViewMode::Board => &[
+                "OPEN",
+                "IN PROGRESS",
+                "PENDING",
+                "CLOSED / MERGED",
+            ],
+            ViewMode::Metrics => &[
+                "TOTAL LOGGED EFFORT",
+                "PROJECT COMPLETION",
+                "STAGNANT ITEMS",
+                "RECURRING HOTSPOTS",
+            ],
+            ViewMode::PhasesAndScopes => &phases_scopes_view::PHASES_SCOPES_SECTION_TITLES,
+            ViewMode::Settings => &settings_view::SETTINGS_SECTION_TITLES,
+        }
     }
 
     /// Returns the configured default scope from `project.toml`.
@@ -656,6 +980,9 @@ impl NebulousApp {
         self.active_timer = self.storage.timer_status().ok().flatten();
         self.git_status = self.storage.git_status().ok();
         self.settings_form.has_stored_pat = self.storage.get_pat().is_ok();
+        self.settings_form.stored_ssh_public_key = self.storage.get_ssh_public_key_info().ok();
+        self.settings_form.has_stored_ssh_key = self.settings_form.stored_ssh_public_key.is_some();
+        self.refresh_project_registry();
 
         if let Some(selected_id) = self.selected_item_id.clone() {
             let prev_disk_title = self
@@ -738,6 +1065,33 @@ impl NebulousApp {
         self.status_banner = Some(toast_msg);
         cosmic::iced::clipboard::write(payload)
     }
+
+    fn switch_to_storage(&mut self, new_storage: TrackerStorage) -> Result<()> {
+        let index = new_storage.load_index()?;
+        let active_phase_id = index.project.project.active_phase.clone();
+        let (phase_ids, phase_labels) = build_phase_dropdown_lists(&index);
+        let active_timer = new_storage.timer_status().ok().flatten();
+        let git_status = new_storage.git_status().ok();
+
+        self.storage = new_storage;
+        self.index = index;
+        self.active_phase_id = active_phase_id;
+        self.phase_ids = phase_ids;
+        self.phase_labels = phase_labels;
+        self.selected_scope = None;
+        self.active_filter = FilterPill::All;
+        self.selected_item_id = None;
+        self.selected_item_location = None;
+        self.selected_item_detail = None;
+        self.desc_editor_dirty = false;
+        self.card_signals.clear();
+        self.active_timer = active_timer;
+        self.git_status = git_status;
+        self.settings_form
+            .sync_from_index(&self.index, &self.storage);
+        self.refresh_project_registry();
+        Ok(())
+    }
 }
 
 impl Application for NebulousApp {
@@ -763,6 +1117,7 @@ impl Application for NebulousApp {
 
         let app = Self::new_from_storage(core, storage).unwrap_or_else(|err| {
             let fallback_storage = TrackerStorage::new(".");
+            let registry_path = resolve_app_registry_path(&fallback_storage);
             let empty_project = backend_core::ProjectManifest {
                 project: backend_core::ProjectMetadata {
                     name: "Nebulous".to_string(),
@@ -775,6 +1130,7 @@ impl Application for NebulousApp {
                 phases: Default::default(),
                 metrics: Default::default(),
                 git: Default::default(),
+                components: Default::default(),
             };
             let empty_index = TrackerIndex {
                 project: empty_project,
@@ -782,9 +1138,16 @@ impl Application for NebulousApp {
             };
             let settings_form =
                 SettingsFormState::from_index_and_storage(&empty_index, &fallback_storage);
+            let project_registry = GlobalProjectRegistry::default();
+            let (project_ids, project_labels) =
+                build_project_dropdown_lists(&project_registry, "Nebulous");
             Self {
                 core: Core::default(),
                 storage: fallback_storage,
+                registry_path,
+                project_registry,
+                project_ids,
+                project_labels,
                 index: empty_index,
                 active_phase_id: "01_core_engine".to_string(),
                 phase_ids: Vec::new(),
@@ -823,6 +1186,184 @@ impl Application for NebulousApp {
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
+            Message::SelectProjectIndex(idx) => {
+                if let Some(proj_id) = self.project_ids.get(idx).cloned() {
+                    return self.update(Message::SwitchProject(proj_id));
+                }
+            }
+            Message::SwitchProject(id_or_name) => {
+                match set_active_project_in(&self.registry_path, &id_or_name) {
+                    Ok(registered) => {
+                        let root_path = PathBuf::from(&registered.root_path);
+                        match Self::open_or_init_project_root(
+                            &root_path,
+                            Some(&registered.name),
+                        ) {
+                            Ok(new_storage) => {
+                                if let Err(err) = self.switch_to_storage(new_storage) {
+                                    self.status_banner = Some(format!(
+                                        "Failed to load switched project '{}': {err}",
+                                        registered.name
+                                    ));
+                                } else {
+                                    self.status_banner = Some(format!(
+                                        "Switched active project to '{}' ({})",
+                                        registered.name, registered.root_path
+                                    ));
+                                }
+                            }
+                            Err(err) => {
+                                self.status_banner = Some(format!(
+                                    "Could not open project '{}': {err}",
+                                    registered.name
+                                ));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        self.status_banner =
+                            Some(format!("Could not switch project '{id_or_name}': {err}"));
+                    }
+                }
+            }
+            Message::OpenAddProject => {
+                self.view_mode = ViewMode::Settings;
+            }
+            Message::NewProjectPathChanged(val) => {
+                self.settings_form.new_project_path_input = val;
+            }
+            Message::NewProjectNameChanged(val) => {
+                self.settings_form.new_project_name_input = val;
+            }
+            Message::ToggleNewProjectIngest(ingest) => {
+                self.settings_form.new_project_ingest_on_add = ingest;
+            }
+            Message::AddProjectToRegistry => {
+                let raw_path = self.settings_form.new_project_path_input.trim().to_string();
+                if raw_path.is_empty() {
+                    self.status_banner =
+                        Some("Project directory path cannot be empty.".to_string());
+                    return Task::none();
+                }
+                let target_dir = expand_tilde_path(&raw_path);
+                if !target_dir.exists() {
+                    self.status_banner = Some(format!(
+                        "Project directory '{}' does not exist.",
+                        target_dir.display()
+                    ));
+                    return Task::none();
+                }
+                let name_override = {
+                    let trimmed = self.settings_form.new_project_name_input.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                };
+                match Self::open_or_init_project_root(&target_dir, name_override.as_deref()) {
+                    Ok(new_storage) => {
+                        if let Some(ref explicit_name) = name_override {
+                            if let Ok(mut proj_manifest) = new_storage.read_project() {
+                                if proj_manifest.project.name != *explicit_name {
+                                    proj_manifest.project.name = explicit_name.clone();
+                                    let _ = new_storage.write_project(&proj_manifest);
+                                }
+                            }
+                        }
+                        if self.settings_form.new_project_ingest_on_add {
+                            let _ = new_storage.ingest_project_directory(
+                                IngestionOptions::new()
+                                    .with_write_manifests(false)
+                                    .with_promote_all(true),
+                            );
+                        }
+                        match register_project_in(
+                            &self.registry_path,
+                            new_storage.project_root(),
+                            name_override.as_deref(),
+                            Vec::new(),
+                            true,
+                        ) {
+                            Ok(registered) => {
+                                self.settings_form.new_project_path_input.clear();
+                                self.settings_form.new_project_name_input.clear();
+                                if let Err(err) = self.switch_to_storage(new_storage) {
+                                    self.status_banner = Some(format!(
+                                        "Registered '{}' but failed to switch: {err}",
+                                        registered.name
+                                    ));
+                                } else {
+                                    self.status_banner = Some(format!(
+                                        "Added and switched to project '{}' ({})",
+                                        registered.name, registered.root_path
+                                    ));
+                                }
+                            }
+                            Err(err) => {
+                                self.status_banner =
+                                    Some(format!("Failed to register project: {err}"));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        self.status_banner = Some(format!(
+                            "Failed to initialize project at '{}': {err}",
+                            target_dir.display()
+                        ));
+                    }
+                }
+            }
+            Message::RemoveProjectFromRegistry(id_or_name) => {
+                let was_active_id = self.project_registry.active_project_id.clone();
+                let current_root_str = self
+                    .storage
+                    .project_root()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                match remove_project_in(&self.registry_path, &id_or_name) {
+                    Ok(removed) => {
+                        self.project_registry =
+                            load_global_registry_from(&self.registry_path).unwrap_or_default();
+                        let removed_was_active =
+                            was_active_id.as_deref() == Some(removed.id.as_str())
+                                || removed.root_path == current_root_str;
+                        if removed_was_active {
+                            if let Some(next_proj) =
+                                self.project_registry.active_project().cloned()
+                            {
+                                let next_root = PathBuf::from(&next_proj.root_path);
+                                if let Ok(next_storage) = Self::open_or_init_project_root(
+                                    &next_root,
+                                    Some(&next_proj.name),
+                                ) {
+                                    let _ = self.switch_to_storage(next_storage);
+                                    self.status_banner = Some(format!(
+                                        "Removed project '{}' ({}) and switched to '{}'",
+                                        removed.name, removed.id, next_proj.name
+                                    ));
+                                    return Task::none();
+                                }
+                            }
+                        }
+                        let (ids, labels) = build_project_dropdown_lists(
+                            &self.project_registry,
+                            &self.index.project.project.name,
+                        );
+                        self.project_ids = ids;
+                        self.project_labels = labels;
+                        self.status_banner = Some(format!(
+                            "Removed project '{}' ({}) from registry",
+                            removed.name, removed.id
+                        ));
+                    }
+                    Err(err) => {
+                        self.status_banner =
+                            Some(format!("Could not remove project '{id_or_name}': {err}"));
+                    }
+                }
+            }
+
             Message::SelectPhaseIndex(idx) => {
                 if let Some(phase_id) = self.phase_ids.get(idx).cloned() {
                     return self.update(Message::SelectPhase(phase_id));
@@ -1323,7 +1864,315 @@ impl Application for NebulousApp {
                 }
             }
 
-            // Settings & Phase/Scope Manager updates
+            // Directory Ingestion & Component Pinning handlers (`Phases & Scopes` view)
+            Message::IngestSubpathChanged(val) => {
+                self.settings_form.ingest_subpath_input = val;
+            }
+            Message::ToggleIngestWriteManifests(write) => {
+                self.settings_form.ingest_write_manifests = write;
+            }
+            Message::ToggleIngestPromoteAll(promote) => {
+                self.settings_form.ingest_promote_all = promote;
+            }
+            Message::IngestProjectDirectory => {
+                let mut opts = IngestionOptions::new()
+                    .with_write_manifests(self.settings_form.ingest_write_manifests)
+                    .with_promote_all(self.settings_form.ingest_promote_all)
+                    .with_promote_phase(self.active_phase_id.clone());
+                if !self.settings_form.ingest_subpath_input.trim().is_empty() {
+                    opts = opts.with_subpath(self.settings_form.ingest_subpath_input.trim());
+                }
+                match self.storage.ingest_project_directory(opts) {
+                    Ok(report) => {
+                        let _ = self.reload_indexes();
+                        self.settings_form
+                            .sync_from_index(&self.index, &self.storage);
+                        self.status_banner = Some(format!(
+                            "Ingested {} components ({} files indexed, {} manifests written, {} scopes promoted)",
+                            report.components.len(),
+                            report.total_files_indexed,
+                            report.manifests_written.len(),
+                            report.promoted_scopes.len()
+                        ));
+                    }
+                    Err(err) => {
+                        self.status_banner = Some(format!("Directory ingestion failed: {err}"));
+                    }
+                }
+            }
+            Message::SelectComponentForPin(comp_id) => {
+                self.settings_form.selected_component_id = comp_id.clone();
+                if let Some(comp) = self.index.project.components.find(&comp_id) {
+                    self.settings_form.component_tags_input = comp.tags.join(", ");
+                    self.settings_form.component_flags_input = comp.flags.join(", ");
+                    self.settings_form.component_build_script_input = comp
+                        .pinned_release
+                        .as_ref()
+                        .and_then(|p| p.build_script_path.clone())
+                        .unwrap_or_default();
+                }
+            }
+            Message::WriteComponentManifest(comp_id) => {
+                match self.storage.read_component_manifest(&comp_id) {
+                    Ok(manifest) => match self.storage.write_component_manifest(&manifest) {
+                        Ok(path) => {
+                            let _ = self.reload_indexes();
+                            self.settings_form
+                                .sync_from_index(&self.index, &self.storage);
+                            self.status_banner = Some(format!(
+                                "Wrote component manifest to {}",
+                                path.display()
+                            ));
+                        }
+                        Err(err) => {
+                            self.status_banner =
+                                Some(format!("Failed to write nebulous.component.toml: {err}"));
+                        }
+                    },
+                    Err(err) => {
+                        self.status_banner =
+                            Some(format!("Component '{comp_id}' not found: {err}"));
+                    }
+                }
+            }
+            Message::PromoteComponentToScope(comp_id) => {
+                let phase_id = self.active_phase_id.clone();
+                match self.storage.promote_component_to_scope(
+                    Some(&phase_id),
+                    &comp_id,
+                    None,
+                    None,
+                ) {
+                    Ok(scope) => {
+                        let _ = self.reload_indexes();
+                        self.status_banner = Some(format!(
+                            "Promoted component '{}' to scope '{}' in phase '{}' ({} tracked files)",
+                            comp_id,
+                            scope.scope.id,
+                            phase_id,
+                            scope.scope.tracked_files.len()
+                        ));
+                    }
+                    Err(err) => {
+                        self.status_banner =
+                            Some(format!("Failed to promote '{comp_id}' to scope: {err}"));
+                    }
+                }
+            }
+            Message::ComponentTagsInputChanged(val) => {
+                self.settings_form.component_tags_input = val;
+            }
+            Message::ComponentFlagsInputChanged(val) => {
+                self.settings_form.component_flags_input = val;
+            }
+            Message::ComponentBuildScriptInputChanged(val) => {
+                self.settings_form.component_build_script_input = val;
+            }
+            Message::SaveComponentMetadata => {
+                let Some(comp_id) = self.effective_selected_component_id() else {
+                    self.status_banner =
+                        Some("Select or enter a component ID first.".to_string());
+                    return Task::none();
+                };
+                match self.storage.read_component_manifest(&comp_id) {
+                    Ok(mut manifest) => {
+                        manifest.tags = parse_comma_list(&self.settings_form.component_tags_input);
+                        manifest.flags =
+                            parse_comma_list(&self.settings_form.component_flags_input);
+                        if let Some(ref mut pin) = manifest.pinned_release {
+                            let script = self.settings_form.component_build_script_input.trim();
+                            pin.build_script_path = if script.is_empty() {
+                                None
+                            } else {
+                                Some(script.to_string())
+                            };
+                        }
+                        match self.storage.write_component_manifest(&manifest) {
+                            Ok(path) => {
+                                let _ = self.reload_indexes();
+                                self.settings_form
+                                    .sync_from_index(&self.index, &self.storage);
+                                self.status_banner = Some(format!(
+                                    "Saved component '{}' metadata to {}",
+                                    manifest.id,
+                                    path.display()
+                                ));
+                            }
+                            Err(err) => {
+                                self.status_banner =
+                                    Some(format!("Failed to save component metadata: {err}"));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        self.status_banner =
+                            Some(format!("Could not read component '{comp_id}': {err}"));
+                    }
+                }
+            }
+            Message::ComponentDepNameChanged(val) => {
+                self.settings_form.dep_name_input = val;
+            }
+            Message::ComponentDepKindChanged(val) => {
+                self.settings_form.dep_kind_input = val;
+            }
+            Message::ComponentDepConstraintChanged(val) => {
+                self.settings_form.dep_constraint_input = val;
+            }
+            Message::ComponentDepVersionChanged(val) => {
+                self.settings_form.dep_version_input = val;
+            }
+            Message::ComponentDepSourceChanged(val) => {
+                self.settings_form.dep_source_input = val;
+            }
+            Message::UpsertComponentDependency => {
+                let Some(comp_id) = self.effective_selected_component_id() else {
+                    self.status_banner =
+                        Some("Select or enter a component ID first.".to_string());
+                    return Task::none();
+                };
+                let dep_name = self.settings_form.dep_name_input.trim().to_string();
+                if dep_name.is_empty() {
+                    self.status_banner =
+                        Some("Dependency package name must not be empty.".to_string());
+                    return Task::none();
+                }
+                let kind = {
+                    let trimmed = self.settings_form.dep_kind_input.trim();
+                    if trimmed.is_empty() {
+                        "apt_sid".to_string()
+                    } else {
+                        trimmed.to_string()
+                    }
+                };
+                let constraint = self.settings_form.dep_constraint_input.trim().to_string();
+                let current_version = self.settings_form.dep_version_input.trim().to_string();
+                let upstream_source = self.settings_form.dep_source_input.trim().to_string();
+
+                match self.storage.read_component_manifest(&comp_id) {
+                    Ok(mut manifest) => {
+                        if let Some(existing) = manifest
+                            .dependencies
+                            .iter_mut()
+                            .find(|d| d.name == dep_name)
+                        {
+                            existing.kind = kind.clone();
+                            existing.version_constraint = constraint;
+                            existing.current_version = current_version.clone();
+                            existing.upstream_source = upstream_source;
+                        } else {
+                            manifest.dependencies.push(ComponentDependency::new(
+                                dep_name.clone(),
+                                kind.clone(),
+                                constraint,
+                                current_version.clone(),
+                                upstream_source,
+                            ));
+                        }
+                        match self.storage.write_component_manifest(&manifest) {
+                            Ok(_) => {
+                                self.settings_form.dep_name_input.clear();
+                                self.settings_form.dep_constraint_input.clear();
+                                self.settings_form.dep_version_input.clear();
+                                self.settings_form.dep_source_input.clear();
+                                let _ = self.reload_indexes();
+                                self.settings_form
+                                    .sync_from_index(&self.index, &self.storage);
+                                self.status_banner = Some(format!(
+                                    "Upserted dependency '{dep_name}' ({current_version}) on component '{comp_id}'"
+                                ));
+                            }
+                            Err(err) => {
+                                self.status_banner =
+                                    Some(format!("Failed to save dependency: {err}"));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        self.status_banner =
+                            Some(format!("Could not read component '{comp_id}': {err}"));
+                    }
+                }
+            }
+            Message::PinSelectedComponentRelease => {
+                if let Some(comp_id) = self.effective_selected_component_id() {
+                    return self.update(Message::PinComponentRelease(comp_id));
+                }
+                self.status_banner =
+                    Some("Select or enter a component ID to pin its release.".to_string());
+            }
+            Message::PinComponentRelease(comp_id) => {
+                let flags = parse_comma_list(&self.settings_form.component_flags_input);
+                let build_script = {
+                    let trimmed = self.settings_form.component_build_script_input.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                };
+                if self.effective_selected_component_id().as_deref() == Some(comp_id.as_str()) {
+                    if let Ok(mut manifest) = self.storage.read_component_manifest(&comp_id) {
+                        manifest.tags = parse_comma_list(&self.settings_form.component_tags_input);
+                        manifest.flags = flags.clone();
+                        let _ = self.storage.write_component_manifest(&manifest);
+                    }
+                }
+                match self
+                    .storage
+                    .pin_component_release(&comp_id, None, build_script, flags, None)
+                {
+                    Ok(pinned_manifest) => {
+                        let pin_sha = pinned_manifest
+                            .pinned_release
+                            .as_ref()
+                            .map(|p| p.commit_sha.clone())
+                            .unwrap_or_else(|| "uncommitted".to_string());
+                        let _ = self.reload_indexes();
+                        self.settings_form
+                            .sync_from_index(&self.index, &self.storage);
+                        self.status_banner = Some(format!(
+                            "Pinned known-good release for '{}' at commit {}",
+                            pinned_manifest.id, pin_sha
+                        ));
+                    }
+                    Err(err) => {
+                        self.status_banner =
+                            Some(format!("Failed to pin component '{comp_id}': {err}"));
+                    }
+                }
+            }
+            Message::RollbackSelectedComponentRelease => {
+                if let Some(comp_id) = self.effective_selected_component_id() {
+                    return self.update(Message::RollbackComponentRelease(comp_id));
+                }
+                self.status_banner =
+                    Some("Select or enter a component ID to roll back.".to_string());
+            }
+            Message::RollbackComponentRelease(comp_id) => {
+                match self.storage.rollback_component_to_pinned(&comp_id) {
+                    Ok(restored) => {
+                        let pin_sha = restored
+                            .pinned_release
+                            .as_ref()
+                            .map(|p| p.commit_sha.clone())
+                            .unwrap_or_else(|| "uncommitted".to_string());
+                        let _ = self.reload_indexes();
+                        self.settings_form
+                            .sync_from_index(&self.index, &self.storage);
+                        self.status_banner = Some(format!(
+                            "Rolled back component '{}' to pinned release ({})",
+                            restored.id, pin_sha
+                        ));
+                    }
+                    Err(err) => {
+                        self.status_banner =
+                            Some(format!("Cannot roll back component '{comp_id}': {err}"));
+                    }
+                }
+            }
+
+            // Phase & Scope Manager updates
             Message::NewPhaseIdChanged(val) => {
                 self.settings_form.new_phase_id = val;
             }
@@ -1406,6 +2255,126 @@ impl Application for NebulousApp {
                         self.status_banner = Some(format!("Failed to create scope: {err}"));
                     }
                 }
+            }
+
+            // Git Operations, Documented Commit Builder, Commit Policy & SecureStorage handlers
+            Message::GitFetch => match self.storage.git_fetch(None) {
+                Ok(status) => {
+                    let ahead = status.ahead_count;
+                    let behind = status.behind_count;
+                    self.git_status = Some(status);
+                    let _ = self.reload_indexes();
+                    self.status_banner =
+                        Some(format!("Fetched remote tracking branch (↑{ahead} ↓{behind})"));
+                }
+                Err(err) => {
+                    self.status_banner = Some(format!("Git fetch note: {err}"));
+                }
+            },
+            Message::GitPull => match self.storage.git_pull(None) {
+                Ok(updated) => {
+                    let _ = self.reload_indexes();
+                    if updated {
+                        self.status_banner = Some(
+                            "Pulled remote changes and reconciled .tracker/ indexes.".to_string(),
+                        );
+                    } else {
+                        self.status_banner =
+                            Some("Git pull complete (already up to date).".to_string());
+                    }
+                }
+                Err(err) => {
+                    self.status_banner = Some(format!("Git pull failed: {err}"));
+                }
+            },
+            Message::GitPush => match self.storage.git_push(None) {
+                Ok(()) => {
+                    let _ = self.reload_indexes();
+                    self.status_banner = Some(format!(
+                        "Pushed '{}' to remote '{}'.",
+                        self.index.project.git.branch, self.index.project.git.remote
+                    ));
+                }
+                Err(err) => {
+                    self.status_banner = Some(format!("Git push failed: {err}"));
+                }
+            },
+            Message::CommitItemIdChanged(val) => {
+                self.settings_form.commit_item_id_input = val;
+            }
+            Message::CommitScopeIdChanged(val) => {
+                self.settings_form.commit_scope_id_input = val;
+            }
+            Message::CommitSummaryChanged(val) => {
+                self.settings_form.commit_summary_input = val;
+            }
+            Message::CommitBodyChanged(val) => {
+                self.settings_form.commit_body_input = val;
+            }
+            Message::SetCommitTrackerOnly(tracker_only) => {
+                self.settings_form.commit_tracker_only = tracker_only;
+            }
+            Message::SubmitDocumentedCommit => {
+                let item_id = {
+                    let trimmed = self.settings_form.commit_item_id_input.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                };
+                let scope_id = {
+                    let trimmed = self.settings_form.commit_scope_id_input.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                };
+                let body = {
+                    let trimmed = self.settings_form.commit_body_input.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                };
+                let input = DocumentedCommitInput {
+                    item_id,
+                    scope_id,
+                    summary: self.settings_form.commit_summary_input.clone(),
+                    body,
+                    tracker_only: self.settings_form.commit_tracker_only,
+                    paths: Vec::new(),
+                };
+                match self.storage.git_commit_documented(input) {
+                    Ok(outcome) => {
+                        self.settings_form.commit_summary_input.clear();
+                        self.settings_form.commit_body_input.clear();
+                        let _ = self.reload_indexes();
+                        self.status_banner = Some(format!(
+                            "Committed {} ({} files, doc_updated={})",
+                            outcome.commit_sha,
+                            outcome.changed_files.len(),
+                            outcome.documentation_updated
+                        ));
+                    }
+                    Err(err) => {
+                        self.status_banner = Some(format!("Documented commit rejected: {err}"));
+                    }
+                }
+            }
+            Message::ToggleCommitPolicyRequireItemId(val) => {
+                self.settings_form.commit_policy_require_item_id = val;
+            }
+            Message::ToggleCommitPolicyRequireScope(val) => {
+                self.settings_form.commit_policy_require_scope = val;
+            }
+            Message::ToggleCommitPolicyAutoAppendDesc(val) => {
+                self.settings_form.commit_policy_auto_append_to_desc = val;
+            }
+            Message::CommitPolicyMinSummaryLengthChanged(val) => {
+                self.settings_form.commit_policy_min_summary_len_input = val;
             }
             Message::TargetDailyHoursChanged(val) => {
                 self.settings_form.target_daily_hours_input = val;
@@ -1504,6 +2473,18 @@ impl Application for NebulousApp {
                         Some("Sync interval minutes must be greater than 0.".to_string());
                     return Task::none();
                 }
+                let Ok(min_summary_len) = self
+                    .settings_form
+                    .commit_policy_min_summary_len_input
+                    .trim()
+                    .parse::<usize>()
+                else {
+                    self.status_banner = Some(
+                        "Minimum commit summary length must be a valid non-negative integer."
+                            .to_string(),
+                    );
+                    return Task::none();
+                };
                 let remote = self.settings_form.git_remote_input.trim().to_string();
                 let branch = self.settings_form.git_branch_input.trim().to_string();
                 if remote.is_empty() || branch.is_empty() {
@@ -1518,13 +2499,22 @@ impl Application for NebulousApp {
                         project.git.sync_interval_minutes = interval_mins;
                         project.git.remote = remote.clone();
                         project.git.branch = branch.clone();
+                        project.git.commit_policy.require_item_id =
+                            self.settings_form.commit_policy_require_item_id;
+                        project.git.commit_policy.require_scope =
+                            self.settings_form.commit_policy_require_scope;
+                        project.git.commit_policy.require_summary =
+                            self.settings_form.commit_policy_require_summary;
+                        project.git.commit_policy.min_summary_length = min_summary_len;
+                        project.git.commit_policy.auto_append_to_desc =
+                            self.settings_form.commit_policy_auto_append_to_desc;
                         match self.storage.write_project(&project) {
                             Ok(()) => {
                                 let _ = self.reload_indexes();
                                 self.settings_form
                                     .sync_from_index(&self.index, &self.storage);
                                 self.status_banner = Some(format!(
-                                    "Saved Git sync settings (mode={}, interval={}m, {remote}/{branch})",
+                                    "Saved Git & Commit Policy settings (mode={}, interval={}m, {remote}/{branch})",
                                     project.git.sync_mode, project.git.sync_interval_minutes
                                 ));
                             }
@@ -1568,6 +2558,116 @@ impl Application for NebulousApp {
                     self.status_banner = Some(format!("Keyring PAT note: {err}"));
                 }
             },
+            Message::SshKeyCommentChanged(val) => {
+                self.settings_form.ssh_comment_input = val;
+            }
+            Message::SshKeyImportInputChanged(val) => {
+                self.settings_form.ssh_private_key_import_input = val;
+            }
+            Message::SshKeyPassphraseChanged(val) => {
+                self.settings_form.ssh_passphrase_input = val;
+            }
+            Message::GenerateSshKeypair => {
+                let comment = {
+                    let trimmed = self.settings_form.ssh_comment_input.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                };
+                match self.storage.generate_ssh_keypair(comment.as_deref()) {
+                    Ok(record) => {
+                        let pub_info = record.public_info();
+                        self.settings_form.stored_ssh_public_key = Some(pub_info.clone());
+                        self.settings_form.has_stored_ssh_key = true;
+                        self.status_banner = Some(format!(
+                            "Generated Ed25519 SSH keypair ({}) in SecureStorage",
+                            pub_info.fingerprint_sha256
+                        ));
+                    }
+                    Err(err) => {
+                        self.status_banner =
+                            Some(format!("Failed to generate Ed25519 SSH keypair: {err}"));
+                    }
+                }
+            }
+            Message::ImportSshKeypair => {
+                let raw_input = self
+                    .settings_form
+                    .ssh_private_key_import_input
+                    .trim()
+                    .to_string();
+                if raw_input.is_empty() {
+                    self.status_banner = Some(
+                        "Enter a private key file path or OpenSSH PEM to import.".to_string(),
+                    );
+                    return Task::none();
+                }
+                let passphrase = {
+                    let trimmed = self.settings_form.ssh_passphrase_input.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                };
+                let expanded_path = expand_tilde_path(&raw_input);
+                let import_res = if expanded_path.is_file() {
+                    match std::fs::read_to_string(&expanded_path) {
+                        Ok(pem) => self.storage.import_ssh_keypair(&pem, passphrase.as_deref()),
+                        Err(source) => Err(TrackerError::Io {
+                            path: expanded_path,
+                            source,
+                        }),
+                    }
+                } else {
+                    let normalized_pem = normalize_openssh_pem_input(&raw_input);
+                    self.storage
+                        .import_ssh_keypair(&normalized_pem, passphrase.as_deref())
+                };
+                match import_res {
+                    Ok(record) => {
+                        let pub_info = record.public_info();
+                        self.settings_form.ssh_private_key_import_input.clear();
+                        self.settings_form.ssh_passphrase_input.clear();
+                        self.settings_form.stored_ssh_public_key = Some(pub_info.clone());
+                        self.settings_form.has_stored_ssh_key = true;
+                        self.status_banner = Some(format!(
+                            "Imported SSH keypair ({}) into SecureStorage",
+                            pub_info.fingerprint_sha256
+                        ));
+                    }
+                    Err(err) => {
+                        self.status_banner = Some(format!("Failed to import SSH keypair: {err}"));
+                    }
+                }
+            }
+            Message::CopySshPublicKey => {
+                if let Some(ref pub_info) = self.settings_form.stored_ssh_public_key {
+                    let pub_key = pub_info.public_key_openssh.clone();
+                    let fp = pub_info.fingerprint_sha256.clone();
+                    return self.copy_text_to_clipboard(
+                        pub_key,
+                        format!("Copied SSH public key ({fp}) to clipboard"),
+                    );
+                }
+                self.status_banner =
+                    Some("No SSH public key stored in SecureStorage to copy.".to_string());
+            }
+            Message::DeleteSshKeypair => match self.storage.delete_ssh_keypair() {
+                Ok(()) => {
+                    self.settings_form.stored_ssh_public_key = None;
+                    self.settings_form.has_stored_ssh_key = false;
+                    self.status_banner =
+                        Some("Deleted SSH keypair from SecureStorage.".to_string());
+                }
+                Err(err) => {
+                    self.settings_form.stored_ssh_public_key = None;
+                    self.settings_form.has_stored_ssh_key = false;
+                    self.status_banner = Some(format!("SSH keypair note: {err}"));
+                }
+            },
 
             // Reactive background subscription handlers
             Message::TrackerFilesChanged(_changed_paths) => {
@@ -1599,9 +2699,8 @@ impl Application for NebulousApp {
         let central_pane: Element<'_, Self::Message> = match self.view_mode {
             ViewMode::Board => kanban_board::view_kanban_board(self),
             ViewMode::Metrics => metrics_view::view_metrics_dashboard(self),
-            ViewMode::PhasesAndScopes | ViewMode::Settings => {
-                settings_view::view_settings_or_phases(self)
-            }
+            ViewMode::PhasesAndScopes => phases_scopes_view::view_phases_and_scopes(self),
+            ViewMode::Settings => settings_view::view_settings(self),
         };
 
         let mut body_row = widget::row::with_capacity(3)
@@ -1652,6 +2751,42 @@ impl Application for NebulousApp {
     }
 }
 
+fn resolve_app_registry_path(storage: &TrackerStorage) -> PathBuf {
+    let temp_dir = std::env::temp_dir();
+    let project_root = storage.project_root();
+    if project_root.starts_with(&temp_dir) {
+        let root_leaf = project_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("temp");
+        return temp_dir
+            .join(format!("nebulous_test_registry_{}", std::process::id()))
+            .join(root_leaf)
+            .join("projects.toml");
+    }
+    global_registry_path()
+}
+
+fn build_project_dropdown_lists(
+    registry: &GlobalProjectRegistry,
+    fallback_project_name: &str,
+) -> (Vec<String>, Vec<String>) {
+    if registry.projects.is_empty() {
+        let fallback_id = fallback_project_name.to_ascii_lowercase();
+        return (
+            vec![fallback_id],
+            vec![format!("◆ {fallback_project_name}")],
+        );
+    }
+    let mut ids = Vec::with_capacity(registry.projects.len());
+    let mut labels = Vec::with_capacity(registry.projects.len());
+    for proj in &registry.projects {
+        ids.push(proj.id.clone());
+        labels.push(format!("◆ {}", proj.name));
+    }
+    (ids, labels)
+}
+
 fn build_phase_dropdown_lists(index: &TrackerIndex) -> (Vec<String>, Vec<String>) {
     let mut ids = Vec::with_capacity(index.phases.len());
     let mut labels = Vec::with_capacity(index.phases.len());
@@ -1663,6 +2798,93 @@ fn build_phase_dropdown_lists(index: &TrackerIndex) -> (Vec<String>, Vec<String>
         ));
     }
     (ids, labels)
+}
+
+fn parse_comma_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn expand_tilde_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed == "~" || trimmed.starts_with("~/") || trimmed.starts_with("~\\") {
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            let mut buf = PathBuf::from(home);
+            let rest = trimmed.trim_start_matches('~').trim_start_matches(['/', '\\']);
+            if !rest.is_empty() {
+                buf.push(rest);
+            }
+            return buf;
+        }
+    }
+    PathBuf::from(trimmed)
+}
+
+/// Normalizes an inline OpenSSH private key PEM string pasted into a single-line `text_input`,
+/// restoring RFC 7468 header/footer newlines and 70-character base64 line wrapping if flattened.
+fn normalize_openssh_pem_input(raw: &str) -> String {
+    let unescaped = raw.trim().replace("\\r\\n", "\n").replace("\\n", "\n");
+    if unescaped.contains('\n') {
+        return unescaped;
+    }
+    if let (Some(begin_end), Some(end_start)) = (
+        unescaped.find("-----").and_then(|start| {
+            let rest = &unescaped[start + 5..];
+            rest.find("-----").map(|rel| start + 5 + rel + 5)
+        }),
+        unescaped.rfind("-----END "),
+    ) {
+        if begin_end < end_start {
+            let header = unescaped[..begin_end].trim();
+            let footer = unescaped[end_start..].trim();
+            let body_compact: String = unescaped[begin_end..end_start]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            if !body_compact.is_empty() {
+                let mut wrapped = String::with_capacity(unescaped.len() + 32);
+                wrapped.push_str(header);
+                wrapped.push('\n');
+                for chunk in body_compact.as_bytes().chunks(70) {
+                    if let Ok(line) = std::str::from_utf8(chunk) {
+                        wrapped.push_str(line);
+                        wrapped.push('\n');
+                    }
+                }
+                wrapped.push_str(footer);
+                wrapped.push('\n');
+                return wrapped;
+            }
+        }
+    }
+    unescaped
+}
+
+/// Computes a structural widget-tree fingerprint `(total_nodes, depth_child_counts)` for an `iced`
+/// [`Element`] by traversing `as_widget().children()` recursively.
+pub fn widget_tree_fingerprint(element: &Element<'_, Message>) -> (usize, Vec<usize>) {
+    fn visit_tree(
+        tree: &cosmic::iced::advanced::widget::Tree,
+        counts: &mut Vec<usize>,
+    ) -> usize {
+        counts.push(tree.children.len());
+        let mut total = 1usize;
+        for child in &tree.children {
+            total = total.saturating_add(visit_tree(child, counts));
+        }
+        total
+    }
+
+    let root_children = element.as_widget().children();
+    let mut counts = vec![root_children.len()];
+    let mut total = 1usize;
+    for child in &root_children {
+        total = total.saturating_add(visit_tree(child, &mut counts));
+    }
+    (total, counts)
 }
 
 fn compute_signal_from_manifest(
@@ -1702,8 +2924,9 @@ fn compute_signal_from_manifest(
 /// 5. Agent Context Handoff buttons (`CopyAgentFileRefs` & `CopyBoundedAgentPrompt`) synthesize valid
 ///    `@file` reference strings and Bounded Agent Prompts containing crate scope boundaries and
 ///    historical fix ledger warnings.
-/// 6. Metrics view (`compute_current_metrics()` & `ViewMode::Metrics`), Settings view (`ViewMode::Settings`),
-///    and reactive background subscriptions (`subscriptions::subscription(&app)`) construct cleanly in memory.
+/// 6. Distinct widget hierarchies for `ViewMode::PhasesAndScopes` vs `ViewMode::Settings`.
+/// 7. End-to-end Directory Ingestion, Component Pinning & Rollback, Documented Git Commits, and
+///    Multi-Project Registry switching in an isolated temporary workspace.
 struct SelfTestTempGuard {
     path: PathBuf,
 }
@@ -1729,6 +2952,41 @@ fn seed_self_test_temp_workspace() -> Result<(SelfTestTempGuard, TrackerStorage)
         source,
     })?;
     let guard = SelfTestTempGuard { path: path.clone() };
+
+    // Create sample crate & script directories for directory ingestion and git commit testing
+    let crate_dir = path.join("crates").join("backend_core").join("src");
+    std::fs::create_dir_all(&crate_dir).map_err(|source| TrackerError::Io {
+        path: crate_dir.clone(),
+        source,
+    })?;
+    std::fs::write(
+        path.join("crates").join("backend_core").join("Cargo.toml"),
+        "[package]\nname = \"backend_core\"\nversion = \"0.1.0\"\n",
+    )
+    .map_err(|source| TrackerError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    std::fs::write(crate_dir.join("lib.rs"), "pub fn init_engine() {}\n").map_err(|source| {
+        TrackerError::Io {
+            path: crate_dir,
+            source,
+        }
+    })?;
+
+    let scripts_dir = path.join("scripts");
+    std::fs::create_dir_all(&scripts_dir).map_err(|source| TrackerError::Io {
+        path: scripts_dir.clone(),
+        source,
+    })?;
+    std::fs::write(
+        scripts_dir.join("build-iso.sh"),
+        "#!/usr/bin/env bash\necho 'building iso'\n",
+    )
+    .map_err(|source| TrackerError::Io {
+        path: scripts_dir,
+        source,
+    })?;
 
     let storage = TrackerStorage::init(
         &path,
@@ -1783,7 +3041,22 @@ pub fn run_headless_self_test(workspace_path: Option<&Path>) -> Result<()> {
             (Some(guard), s)
         }
     };
-    let mut app = NebulousApp::new_from_storage(Core::default(), storage)?;
+    let self_test_reg_dir = std::env::temp_dir().join(format!(
+        "nebulous_self_test_reg_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _reg_guard = SelfTestTempGuard {
+        path: self_test_reg_dir.clone(),
+    };
+    let mut app = NebulousApp::new_from_storage_with_registry(
+        Core::default(),
+        storage,
+        self_test_reg_dir.join("projects.toml"),
+    )?;
 
     // 1. Verify startup reads only top-level indexes and does NOT eagerly load item detail (`desc.md`).
     if app.selected_item_detail.is_some() || app.lazy_detail_loads_count != 0 {
@@ -1935,7 +3208,8 @@ pub fn run_headless_self_test(workspace_path: Option<&Path>) -> Result<()> {
         ));
     }
 
-    // 7. Exercise Metrics computation and all ViewModes (Metrics, PhasesAndScopes, Settings, Board)
+    // 7. Exercise Metrics computation and verify ViewMode::PhasesAndScopes and ViewMode::Settings
+    // render distinct widget hierarchies and section structures.
     let metrics_report = app.compute_current_metrics();
     if metrics_report.phases.is_empty() || metrics_report.total_items == 0 {
         return Err(TrackerError::ValidationError(
@@ -1943,14 +3217,125 @@ pub fn run_headless_self_test(workspace_path: Option<&Path>) -> Result<()> {
         ));
     }
 
-    for mode in [
-        ViewMode::Metrics,
-        ViewMode::PhasesAndScopes,
-        ViewMode::Settings,
-        ViewMode::Board,
-    ] {
+    let _ = app.update(Message::SwitchView(ViewMode::PhasesAndScopes));
+    let phases_sections = app.active_view_section_titles();
+    let phases_fingerprint = {
+        let view_el = app.view();
+        widget_tree_fingerprint(&view_el)
+    };
+
+    let _ = app.update(Message::SwitchView(ViewMode::Settings));
+    let settings_sections = app.active_view_section_titles();
+    let settings_fingerprint = {
+        let view_el = app.view();
+        widget_tree_fingerprint(&view_el)
+    };
+
+    if phases_sections == settings_sections || phases_fingerprint == settings_fingerprint {
+        return Err(TrackerError::ValidationError(
+            "ViewMode::PhasesAndScopes and ViewMode::Settings must render distinct widget hierarchies"
+                .to_string(),
+        ));
+    }
+
+    for mode in [ViewMode::Metrics, ViewMode::Board] {
         let _ = app.update(Message::SwitchView(mode));
         let _view = app.view();
+    }
+
+    // 8. Exercise Directory Ingestion, Component Pinning & Rollback, Documented Git Commits,
+    // and Multi-Project Registry switching in an isolated temporary workspace.
+    {
+        let (iso_guard, iso_storage) = seed_self_test_temp_workspace()?;
+        let mut iso_app = NebulousApp::new_from_storage(Core::default(), iso_storage)?;
+
+        // Directory ingestion & component manifest / pin / rollback
+        let _ = iso_app.update(Message::ToggleIngestWriteManifests(true));
+        let _ = iso_app.update(Message::IngestProjectDirectory);
+        if iso_app.index.project.components.is_empty() {
+            return Err(TrackerError::ValidationError(
+                "Expected directory ingestion in self-test to discover components".to_string(),
+            ));
+        }
+
+        let first_comp_id = iso_app.index.project.components.registry[0].id.clone();
+        let _ = iso_app.update(Message::PromoteComponentToScope(first_comp_id.clone()));
+        let _ = iso_app.update(Message::SelectComponentForPin(first_comp_id.clone()));
+        let _ = iso_app.update(Message::ComponentDepNameChanged(
+            "linux-image-xanmod".to_string(),
+        ));
+        let _ = iso_app.update(Message::ComponentDepKindChanged(
+            "kernel_xanmod".to_string(),
+        ));
+        let _ = iso_app.update(Message::ComponentDepVersionChanged(
+            "6.11.5-xanmod1".to_string(),
+        ));
+        let _ = iso_app.update(Message::UpsertComponentDependency);
+        let _ = iso_app.update(Message::PinSelectedComponentRelease);
+        if iso_app
+            .selected_component_manifest()
+            .and_then(|c| c.pinned_release.as_ref())
+            .is_none()
+        {
+            return Err(TrackerError::ValidationError(
+                "Expected PinSelectedComponentRelease to record pinned_release".to_string(),
+            ));
+        }
+        let _ = iso_app.update(Message::RollbackSelectedComponentRelease);
+
+        // Initialize Git repository in isolated workspace and exercise Documented Commit workflow
+        let _ = Command::new("git")
+            .arg("init")
+            .current_dir(&iso_guard.path)
+            .output();
+        let _ = iso_app.update(Message::CommitItemIdChanged("BUG-0001".to_string()));
+        let _ = iso_app.update(Message::SetCommitTrackerOnly(false));
+        let _ = iso_app.update(Message::CommitSummaryChanged(
+            "Implement self-test documented commit verification".to_string(),
+        ));
+        let _ = iso_app.update(Message::SubmitDocumentedCommit);
+        let (_, bug1_detail) = iso_app.storage.load_item_detail_by_id("BUG-0001")?;
+        if bug1_detail.manifest.history.previous_fixes.is_empty()
+            || !bug1_detail
+                .description_markdown
+                .contains("## Fix Log & Agent Notes")
+        {
+            return Err(TrackerError::ValidationError(
+                "Expected SubmitDocumentedCommit to append fix ledger and desc.md notes"
+                    .to_string(),
+            ));
+        }
+
+        // Exercise Multi-Project Registry addition & project switching
+        let second_proj_dir = iso_guard.path.join("second_project_novos");
+        std::fs::create_dir_all(&second_proj_dir).map_err(|source| TrackerError::Io {
+            path: second_proj_dir.clone(),
+            source,
+        })?;
+        let _ = iso_app.update(Message::NewProjectPathChanged(
+            second_proj_dir.to_string_lossy().to_string(),
+        ));
+        let _ = iso_app.update(Message::NewProjectNameChanged("NovOS".to_string()));
+        let _ = iso_app.update(Message::AddProjectToRegistry);
+        if iso_app.project_name() != "NovOS" {
+            return Err(TrackerError::ValidationError(format!(
+                "Expected active project to switch to 'NovOS', got '{}'",
+                iso_app.project_name()
+            )));
+        }
+        let _ = iso_app.update(Message::SelectProjectIndex(0));
+        if iso_app.project_name() != "Nebulous" {
+            return Err(TrackerError::ValidationError(format!(
+                "Expected SelectProjectIndex(0) to switch back to 'Nebulous', got '{}'",
+                iso_app.project_name()
+            )));
+        }
+        let _ = std::fs::remove_dir_all(
+            iso_app
+                .registry_path
+                .parent()
+                .unwrap_or(&iso_app.registry_path),
+        );
     }
 
     println!(
@@ -2659,5 +4044,555 @@ mod tests {
         let _ = app.update(Message::TrackerFilesChanged(Vec::new()));
         assert_eq!(app.active_phase_id, "01_core_engine");
         assert_eq!(app.settings_form.target_daily_hours_input, "8.5");
+    }
+
+    #[test]
+    fn test_phases_and_scopes_view_vs_settings_view_render_distinct_hierarchies() {
+        let (_temp, storage) = create_sample_tracker_workspace();
+        let mut app =
+            NebulousApp::new_from_storage(Core::default(), storage).expect("boot app");
+
+        let _ = app.update(Message::SwitchView(ViewMode::Board));
+        let board_titles = app.active_view_section_titles();
+        let board_fp = widget_tree_fingerprint(&app.view());
+
+        let _ = app.update(Message::SwitchView(ViewMode::PhasesAndScopes));
+        let phases_titles = app.active_view_section_titles();
+        let phases_fp = widget_tree_fingerprint(&app.view());
+        let direct_phases_fp =
+            widget_tree_fingerprint(&phases_scopes_view::view_phases_and_scopes(&app));
+
+        let _ = app.update(Message::SwitchView(ViewMode::Metrics));
+        let metrics_titles = app.active_view_section_titles();
+        let metrics_fp = widget_tree_fingerprint(&app.view());
+
+        let _ = app.update(Message::SwitchView(ViewMode::Settings));
+        let settings_titles = app.active_view_section_titles();
+        let settings_fp = widget_tree_fingerprint(&app.view());
+        let direct_settings_fp =
+            widget_tree_fingerprint(&settings_view::view_settings(&app));
+
+        // Verify PhasesAndScopes and Settings have completely distinct section titles and widget trees
+        assert_ne!(phases_titles, settings_titles);
+        assert_ne!(phases_fp, settings_fp);
+        assert_ne!(direct_phases_fp, direct_settings_fp);
+        assert!(phases_titles[0].contains("Project Directory Ingestion"));
+        assert!(settings_titles[0].contains("Multi-Project Registry"));
+
+        // Verify all 4 ViewModes have pairwise distinct section titles and widget tree fingerprints
+        let all_titles = [board_titles, phases_titles, metrics_titles, settings_titles];
+        let all_fps = [board_fp, phases_fp, metrics_fp, settings_fp];
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                assert_ne!(all_titles[i], all_titles[j]);
+                assert_ne!(all_fps[i], all_fps[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_directory_ingestion_component_manifest_pinning_and_rollback_workflows() {
+        let (temp, storage) = create_sample_tracker_workspace();
+
+        // Seed sample Cargo crate and shell script directory inside the workspace
+        let crate_src = temp.path().join("crates").join("backend_core").join("src");
+        fs::create_dir_all(&crate_src).unwrap();
+        fs::write(
+            temp.path().join("crates").join("backend_core").join("Cargo.toml"),
+            "[package]\nname = \"backend_core\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(crate_src.join("lib.rs"), "pub fn run() {}\n").unwrap();
+
+        let scripts_dir = temp.path().join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::write(
+            scripts_dir.join("build-iso.sh"),
+            "#!/usr/bin/env bash\nset -euo pipefail\n",
+        )
+        .unwrap();
+
+        let mut app =
+            NebulousApp::new_from_storage(Core::default(), storage.clone()).expect("boot app");
+        let _ = app.update(Message::SwitchView(ViewMode::PhasesAndScopes));
+
+        // 1. Scan directory and write nebulous.component.toml manifests
+        let _ = app.update(Message::ToggleIngestWriteManifests(true));
+        let _ = app.update(Message::ToggleIngestPromoteAll(false));
+        let _ = app.update(Message::IngestProjectDirectory);
+        assert!(!app.index.project.components.is_empty());
+        assert!(temp
+            .path()
+            .join("crates")
+            .join("backend_core")
+            .join("nebulous.component.toml")
+            .is_file());
+
+        // Render Phases & Scopes view after ingestion
+        let _ = app.view();
+
+        // 2. Promote discovered component to a domain scope in the active phase
+        let comp_id = "backend_core".to_string();
+        let _ = app.update(Message::PromoteComponentToScope(comp_id.clone()));
+        let scope_entry = app
+            .active_phase()
+            .unwrap()
+            .scope("backend_core")
+            .expect("promoted scope");
+        assert_eq!(
+            scope_entry.manifest.scope.bound_component.as_deref(),
+            Some("backend_core")
+        );
+        assert!(!scope_entry.manifest.scope.tracked_files.is_empty());
+
+        // 3. Select component for Pin Builder and update tags/flags
+        let _ = app.update(Message::SelectComponentForPin(comp_id.clone()));
+        let _ = app.update(Message::ComponentTagsInputChanged(
+            "core, rolling-release, critical".to_string(),
+        ));
+        let _ = app.update(Message::ComponentFlagsInputChanged(
+            "--release, --locked".to_string(),
+        ));
+        let _ = app.update(Message::SaveComponentMetadata);
+        let updated_comp = app.selected_component_manifest().unwrap();
+        assert_eq!(
+            updated_comp.tags,
+            vec!["core", "rolling-release", "critical"]
+        );
+        assert_eq!(updated_comp.flags, vec!["--release", "--locked"]);
+
+        // 4. Attempting rollback before pinning a release fails gracefully with status banner
+        let _ = app.update(Message::RollbackSelectedComponentRelease);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Cannot roll back component"));
+
+        // 5. Validation error on empty dependency name
+        let _ = app.update(Message::ComponentDepNameChanged("   ".to_string()));
+        let _ = app.update(Message::UpsertComponentDependency);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("must not be empty"));
+
+        // 6. Upsert rolling-release dependency (`linux-image-xanmod` / `kernel_xanmod`)
+        let _ = app.update(Message::ComponentDepNameChanged(
+            "linux-image-xanmod".to_string(),
+        ));
+        let _ = app.update(Message::ComponentDepKindChanged(
+            "kernel_xanmod".to_string(),
+        ));
+        let _ = app.update(Message::ComponentDepConstraintChanged(
+            ">=6.11".to_string(),
+        ));
+        let _ = app.update(Message::ComponentDepVersionChanged(
+            "6.11.5-xanmod1".to_string(),
+        ));
+        let _ = app.update(Message::ComponentDepSourceChanged(
+            "deb.xanmod.org".to_string(),
+        ));
+        let _ = app.update(Message::UpsertComponentDependency);
+        assert_eq!(
+            app.selected_component_manifest()
+                .unwrap()
+                .dependencies
+                .len(),
+            1
+        );
+
+        // 7. Pin known-good release
+        let _ = app.update(Message::ComponentBuildScriptInputChanged(
+            "scripts/build-iso.sh".to_string(),
+        ));
+        let _ = app.update(Message::PinSelectedComponentRelease);
+        let pinned_comp = app.selected_component_manifest().unwrap().clone();
+        assert!(pinned_comp.pinned_release.is_some());
+        assert_eq!(
+            pinned_comp
+                .pinned_release
+                .as_ref()
+                .unwrap()
+                .build_script_path
+                .as_deref(),
+            Some("scripts/build-iso.sh")
+        );
+
+        // 8. Simulate broken rolling-release upgrade (`6.12.0-rc1-broken`) and roll back to pinned release
+        let _ = app.update(Message::ComponentDepNameChanged(
+            "linux-image-xanmod".to_string(),
+        ));
+        let _ = app.update(Message::ComponentDepVersionChanged(
+            "6.12.0-rc1-broken".to_string(),
+        ));
+        let _ = app.update(Message::UpsertComponentDependency);
+        assert_eq!(
+            app.selected_component_manifest().unwrap().dependencies[0].current_version,
+            "6.12.0-rc1-broken"
+        );
+
+        let _ = app.update(Message::RollbackSelectedComponentRelease);
+        let rolled_back_comp = app.selected_component_manifest().unwrap();
+        assert_eq!(
+            rolled_back_comp.dependencies[0].current_version,
+            "6.11.5-xanmod1"
+        );
+        assert_eq!(
+            rolled_back_comp
+                .pinned_release
+                .as_ref()
+                .unwrap()
+                .dependency_pins
+                .get("linux-image-xanmod")
+                .map(String::as_str),
+            Some("6.11.5-xanmod1")
+        );
+    }
+
+    #[test]
+    fn test_multi_project_registry_switcher_add_switch_and_remove() {
+        let (temp, storage) = create_sample_tracker_workspace();
+        let reg_path = temp.path().join("isolated_registry").join("projects.toml");
+        let mut app = NebulousApp::new_from_storage_with_registry(
+            Core::default(),
+            storage,
+            reg_path,
+        )
+        .expect("boot app with isolated registry");
+
+        assert_eq!(app.project_name(), "NebulousTest");
+        assert_eq!(app.project_registry.projects.len(), 1);
+        assert_eq!(app.selected_project_dropdown_index(), Some(0));
+
+        // Clicking `+ Project` in header bar switches to Settings view
+        let _ = app.update(Message::OpenAddProject);
+        assert_eq!(app.view_mode, ViewMode::Settings);
+
+        // Validation errors on empty or non-existent directory path
+        let _ = app.update(Message::NewProjectPathChanged("   ".to_string()));
+        let _ = app.update(Message::AddProjectToRegistry);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("cannot be empty"));
+
+        let _ = app.update(Message::NewProjectPathChanged(
+            temp.path()
+                .join("non_existent_dir_xyz")
+                .to_string_lossy()
+                .to_string(),
+        ));
+        let _ = app.update(Message::AddProjectToRegistry);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("does not exist"));
+
+        // Create second project directory with a sample Rust crate and add with initial ingestion
+        let second_proj_dir = TempDir::new().expect("second project temp dir");
+        let crate_dir = second_proj_dir
+            .path()
+            .join("crates")
+            .join("novos_kernel")
+            .join("src");
+        fs::create_dir_all(&crate_dir).unwrap();
+        fs::write(
+            second_proj_dir
+                .path()
+                .join("crates")
+                .join("novos_kernel")
+                .join("Cargo.toml"),
+            "[package]\nname = \"novos_kernel\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(crate_dir.join("lib.rs"), "pub fn boot() {}\n").unwrap();
+
+        let _ = app.update(Message::ToggleNewProjectIngest(true));
+        let _ = app.update(Message::NewProjectPathChanged(
+            second_proj_dir.path().to_string_lossy().to_string(),
+        ));
+        let _ = app.update(Message::NewProjectNameChanged("NovOS".to_string()));
+        let _ = app.update(Message::AddProjectToRegistry);
+
+        assert_eq!(app.project_name(), "NovOS");
+        assert_eq!(app.project_registry.projects.len(), 2);
+        assert_eq!(app.selected_project_dropdown_index(), Some(1));
+        assert!(!app.index.project.components.is_empty());
+
+        // Switch back to first project via top-bar dropdown index 0
+        let _ = app.update(Message::SelectProjectIndex(0));
+        assert_eq!(app.project_name(), "NebulousTest");
+        assert_eq!(app.selected_project_dropdown_index(), Some(0));
+
+        // Switch to NovOS (making it the currently active project) and remove NovOS while active:
+        // must automatically switch back to the remaining project ('NebulousTest') and must NOT resurrect on reload_indexes()
+        let _ = app.update(Message::SwitchProject("novos".to_string()));
+        assert_eq!(app.project_name(), "NovOS");
+        let _ = app.update(Message::RemoveProjectFromRegistry("novos".to_string()));
+        assert_eq!(app.project_registry.projects.len(), 1);
+        assert_eq!(app.project_name(), "NebulousTest");
+        assert_eq!(app.selected_project_dropdown_index(), Some(0));
+        app.reload_indexes().expect("reload indexes after active project removal");
+        assert_eq!(app.project_registry.projects.len(), 1);
+        assert_eq!(app.project_name(), "NebulousTest");
+
+        // Re-add NovOS, switch to NebulousTest so NovOS is inactive, and remove inactive NovOS
+        let _ = app.update(Message::NewProjectPathChanged(
+            second_proj_dir.path().to_string_lossy().to_string(),
+        ));
+        let _ = app.update(Message::NewProjectNameChanged("NovOS".to_string()));
+        let _ = app.update(Message::AddProjectToRegistry);
+        assert_eq!(app.project_registry.projects.len(), 2);
+        let _ = app.update(Message::SelectProjectIndex(0));
+        assert_eq!(app.project_name(), "NebulousTest");
+        let _ = app.update(Message::RemoveProjectFromRegistry("novos".to_string()));
+        assert_eq!(app.project_registry.projects.len(), 1);
+
+        // Removing the last project must leave registry empty even after reload_indexes()
+        let _ = app.update(Message::RemoveProjectFromRegistry("nebuloustest".to_string()));
+        assert!(app.project_registry.projects.is_empty());
+        app.reload_indexes().expect("reload indexes with empty registry");
+        assert!(app.project_registry.projects.is_empty());
+    }
+
+    #[test]
+    fn test_documented_git_commit_workflow_commit_policy_and_ssh_key_management() {
+        let (temp, storage) = create_sample_tracker_workspace();
+        // Initialize git repository in temp workspace and a local bare remote for Fetch/Pull/Push
+        let _ = Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(temp.path())
+            .output();
+        let bare_remote = TempDir::new().expect("bare remote temp dir");
+        let _ = Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .current_dir(bare_remote.path())
+            .output();
+        let _ = Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                &bare_remote.path().to_string_lossy(),
+            ])
+            .current_dir(temp.path())
+            .output();
+
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("lib.rs"), "pub fn v1() {}\n").unwrap();
+
+        let mut app =
+            NebulousApp::new_from_storage(Core::default(), storage.clone()).expect("boot app");
+
+        // 1. Verify header bar Git status formatting with ahead/behind counts
+        if let Some(ref mut gs) = app.git_status {
+            gs.ahead_count = 3;
+            gs.behind_count = 1;
+        }
+        let header_git_label = header_bar::format_git_status_label(&app);
+        assert!(header_git_label.contains("↑3 ↓1"));
+
+        // 2. Configure [git.commit_policy] via Settings messages
+        let _ = app.update(Message::ToggleCommitPolicyRequireItemId(true));
+        let _ = app.update(Message::ToggleCommitPolicyRequireScope(true));
+        let _ = app.update(Message::ToggleCommitPolicyAutoAppendDesc(true));
+        let _ = app.update(Message::CommitPolicyMinSummaryLengthChanged(
+            "15".to_string(),
+        ));
+        let _ = app.update(Message::SaveGitConfig);
+        assert!(app.index.project.git.commit_policy.require_item_id);
+        assert!(app.index.project.git.commit_policy.require_scope);
+        assert!(app.index.project.git.commit_policy.auto_append_to_desc);
+        assert_eq!(
+            app.index.project.git.commit_policy.min_summary_length,
+            15
+        );
+
+        // 3. Undocumented workspace code commit (missing item_id) is rejected by policy
+        let _ = app.update(Message::SetCommitTrackerOnly(false));
+        let _ = app.update(Message::CommitItemIdChanged(String::new()));
+        let _ = app.update(Message::CommitSummaryChanged(
+            "Valid length summary without item ID".to_string(),
+        ));
+        let _ = app.update(Message::SubmitDocumentedCommit);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Documented commit rejected:"));
+
+        // 4. Short summary (< 15 chars) is rejected by policy
+        let _ = app.update(Message::CommitItemIdChanged("BUG-0001".to_string()));
+        let _ = app.update(Message::CommitSummaryChanged("Too short".to_string()));
+        let _ = app.update(Message::SubmitDocumentedCommit);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Documented commit rejected:"));
+
+        // 5. Valid documented commit stages workspace + .tracker/, records fix in BUG-0001 item.toml & desc.md
+        let _ = app.update(Message::CommitItemIdChanged("BUG-0001".to_string()));
+        let _ = app.update(Message::SetCommitTrackerOnly(false));
+        let _ = app.update(Message::CommitSummaryChanged(
+            "Resolve TOML empty array deserialization edge case".to_string(),
+        ));
+        let _ = app.update(Message::CommitBodyChanged(
+            "Added regression unit test and verified git_commit_documented.".to_string(),
+        ));
+        let _ = app.update(Message::SubmitDocumentedCommit);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Committed"));
+
+        let (_, bug1) = storage.load_item_detail_by_id("BUG-0001").unwrap();
+        assert!(bug1
+            .manifest
+            .history
+            .previous_fixes
+            .iter()
+            .any(|f| f.summary.contains("Resolve TOML empty array deserialization edge case")));
+        assert!(bug1
+            .description_markdown
+            .contains("## Fix Log & Agent Notes"));
+        assert!(bug1
+            .description_markdown
+            .contains("Resolve TOML empty array deserialization edge case"));
+
+        // 6. Exercise GitPush, GitFetch, and GitPull against local bare remote
+        let _ = app.update(Message::GitPush);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Pushed"));
+        let _ = app.update(Message::GitFetch);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Fetched remote tracking branch"));
+        let _ = app.update(Message::GitPull);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Git pull complete"));
+
+        // 7. Exercise SecureStorage SSH Ed25519 key generation, public key copy, import, and deletion
+        let ssh_cfg_dir = temp.path().join("nebulous_ssh_vault");
+        std::env::set_var("NEBULOUS_CONFIG_DIR", &ssh_cfg_dir);
+        std::env::set_var("NEBULOUS_DISABLE_KEYRING", "1");
+
+        let _ = app.update(Message::SshKeyCommentChanged(
+            "test@nebulous.local".to_string(),
+        ));
+        let _ = app.update(Message::GenerateSshKeypair);
+        assert!(app.settings_form.has_stored_ssh_key);
+        let generated_fp = app
+            .settings_form
+            .stored_ssh_public_key
+            .as_ref()
+            .unwrap()
+            .fingerprint_sha256
+            .clone();
+        assert!(app
+            .settings_form
+            .stored_ssh_public_key
+            .as_ref()
+            .unwrap()
+            .public_key_openssh
+            .starts_with("ssh-ed25519 "));
+
+        let _ = app.update(Message::CopySshPublicKey);
+        assert!(app
+            .last_copied_clipboard
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("ssh-ed25519 "));
+
+        // Export generated keypair PEM so we can test single-line flattened PEM import
+        let exported_record = storage.get_ssh_keypair().expect("read generated keypair");
+        let flattened_single_line_pem = exported_record
+            .private_key_openssh
+            .lines()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // Empty SSH private key import fails validation gracefully
+        let _ = app.update(Message::SshKeyImportInputChanged("   ".to_string()));
+        let _ = app.update(Message::ImportSshKeypair);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("OpenSSH PEM"));
+
+        // Delete keypair and re-import from single-line flattened PEM string
+        let _ = app.update(Message::DeleteSshKeypair);
+        assert!(!app.settings_form.has_stored_ssh_key);
+        assert!(app.settings_form.stored_ssh_public_key.is_none());
+
+        let _ = app.update(Message::SshKeyImportInputChanged(flattened_single_line_pem));
+        let _ = app.update(Message::ImportSshKeypair);
+        assert!(app.settings_form.has_stored_ssh_key);
+        assert_eq!(
+            app.settings_form
+                .stored_ssh_public_key
+                .as_ref()
+                .unwrap()
+                .fingerprint_sha256,
+            generated_fp
+        );
+
+        // Test importing a passphrase-encrypted OpenSSH Ed25519 key file from disk
+        let enc_key_path = temp.path().join("id_ed25519_encrypted_test");
+        let keygen_ok = Command::new("ssh-keygen")
+            .args([
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "nebulous-passphrase-42",
+                "-C",
+                "enc@nebulous.local",
+                "-f",
+                &enc_key_path.to_string_lossy(),
+            ])
+            .status()
+            .is_ok_and(|s| s.success());
+        if keygen_ok {
+            // Importing encrypted key without passphrase must fail with clear message
+            let _ = app.update(Message::SshKeyImportInputChanged(
+                enc_key_path.to_string_lossy().to_string(),
+            ));
+            let _ = app.update(Message::SshKeyPassphraseChanged(String::new()));
+            let _ = app.update(Message::ImportSshKeypair);
+            assert!(app
+                .status_banner
+                .as_deref()
+                .unwrap_or_default()
+                .contains("passphrase is required"));
+
+            // Importing encrypted key with valid passphrase succeeds
+            let _ = app.update(Message::SshKeyPassphraseChanged(
+                "nebulous-passphrase-42".to_string(),
+            ));
+            let _ = app.update(Message::ImportSshKeypair);
+            assert!(app.settings_form.has_stored_ssh_key);
+            assert_eq!(
+                app.settings_form
+                    .stored_ssh_public_key
+                    .as_ref()
+                    .and_then(|k| k.comment.as_deref()),
+                Some("enc@nebulous.local")
+            );
+        }
     }
 }

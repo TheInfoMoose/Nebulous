@@ -1,9 +1,15 @@
+pub mod component;
 pub mod item;
 pub mod phase;
 pub mod project;
+pub mod registry;
 pub mod scope;
 pub mod timer;
 
+pub use component::{
+    ComponentDependency, ComponentManifest, ComponentRegistry, ComponentType, PinnedReleaseConfig,
+    RollingUpdateEntry, VerificationRecord, COMPONENT_MANIFEST_FILE_NAME,
+};
 pub use item::{
     ItemDetail, ItemEffort, ItemHistory, ItemManifest, ItemMetadata, ItemStatus, ItemType,
     PreviousFix, Severity,
@@ -14,6 +20,12 @@ pub use phase::{
 pub use project::{
     GitConfig, GitSyncMode, MetricsConfig, PhaseRegistry, PhaseRegistryEntry, ProjectCounters,
     ProjectManifest, ProjectMetadata,
+};
+pub use registry::{
+    global_registry_path, load_global_registry, load_global_registry_from, register_project,
+    register_project_in, remove_project, remove_project_in, resolve_registry_file_path,
+    save_global_registry, save_global_registry_to, set_active_project, set_active_project_in,
+    GlobalProjectRegistry, RegisteredProject, GLOBAL_PROJECTS_FILE_NAME,
 };
 pub use scope::{ItemStub, ScopeItems, ScopeManifest, ScopeMetadata};
 pub use timer::ActiveTimer;

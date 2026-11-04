@@ -14,10 +14,10 @@ pub use reconcile::ReconcileReport;
 
 use crate::error::{Result, TrackerError};
 use crate::models::{
-    ActiveTimer, GitConfig, ItemDetail, ItemManifest, ItemStub, ItemType, MetricsConfig,
-    PhaseManifest, PhaseMetadata, PhaseRegistry, PhaseRegistryEntry, PhaseStatus, PhaseSummary,
-    ProjectCounters, ProjectManifest, ProjectMetadata, ScopeItems, ScopeManifest, ScopeMetadata,
-    ScopeRegistry, ScopeRegistryEntry,
+    ActiveTimer, ComponentRegistry, GitConfig, ItemDetail, ItemManifest, ItemStub, ItemType,
+    MetricsConfig, PhaseManifest, PhaseMetadata, PhaseRegistry, PhaseRegistryEntry, PhaseStatus,
+    PhaseSummary, ProjectCounters, ProjectManifest, ProjectMetadata, ScopeItems, ScopeManifest,
+    ScopeMetadata, ScopeRegistry, ScopeRegistryEntry,
 };
 use crate::storage::reconcile::infer_default_scope_type;
 
@@ -219,6 +219,7 @@ impl TrackerStorage {
             },
             metrics: MetricsConfig::default(),
             git: GitConfig::default(),
+            components: ComponentRegistry::default(),
         };
 
         let phase = PhaseManifest {
@@ -245,6 +246,8 @@ impl TrackerStorage {
                 target: ".tracker".to_string(),
                 tech_stack: Vec::new(),
                 description: Some("Default unscoped triage inbox".to_string()),
+                bound_component: None,
+                tracked_files: Vec::new(),
             },
             items: ScopeItems::default(),
         };
@@ -393,12 +396,17 @@ impl TrackerStorage {
             path: path.clone(),
             source,
         })?;
-        ProjectManifest::from_toml_str(&raw).map_err(|err| attach_toml_path(err, path))
+        let mut manifest =
+            ProjectManifest::from_toml_str(&raw).map_err(|err| attach_toml_path(err, path))?;
+        normalize_project_manifest_paths(&mut manifest);
+        Ok(manifest)
     }
 
     /// Atomically writes Tier 1 `.tracker/project.toml`.
     pub fn write_project(&self, manifest: &ProjectManifest) -> Result<()> {
-        let serialized = manifest.to_toml_string()?;
+        let mut normalized = manifest.clone();
+        normalize_project_manifest_paths(&mut normalized);
+        let serialized = normalized.to_toml_string()?;
         atomic_write_str(&self.project_toml_path(), &serialized)
     }
 
@@ -419,7 +427,10 @@ impl TrackerStorage {
             path: path.to_path_buf(),
             source,
         })?;
-        PhaseManifest::from_toml_str(&raw).map_err(|err| attach_toml_path(err, path.to_path_buf()))
+        let mut manifest = PhaseManifest::from_toml_str(&raw)
+            .map_err(|err| attach_toml_path(err, path.to_path_buf()))?;
+        normalize_phase_manifest_paths(&mut manifest);
+        Ok(manifest)
     }
 
     /// Atomically writes Tier 2 `.tracker/phases/<phase_id>/phase.toml`.
@@ -429,7 +440,9 @@ impl TrackerStorage {
     }
 
     pub(crate) fn write_phase_to_path(&self, path: &Path, manifest: &PhaseManifest) -> Result<()> {
-        let serialized = manifest.to_toml_string()?;
+        let mut normalized = manifest.clone();
+        normalize_phase_manifest_paths(&mut normalized);
+        let serialized = normalized.to_toml_string()?;
         atomic_write_str(path, &serialized)
     }
 
@@ -450,7 +463,10 @@ impl TrackerStorage {
             path: path.to_path_buf(),
             source,
         })?;
-        ScopeManifest::from_toml_str(&raw).map_err(|err| attach_toml_path(err, path.to_path_buf()))
+        let mut manifest = ScopeManifest::from_toml_str(&raw)
+            .map_err(|err| attach_toml_path(err, path.to_path_buf()))?;
+        normalize_scope_manifest_paths(&mut manifest);
+        Ok(manifest)
     }
 
     /// Atomically writes Tier 3 `.tracker/phases/<phase_id>/domains/<scope_id>/scope.toml`.
@@ -465,9 +481,12 @@ impl TrackerStorage {
     }
 
     pub(crate) fn write_scope_to_path(&self, path: &Path, manifest: &ScopeManifest) -> Result<()> {
-        let serialized = manifest.to_toml_string()?;
+        let mut normalized = manifest.clone();
+        normalize_scope_manifest_paths(&mut normalized);
+        let serialized = normalized.to_toml_string()?;
         atomic_write_str(path, &serialized)
     }
+
 
     /// Reads and parses Tier 4 `items/<item_id>/item.toml`.
     pub fn read_item_manifest(
@@ -720,6 +739,8 @@ impl TrackerStorage {
                         target: ".tracker".to_string(),
                         tech_stack: Vec::new(),
                         description: Some("Default unscoped triage inbox".to_string()),
+                        bound_component: None,
+                        tracked_files: Vec::new(),
                     },
                     items: ScopeItems::default(),
                 };
@@ -756,6 +777,77 @@ impl TrackerStorage {
     }
 }
 
+/// Normalizes any relative path string (e.g. `phases\01_core`, `.\domains\backend_core\`, or
+/// component file lists) to canonical forward slashes (`/`) across Linux, macOS, and Windows.
+pub fn normalize_relative_path_str(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed == "." {
+        return ".".to_string();
+    }
+
+    let unified = trimmed.replace('\\', "/");
+    let has_dot_segment = unified.split('/').any(|seg| seg == ".");
+    let parts: Vec<&str> = unified
+        .split('/')
+        .filter(|seg| !seg.is_empty() && *seg != ".")
+        .collect();
+
+    if parts.is_empty() {
+        if has_dot_segment {
+            ".".to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        parts.join("/")
+    }
+}
+
+/// Normalizes a relative [`Path`] to canonical forward slashes (`/`).
+pub fn normalize_relative_path(path: impl AsRef<Path>) -> String {
+    normalize_relative_path_str(&path.as_ref().to_string_lossy())
+}
+
+/// Normalizes a list of relative file or component paths to forward slashes (`/`),
+/// omitting empty entries and deduplicating while preserving order.
+pub fn normalize_relative_path_list<I, S>(paths: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut out = Vec::new();
+    for p in paths {
+        let norm = normalize_relative_path_str(p.as_ref());
+        if !norm.is_empty() && !out.contains(&norm) {
+            out.push(norm);
+        }
+    }
+    out
+}
+
+pub(crate) fn normalize_project_manifest_paths(manifest: &mut ProjectManifest) {
+    for entry in &mut manifest.phases.registry {
+        entry.path = normalize_relative_path_str(&entry.path);
+    }
+    for comp in &mut manifest.components.registry {
+        comp.normalize_paths();
+    }
+}
+
+pub(crate) fn normalize_phase_manifest_paths(manifest: &mut PhaseManifest) {
+    for entry in &mut manifest.scopes.manifest {
+        entry.path = normalize_relative_path_str(&entry.path);
+    }
+}
+
+pub(crate) fn normalize_scope_manifest_paths(manifest: &mut ScopeManifest) {
+    manifest.scope.target = normalize_relative_path_str(&manifest.scope.target);
+    manifest.scope.tracked_files = normalize_relative_path_list(&manifest.scope.tracked_files);
+}
+
 pub(crate) fn validate_identifier(kind: &'static str, id: &str) -> Result<()> {
     let trimmed = id.trim();
     if trimmed.is_empty()
@@ -772,24 +864,54 @@ pub(crate) fn validate_identifier(kind: &'static str, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn resolve_safe_relative_path(base: &Path, rel: &str) -> Result<PathBuf> {
-    let rel_path = Path::new(rel);
-    if rel_path.is_absolute() {
+pub(crate) fn resolve_safe_relative_path(base: &Path, rel: &str) -> Result<PathBuf> {
+    let trimmed = rel.trim();
+    if trimmed.is_empty() {
+        return Err(TrackerError::ValidationError(
+            "Relative tracker path must not be empty".to_string(),
+        ));
+    }
+
+    let has_windows_drive_prefix = trimmed.len() >= 2
+        && trimmed.as_bytes()[0].is_ascii_alphabetic()
+        && trimmed.as_bytes()[1] == b':';
+
+    if trimmed.starts_with('/')
+        || trimmed.starts_with('\\')
+        || has_windows_drive_prefix
+        || Path::new(trimmed).is_absolute()
+    {
         return Err(TrackerError::ValidationError(format!(
             "Relative tracker path '{rel}' must not be absolute"
         )));
     }
-    for comp in rel_path.components() {
-        match comp {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(TrackerError::ValidationError(format!(
-                    "Relative tracker path '{rel}' must not contain parent traversal ('..')"
-                )));
+
+    let unified = trimmed.replace('\\', "/");
+    let mut resolved = base.to_path_buf();
+
+    for seg in unified.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." || seg.contains('\0') {
+            return Err(TrackerError::ValidationError(format!(
+                "Relative tracker path '{rel}' must not contain parent traversal ('..')"
+            )));
+        }
+        for comp in Path::new(seg).components() {
+            match comp {
+                Component::Normal(part) => resolved.push(part),
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err(TrackerError::ValidationError(format!(
+                        "Relative tracker path '{rel}' must not contain parent traversal ('..')"
+                    )));
+                }
             }
         }
     }
-    Ok(base.join(rel_path))
+
+    Ok(resolved)
 }
 
 fn attach_toml_path(err: TrackerError, path: PathBuf) -> TrackerError {
@@ -801,3 +923,4 @@ fn attach_toml_path(err: TrackerError, path: PathBuf) -> TrackerError {
         other => other,
     }
 }
+

@@ -1,14 +1,20 @@
 pub mod agent_context;
+pub mod crypto;
 pub mod error;
 pub mod git_sync;
+pub mod ingestion;
+pub mod mcp;
 pub mod models;
 pub mod storage;
 pub mod watcher;
 pub mod workflow;
 
 pub use agent_context::*;
+pub use crypto::*;
 pub use error::{Result, TrackerError};
 pub use git_sync::*;
+pub use ingestion::*;
+pub use mcp::*;
 pub use models::*;
 pub use storage::*;
 pub use watcher::*;
@@ -17,6 +23,7 @@ pub use workflow::{
     RecurringItemHotspot, ScopeEffortValuation, ScopeHotspot, StagnantItemEntry,
     StoppedTimerSession, TimerStatus,
 };
+
 
 #[cfg(test)]
 mod tests {
@@ -428,4 +435,441 @@ bug = -1
             Err(TrackerError::TomlDeserialize { .. })
         ));
     }
+
+    #[test]
+    fn test_aes256_gcm_round_trip_and_tamper_detection() {
+        use crate::crypto::{decrypt_aes256_gcm, derive_key_sha256, encrypt_aes256_gcm};
+
+        let key = derive_key_sha256(b"test-master-secret", b"unit-test-context");
+        let plaintext = b"ghp_super_secret_personal_access_token_1234567890";
+
+        let ciphertext = encrypt_aes256_gcm(&key, plaintext).expect("encryption should succeed");
+        assert_ne!(ciphertext.as_slice(), plaintext);
+
+        let decrypted =
+            decrypt_aes256_gcm(&key, &ciphertext).expect("decryption should round-trip");
+        assert_eq!(decrypted.as_slice(), plaintext);
+
+        // Wrong key must fail authentication
+        let wrong_key = derive_key_sha256(b"wrong-master-secret", b"unit-test-context");
+        assert!(decrypt_aes256_gcm(&wrong_key, &ciphertext).is_err());
+
+        // Tampered ciphertext byte must fail GCM authentication tag check
+        let mut tampered = ciphertext.clone();
+        let last_idx = tampered.len() - 1;
+        tampered[last_idx] ^= 0x55;
+        assert!(decrypt_aes256_gcm(&key, &tampered).is_err());
+
+        // Truncated payload must be rejected
+        assert!(decrypt_aes256_gcm(&key, &ciphertext[..8]).is_err());
+    }
+
+    #[test]
+    fn test_secure_storage_vault_fallback_and_permissions() {
+        use crate::crypto::SecureStorage;
+
+        let temp_dir = tempfile::tempdir().expect("should create tempdir");
+        let config_dir = temp_dir.path().join("nebulous_cfg");
+
+        let storage =
+            SecureStorage::vault_only(&config_dir).expect("should create vault_only SecureStorage");
+        assert!(!storage.uses_keyring());
+
+        // Store multiple secrets and verify persistence across distinct instances
+        storage
+            .store_secret("project:nebulous:pat", "ghp_vault_token_abc987")
+            .expect("should store PAT in encrypted vault");
+        storage
+            .store_secret("project:novos:pat", "glpat_novos_rolling_token")
+            .expect("should store second PAT in encrypted vault");
+
+        assert!(storage.vault_path().is_file());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir_mode = std::fs::metadata(&config_dir).unwrap().permissions().mode() & 0o777;
+            let file_mode = std::fs::metadata(storage.vault_path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(dir_mode, 0o700, "vault directory must have 0700 permissions");
+            assert_eq!(file_mode, 0o600, "vault.enc file must have 0600 permissions");
+        }
+
+        // Reopen vault from disk using a fresh SecureStorage instance
+        let reopened =
+            SecureStorage::vault_only(&config_dir).expect("should reopen encrypted vault");
+        assert_eq!(
+            reopened
+                .get_secret_string("project:nebulous:pat")
+                .expect("should decrypt stored PAT"),
+            "ghp_vault_token_abc987"
+        );
+        assert_eq!(
+            reopened
+                .get_secret_string("project:novos:pat")
+                .expect("should decrypt second PAT"),
+            "glpat_novos_rolling_token"
+        );
+        assert_eq!(
+            reopened.list_vault_keys().unwrap(),
+            vec![
+                "project:nebulous:pat".to_string(),
+                "project:novos:pat".to_string()
+            ]
+        );
+
+        // Delete secret and verify removal
+        reopened
+            .delete_secret("project:nebulous:pat")
+            .expect("should delete secret");
+        assert!(!reopened.has_secret("project:nebulous:pat"));
+        assert!(reopened.get_secret("project:nebulous:pat").is_err());
+        assert!(reopened.has_secret("project:novos:pat"));
+
+        // Empty key or empty secret must fail validation
+        assert!(reopened.store_secret("   ", "secret").is_err());
+        assert!(reopened.store_secret("valid_key", "").is_err());
+
+        // Regression test 1: Opening an existing vault with a wrong master key and calling
+        // store_secret MUST fail with an authentication error and MUST NOT clobber existing entries.
+        let wrong_key_storage = SecureStorage::with_options(
+            "nebulous-test",
+            &config_dir,
+            false,
+            Some([0xAA; crate::crypto::AES256_KEY_LEN]),
+        )
+        .expect("should construct instance with explicit wrong key");
+        assert!(
+            wrong_key_storage
+                .store_secret("project:attacker:pat", "malicious_overwrite")
+                .is_err(),
+            "store_secret with wrong master key must fail rather than overwrite vault.enc"
+        );
+        assert_eq!(
+            reopened
+                .get_secret_string("project:novos:pat")
+                .expect("existing secret must remain intact after failed write"),
+            "glpat_novos_rolling_token"
+        );
+
+        // Regression test 2: Truncated/short vault.key (< 32 bytes) must return an error
+        // rather than silently generating a new random key over vault.key.
+        let bad_key_dir = temp_dir.path().join("bad_vault_key_cfg");
+        std::fs::create_dir_all(&bad_key_dir).unwrap();
+        let short_seed_b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            b"too-short-16byte",
+        );
+        std::fs::write(bad_key_dir.join("vault.key"), &short_seed_b64).unwrap();
+        assert!(
+            SecureStorage::vault_only(&bad_key_dir).is_err(),
+            "vault.key shorter than 32 bytes must be rejected"
+        );
+        assert_eq!(
+            std::fs::read_to_string(bad_key_dir.join("vault.key")).unwrap(),
+            short_seed_b64,
+            "corrupted vault.key must not be overwritten"
+        );
+
+        // Regression test 3: Concurrent multi-threaded vault initialization and writes
+        let concurrent_dir = std::sync::Arc::new(temp_dir.path().join("concurrent_vault"));
+        let mut handles = Vec::new();
+        for idx in 0..8 {
+            let dir_clone = std::sync::Arc::clone(&concurrent_dir);
+            handles.push(std::thread::spawn(move || {
+                let store = SecureStorage::vault_only(&*dir_clone)
+                    .expect("concurrent vault_only init should succeed");
+                store
+                    .store_secret(&format!("thread_key_{idx}"), &format!("secret_val_{idx}"))
+                    .expect("concurrent store_secret should succeed");
+            }));
+        }
+        for h in handles {
+            h.join().expect("worker thread should not panic");
+        }
+        let final_store = SecureStorage::vault_only(&*concurrent_dir).unwrap();
+        for idx in 0..8 {
+            assert_eq!(
+                final_store
+                    .get_secret_string(&format!("thread_key_{idx}"))
+                    .unwrap(),
+                format!("secret_val_{idx}")
+            );
+        }
+    }
+
+    #[test]
+    fn test_keypair_manager_ed25519_generation_import_export_and_pat() {
+        use crate::crypto::KeyPairManager;
+
+        let temp_dir = tempfile::tempdir().expect("should create tempdir");
+        let manager = KeyPairManager::vault_only(temp_dir.path().join("vault"))
+            .expect("should init KeyPairManager");
+
+        // 1. Generate Ed25519 SSH keypair
+        let generated = manager
+            .generate_ed25519_keypair("nebulous/origin", Some("bot@nebulous.dev"))
+            .expect("should generate Ed25519 keypair");
+        assert_eq!(generated.account, "nebulous/origin");
+        assert_eq!(generated.algorithm, "ssh-ed25519");
+        assert!(generated.public_key_openssh.starts_with("ssh-ed25519 "));
+        assert!(generated
+            .private_key_openssh
+            .contains("BEGIN OPENSSH PRIVATE KEY"));
+        assert!(generated.fingerprint_sha256.starts_with("SHA256:"));
+        assert_eq!(generated.comment.as_deref(), Some("bot@nebulous.dev"));
+
+        // 2. Retrieve keypair and public info from vault
+        assert!(manager.has_ssh_keypair("nebulous/origin"));
+        let retrieved = manager
+            .get_ssh_keypair("nebulous/origin")
+            .expect("should retrieve stored Ed25519 keypair");
+        assert_eq!(retrieved.public_key_openssh, generated.public_key_openssh);
+        assert_eq!(retrieved.fingerprint_sha256, generated.fingerprint_sha256);
+
+        let pub_info = manager
+            .get_ssh_public_key_info("nebulous/origin")
+            .expect("should retrieve public key info");
+        assert_eq!(pub_info.fingerprint_sha256, generated.fingerprint_sha256);
+        assert_eq!(pub_info.public_key_openssh, generated.public_key_openssh);
+
+        // 3. Export keypair to directory and re-import under another account
+        let export_dir = temp_dir.path().join("exported_ssh");
+        let (priv_path, pub_path) = manager
+            .export_keypair_to_dir("nebulous/origin", &export_dir, "id_ed25519_nebulous")
+            .expect("should export keypair to disk");
+        assert!(priv_path.is_file());
+        assert!(pub_path.is_file());
+
+        let imported = manager
+            .import_ssh_key_file("novos/upstream", &priv_path, None)
+            .expect("should import exported OpenSSH private key file");
+        assert_eq!(imported.fingerprint_sha256, generated.fingerprint_sha256);
+        assert_eq!(imported.public_key_openssh, generated.public_key_openssh);
+
+        // 4. Passphrase-encrypted OpenSSH private key import with non-ASCII comment
+        let encrypted_pem = "-----BEGIN OPENSSH PRIVATE KEY-----\n\
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABCJWvj7D9\n\
+9lXeI3N3dASzPYAAAAIAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIJlS08rT0LhI49eT\n\
+LGG4KE/IeixN0+O1IUGFB0W+mcO8AAAAoGAbFSJv1o4sJOl6TAHSzLySOmi+khl03KQF4K\n\
+UrASJtGLQUSJ1uknaMXhhvzocnntKGdtnwQqupPxsAvlJVx+YQvKtvnNodzJQWr2AK3eQe\n\
+GCGSdmIZNBxsPeFEeDqGk9hWjbpb+NmVQL4zGidvTgVqt4K+b5nqyTHpbhcd3o4uCpVVsl\n\
+sIrutI2NuqcarHHe39XSQPcgOvzeKMOaWd1FA=\n\
+-----END OPENSSH PRIVATE KEY-----\n";
+
+        // Importing encrypted key without passphrase or with wrong passphrase must fail
+        assert!(manager
+            .import_ssh_keypair("encrypted/no_pass", encrypted_pem, None)
+            .is_err());
+        assert!(manager
+            .import_ssh_keypair("encrypted/empty_pass", encrypted_pem, Some(""))
+            .is_err());
+        assert!(manager
+            .import_ssh_keypair(
+                "encrypted/wrong_pass",
+                encrypted_pem,
+                Some("wrong-passphrase")
+            )
+            .is_err());
+
+        // Importing encrypted key with correct passphrase must succeed and preserve non-ASCII comment
+        let decrypted_record = manager
+            .import_ssh_keypair(
+                "encrypted/ok",
+                encrypted_pem,
+                Some("correct-horse-battery-staple"),
+            )
+            .expect("should decrypt and import passphrase-protected OpenSSH key");
+        assert_eq!(
+            decrypted_record.public_key_openssh,
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJlS08rT0LhI49eTLGG4KE/IeixN0+O1IUGFB0W+mcO8 key-ñoño-🚀@nebulous.dev"
+        );
+        assert_eq!(
+            decrypted_record.comment.as_deref(),
+            Some("key-ñoño-🚀@nebulous.dev")
+        );
+
+        // 5. Delete SSH keypair
+        manager
+            .delete_ssh_keypair("nebulous/origin")
+            .expect("should delete SSH keypair");
+        assert!(!manager.has_ssh_keypair("nebulous/origin"));
+        assert!(manager.get_ssh_keypair("nebulous/origin").is_err());
+
+        // 6. HTTPS PAT round-trip via KeyPairManager & reserved prefix protection
+        assert!(manager
+            .store_pat("ssh_priv:nebulous/origin", "ghp_bad")
+            .is_err());
+        assert!(manager
+            .store_pat("ssh_pub:nebulous/origin", "ghp_bad")
+            .is_err());
+        manager
+            .store_pat("NebulousRepo", "  ghp_trimmed_pat_token_999  ")
+            .expect("should store PAT");
+        assert!(manager.has_pat("NebulousRepo"));
+        assert_eq!(
+            manager.get_pat_string("NebulousRepo").unwrap(),
+            "ghp_trimmed_pat_token_999"
+        );
+        manager
+            .delete_pat("NebulousRepo")
+            .expect("should delete PAT");
+        assert!(!manager.has_pat("NebulousRepo"));
+    }
+
+    #[test]
+    fn test_cross_platform_config_dir_resolution_and_path_normalization() {
+        use std::path::PathBuf;
+
+        use crate::crypto::resolve_nebulous_config_dir_from;
+        use crate::storage::{
+            atomic::replace_target_after_rename_error, atomic_write_str, normalize_relative_path,
+            normalize_relative_path_list, normalize_relative_path_str, TrackerStorage,
+        };
+
+        // 1. NEBULOUS_CONFIG_DIR override takes highest precedence on all OS targets
+        assert_eq!(
+            resolve_nebulous_config_dir_from(
+                Some("/tmp/custom_nebulous_cfg"),
+                Some("/home/user/.xdg"),
+                Some("C:\\Users\\user\\AppData\\Roaming"),
+                Some("/home/user"),
+                "linux"
+            ),
+            PathBuf::from("/tmp/custom_nebulous_cfg")
+        );
+
+        // 2. XDG_CONFIG_HOME/nebulous
+        assert_eq!(
+            resolve_nebulous_config_dir_from(
+                None,
+                Some("/home/user/.xdg_config"),
+                None,
+                Some("/home/user"),
+                "linux"
+            ),
+            PathBuf::from("/home/user/.xdg_config").join("nebulous")
+        );
+
+        // 3. Linux default (~/.config/nebulous)
+        assert_eq!(
+            resolve_nebulous_config_dir_from(None, None, None, Some("/home/alice"), "linux"),
+            PathBuf::from("/home/alice").join(".config").join("nebulous")
+        );
+
+        // 4. macOS default (~/Library/Application Support/nebulous)
+        assert_eq!(
+            resolve_nebulous_config_dir_from(None, None, None, Some("/Users/alice"), "macos"),
+            PathBuf::from("/Users/alice")
+                .join("Library")
+                .join("Application Support")
+                .join("nebulous")
+        );
+
+        // 5. Windows default (%APPDATA%\nebulous)
+        assert_eq!(
+            resolve_nebulous_config_dir_from(
+                None,
+                None,
+                Some("C:\\Users\\alice\\AppData\\Roaming"),
+                Some("C:\\Users\\alice"),
+                "windows"
+            ),
+            PathBuf::from("C:\\Users\\alice\\AppData\\Roaming").join("nebulous")
+        );
+
+        // 6. Relative path normalization across platforms
+        assert_eq!(
+            normalize_relative_path_str("phases\\01_core_engine\\"),
+            "phases/01_core_engine"
+        );
+        assert_eq!(
+            normalize_relative_path_str(".\\domains\\backend_core\\"),
+            "domains/backend_core"
+        );
+        assert_eq!(normalize_relative_path_str(".\\"), ".");
+        assert_eq!(normalize_relative_path_str("///"), "");
+        assert_eq!(
+            normalize_relative_path(std::path::Path::new("crates\\backend_core\\src\\lib.rs")),
+            "crates/backend_core/src/lib.rs"
+        );
+        assert_eq!(
+            normalize_relative_path_list([
+                "crates\\backend_core\\Cargo.toml",
+                "./crates/backend_core/Cargo.toml",
+                "./crates/nebulous_cli\\src\\main.rs",
+                "   ",
+            ]),
+            vec![
+                "crates/backend_core/Cargo.toml".to_string(),
+                "crates/nebulous_cli/src/main.rs".to_string(),
+            ]
+        );
+
+        // 7. Verify TrackerStorage normalizes backslash paths on write & read
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = TrackerStorage::init(
+            temp_dir.path(),
+            "NormTest",
+            "01_core_engine",
+            "Core Engine",
+        )
+        .unwrap();
+
+        let mut project = storage.read_project().unwrap();
+        project.phases.registry[0].path = "phases\\01_core_engine".to_string();
+        storage.write_project(&project).unwrap();
+        let reread_project = storage.read_project().unwrap();
+        assert_eq!(
+            reread_project.phases.registry[0].path,
+            "phases/01_core_engine"
+        );
+
+        let scope = storage
+            .create_scope(
+                Some("01_core_engine"),
+                "backend_core",
+                "crates\\backend_core\\",
+                vec!["rust".to_string()],
+                None,
+            )
+            .unwrap();
+        assert_eq!(scope.scope.target, "crates/backend_core");
+
+        // 8. Verify atomic_write_str clears read-only on target file and fallback replacement works
+        let readonly_target = temp_dir.path().join("readonly_test.toml");
+        atomic_write_str(&readonly_target, "v = 1\n").unwrap();
+        let mut perms = std::fs::metadata(&readonly_target).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&readonly_target, perms).unwrap();
+
+        atomic_write_str(&readonly_target, "v = 2\n")
+            .expect("atomic_write_str should succeed over read-only target file");
+        assert_eq!(std::fs::read_to_string(&readonly_target).unwrap(), "v = 2\n");
+        assert!(
+            !std::fs::metadata(&readonly_target)
+                .unwrap()
+                .permissions()
+                .readonly(),
+            "target file must not remain read-only after atomic_write_str"
+        );
+
+        // Directly exercise replace_target_after_rename_error fallback path
+        let mut perms2 = std::fs::metadata(&readonly_target).unwrap().permissions();
+        perms2.set_readonly(true);
+        std::fs::set_permissions(&readonly_target, perms2).unwrap();
+        let manual_tmp = temp_dir.path().join(".readonly_test.toml.tmp.manual");
+        std::fs::write(&manual_tmp, b"v = 3\n").unwrap();
+        replace_target_after_rename_error(&manual_tmp, &readonly_target, b"v = 3\n")
+            .expect("fallback replacement should clear readonly and replace target");
+        assert_eq!(std::fs::read_to_string(&readonly_target).unwrap(), "v = 3\n");
+        assert!(!manual_tmp.exists());
+    }
 }
+
+
+
+

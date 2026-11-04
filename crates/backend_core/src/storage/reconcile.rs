@@ -108,9 +108,18 @@ impl TrackerStorage {
                     let scope_manifest = self.read_scope_from_path(&scope_toml_path)?;
                     if !known_scope_ids.contains(&scope_manifest.scope.id) {
                         known_scope_ids.insert(scope_manifest.scope.id.clone());
+                        let scope_type = scope_manifest
+                            .scope
+                            .bound_component
+                            .as_deref()
+                            .and_then(|cid| project.components.find(cid))
+                            .or_else(|| project.components.find(&scope_manifest.scope.id))
+                            .or_else(|| project.components.find(&scope_manifest.scope.target))
+                            .map(|c| c.component_type.clone())
+                            .unwrap_or_else(|| infer_default_scope_type(&scope_manifest.scope.id));
                         phase_manifest.scopes.manifest.push(ScopeRegistryEntry {
                             id: scope_manifest.scope.id.clone(),
-                            scope_type: infer_default_scope_type(&scope_manifest.scope.id),
+                            scope_type,
                             path: format!("domains/{dir_name}"),
                         });
                     }

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.nebulous.Tracker</id>
+  <name>Nebulous</name>
+  <summary>Local-first 4-tier project, bug, and AI agent workflow tracker</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="com.nebulous">
+    <name>TheInfoMoose</name>
+  </developer>
+  <description>
+    <p>
+      Nebulous is a local-first, Git-backed, 4-tier project and bug tracker built in Rust for Linux developers, rolling-release OS engineering (such as NovOS), and AI-assisted coding workflows.
+    </p>
+    <p>
+      It pairs a fast companion CLI (neb) and JSON-RPC 2.0 Model Context Protocol server (neb mcp) with a native libcosmic desktop GUI (nebulous), storing all project state in human-readable TOML manifests and Markdown files inside .tracker/.
+    </p>
+    <ul>
+      <li>4-Tier .tracker/ TOML + Markdown hierarchy with instant index-only startup</li>
+      <li>Global multi-project registry and two-stage directory ingestion with nebulous.component.toml manifests</li>
+      <li>Rolling-release dependency pinning and self-healing CI rollback support</li>
+      <li>Policy-validated self-documenting Git commits, SSH &amp; HTTPS PAT vault (OS keyring + AES-256-GCM fallback)</li>
+      <li>Built-in Model Context Protocol (neb mcp) server for Cursor, Claude Code, Codex, Ollama, and CI agents</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">com.nebulous.Tracker.desktop</launchable>
+  <url type="homepage">https://github.com/theinfomoose/Nebulous</url>
+  <url type="bugtracker">https://github.com/theinfomoose/Nebulous/issues</url>
+  <provides>
+    <binary>nebulous</binary>
+    <binary>neb</binary>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-11-03">
+      <description>
+        <p>Initial release featuring the 4-tier .tracker/ engine, multi-project registry, directory ingestion, Git commit policy, MCP server, and native COSMIC desktop interface.</p>
+      </description>
+    </release>
+  </releases>
+</component>
