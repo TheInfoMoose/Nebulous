@@ -409,7 +409,10 @@ fn compute_ahead_behind(
     head_branch: Option<&str>,
 ) -> (usize, usize) {
     let mut candidate_branches = Vec::new();
-    if let Some(b) = head_branch.map(str::trim).filter(|s| !s.is_empty() && *s != "HEAD") {
+    if let Some(b) = head_branch
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "HEAD")
+    {
         candidate_branches.push(b);
     }
     if let Some(b) = configured_branch.map(str::trim).filter(|s| !s.is_empty()) {
@@ -772,8 +775,7 @@ pub fn fetch_repo_with_auth(
                 "fetch update remote tracking ref",
             );
             if branch.trim() != effective_branch && !branch.trim().is_empty() {
-                let configured_remote_ref =
-                    format!("refs/remotes/{remote_name}/{}", branch.trim());
+                let configured_remote_ref = format!("refs/remotes/{remote_name}/{}", branch.trim());
                 let _ = repo.reference(
                     &configured_remote_ref,
                     fetch_commit.id(),
@@ -826,7 +828,10 @@ pub fn push_repo_with_auth(
 
     // Update the local remote-tracking ref so ahead/behind counts immediately reflect the push
     let local_branch_ref = format!("refs/heads/{effective_branch}");
-    if let Ok(local_ref) = repo.find_reference(&local_branch_ref).or_else(|_| repo.head()) {
+    if let Ok(local_ref) = repo
+        .find_reference(&local_branch_ref)
+        .or_else(|_| repo.head())
+    {
         if let Ok(commit) = local_ref.peel_to_commit() {
             let remote_ref = format!("refs/remotes/{remote_name}/{effective_branch}");
             let _ = repo.reference(
@@ -836,8 +841,7 @@ pub fn push_repo_with_auth(
                 "push update remote tracking ref",
             );
             if branch.trim() != effective_branch && !branch.trim().is_empty() {
-                let configured_remote_ref =
-                    format!("refs/remotes/{remote_name}/{}", branch.trim());
+                let configured_remote_ref = format!("refs/remotes/{remote_name}/{}", branch.trim());
                 let _ = repo.reference(
                     &configured_remote_ref,
                     commit.id(),
@@ -1188,10 +1192,7 @@ impl TrackerStorage {
                         candidate_accounts.push(acc.trim().to_string());
                     }
                 }
-                candidate_accounts.push(format!(
-                    "{}/{}",
-                    project.project.name, project.git.remote
-                ));
+                candidate_accounts.push(format!("{}/{}", project.project.name, project.git.remote));
                 candidate_accounts.push(project.project.name.clone());
 
                 for acc in candidate_accounts {
@@ -1394,7 +1395,12 @@ impl TrackerStorage {
             (None, None) => format!("[WORKSPACE] {effective_summary}"),
         };
 
-        let commit_message = match input.body.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+        let commit_message = match input
+            .body
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+        {
             Some(body) => format!("{header}\n\n{body}"),
             None => header,
         };
@@ -1502,10 +1508,8 @@ impl TrackerStorage {
                     workspace_or_changed
                 };
 
-                let fix_summary_with_files = format!(
-                    "{effective_summary} [files: {}]",
-                    files_for_log.join(", ")
-                );
+                let fix_summary_with_files =
+                    format!("{effective_summary} [files: {}]", files_for_log.join(", "));
                 detail.manifest.history.previous_fixes.push(PreviousFix {
                     date: today.clone(),
                     commit: recorded_fix_sha.clone(),
@@ -1603,5 +1607,3 @@ impl TrackerStorage {
         Ok(committed_sha.or_else(|| head_short_sha_from_repo(&repo).ok()))
     }
 }
-
-

@@ -1011,7 +1011,11 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
     cloned_storage.git_pull(None).unwrap();
     let remote_src = clone_dir.path().join("crates/backend_core/src");
     fs::create_dir_all(&remote_src).unwrap();
-    fs::write(remote_src.join("conflict.rs"), "pub fn remote_version() {}\n").unwrap();
+    fs::write(
+        remote_src.join("conflict.rs"),
+        "pub fn remote_version() {}\n",
+    )
+    .unwrap();
     cloned_storage
         .git_commit_documented(DocumentedCommitInput::for_item(
             "BUG-0001",
@@ -1021,7 +1025,11 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
     cloned_storage.git_push(None).unwrap();
 
     // Create conflicting uncommitted file in workspace 1
-    fs::write(src_dir.join("conflict.rs"), "pub fn local_dirty_version() {}\n").unwrap();
+    fs::write(
+        src_dir.join("conflict.rs"),
+        "pub fn local_dirty_version() {}\n",
+    )
+    .unwrap();
     let head_before_failed_pull = storage.git_head_short_sha();
     let pull_err = storage
         .git_pull(None)
@@ -1254,8 +1262,11 @@ fn test_git_commit_documented_policy_enforcement_and_atomic_doc_updates() {
 
     let selective_outcome = storage
         .git_commit_documented(
-            DocumentedCommitInput::for_item("BUG-0001", "Stage only module a while leaving b dirty")
-                .with_paths(["crates/backend_core/src/a.rs"]),
+            DocumentedCommitInput::for_item(
+                "BUG-0001",
+                "Stage only module a while leaving b dirty",
+            )
+            .with_paths(["crates/backend_core/src/a.rs"]),
         )
         .expect("selective path commit should succeed");
     assert!(selective_outcome
@@ -1313,7 +1324,9 @@ fn test_git_commit_documented_policy_enforcement_and_atomic_doc_updates() {
             DocumentedCommitInput::new("Add module b in backend_core with custom policy")
                 .with_scope("backend_core"),
         )
-        .expect("workspace commit with explicit scope should succeed when require_item_id is false");
+        .expect(
+            "workspace commit with explicit scope should succeed when require_item_id is false",
+        );
     assert_eq!(
         workspace_scoped_outcome.message,
         "[WORKSPACE](backend_core) Add module b in backend_core with custom policy"
@@ -1370,4 +1383,3 @@ fn test_git_auth_resolution_ssh_keypair_and_pat() {
     let _ = storage.delete_pat();
     std::env::remove_var("NEBULOUS_CONFIG_DIR");
 }
-

@@ -147,7 +147,6 @@ pub(crate) fn replace_target_after_rename_error(
     Ok(())
 }
 
-
 fn create_unique_temp_file(
     parent: &Path,
     file_name: &str,

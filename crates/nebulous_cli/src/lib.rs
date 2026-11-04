@@ -182,8 +182,8 @@ mod tests {
         ));
 
         // 17. project
-        let cli =
-            Cli::try_parse_from(["neb", "project", "add", "/tmp/novos", "--name", "NovOS"]).unwrap();
+        let cli = Cli::try_parse_from(["neb", "project", "add", "/tmp/novos", "--name", "NovOS"])
+            .unwrap();
         assert!(matches!(
             cli.command,
             Commands::Project {

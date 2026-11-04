@@ -30,7 +30,9 @@ pub fn global_registry_path() -> PathBuf {
 /// Resolves a `projects.toml` file path from either a directory or an explicit `.toml` file path.
 pub fn resolve_registry_file_path(path_or_dir: impl AsRef<Path>) -> PathBuf {
     let p = path_or_dir.as_ref();
-    if p.extension() == Some(OsStr::new("toml")) || p.file_name() == Some(OsStr::new(GLOBAL_PROJECTS_FILE_NAME)) {
+    if p.extension() == Some(OsStr::new("toml"))
+        || p.file_name() == Some(OsStr::new(GLOBAL_PROJECTS_FILE_NAME))
+    {
         p.to_path_buf()
     } else {
         p.join(GLOBAL_PROJECTS_FILE_NAME)
@@ -144,9 +146,9 @@ impl GlobalProjectRegistry {
                 || p.tracker_path == trimmed
                 || (!norm_query.is_empty()
                     && (p.root_path == norm_query || p.tracker_path == norm_query))
-                || canonical_query.as_deref().is_some_and(|canon| {
-                    p.root_path == canon || p.tracker_path == canon
-                })
+                || canonical_query
+                    .as_deref()
+                    .is_some_and(|canon| p.root_path == canon || p.tracker_path == canon)
         }) {
             return Some(idx);
         }
@@ -217,7 +219,12 @@ impl GlobalProjectRegistry {
                     manifest.git.branch,
                     Some(manifest.project.active_phase),
                 ),
-                Err(_) => (fallback_dir_name.clone(), false, default_branch_name(), None),
+                Err(_) => (
+                    fallback_dir_name.clone(),
+                    false,
+                    default_branch_name(),
+                    None,
+                ),
             };
 
         let explicit_name = name_override

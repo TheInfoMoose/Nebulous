@@ -433,7 +433,11 @@ impl SecureStorage {
             return Ok(false);
         }
         let mut payload = self.load_vault_unlocked()?;
-        let existed = payload.entries.remove(key).map(|mut v| v.zeroize()).is_some();
+        let existed = payload
+            .entries
+            .remove(key)
+            .map(|mut v| v.zeroize())
+            .is_some();
         if existed {
             self.save_vault_unlocked(&payload)?;
         }
@@ -501,12 +505,13 @@ fn load_or_create_vault_master_key(key_path: &Path) -> Result<Zeroizing<[u8; AES
         .map_err(|e| TrackerError::KeyringError(e.to_string()))?;
 
     if key_path.is_file() {
-        let raw = Zeroizing::new(fs::read_to_string(key_path).map_err(|source| {
-            TrackerError::Io {
-                path: key_path.to_path_buf(),
-                source,
-            }
-        })?);
+        let raw =
+            Zeroizing::new(
+                fs::read_to_string(key_path).map_err(|source| TrackerError::Io {
+                    path: key_path.to_path_buf(),
+                    source,
+                })?,
+            );
         let decoded = Zeroizing::new(
             BASE64_STANDARD
                 .decode(raw.trim())

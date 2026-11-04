@@ -419,7 +419,12 @@ fn handle_init(
         .unwrap_or_else(|| infer_project_name(&target_root));
 
     let storage = TrackerStorage::init(&target_root, &project_name, phase_id, phase_title)?;
-    let _ = register_project(storage.project_root(), Some(&project_name), Vec::new(), true);
+    let _ = register_project(
+        storage.project_root(),
+        Some(&project_name),
+        Vec::new(),
+        true,
+    );
     let project = storage.read_project()?;
     let tracker_dir_str = storage.tracker_dir().to_string_lossy().to_string();
 
@@ -1893,11 +1898,7 @@ fn handle_component(
                             .map(|p| p.project.name)
                             .unwrap_or_else(|_| "root".to_string())
                     } else {
-                        norm_dir
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or(&norm_dir)
-                            .to_string()
+                        norm_dir.rsplit('/').next().unwrap_or(&norm_dir).to_string()
                     }
                 });
 
@@ -2009,8 +2010,10 @@ fn handle_component(
                             "Invalid --dep '{raw_pair}': name and version must not be empty"
                         )));
                     }
-                    if let Some(existing) =
-                        manifest.dependencies.iter_mut().find(|d| d.name == dep_name)
+                    if let Some(existing) = manifest
+                        .dependencies
+                        .iter_mut()
+                        .find(|d| d.name == dep_name)
                     {
                         existing.current_version = dep_ver.to_string();
                     } else {

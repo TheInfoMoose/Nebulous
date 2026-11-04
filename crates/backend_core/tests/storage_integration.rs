@@ -828,8 +828,8 @@ fn test_custom_relative_paths_and_reconcile_edge_cases() {
 #[test]
 fn test_global_project_registry_lifecycle_and_edge_cases() {
     use backend_core::{
-        load_global_registry_from, register_project_in, remove_project_in,
-        save_global_registry_to, set_active_project_in, GlobalProjectRegistry,
+        load_global_registry_from, register_project_in, remove_project_in, save_global_registry_to,
+        set_active_project_in, GlobalProjectRegistry,
     };
 
     let temp = TempTrackerDir::new("global_registry");
@@ -859,7 +859,11 @@ fn test_global_project_registry_lifecycle_and_edge_cases() {
         &cfg_dir,
         &proj_a_dir,
         None,
-        vec!["rust".to_string(), "tracker".to_string(), "rust".to_string()],
+        vec![
+            "rust".to_string(),
+            "tracker".to_string(),
+            "rust".to_string(),
+        ],
         false,
     )
     .expect("should register Nebulous");
@@ -939,7 +943,13 @@ fn test_global_project_registry_lifecycle_and_edge_cases() {
 
     // 9. Error cases: non-existent directory, non-existent project ID
     assert!(matches!(
-        register_project_in(&cfg_dir, temp.path().join("does_not_exist"), None, vec![], false),
+        register_project_in(
+            &cfg_dir,
+            temp.path().join("does_not_exist"),
+            None,
+            vec![],
+            false
+        ),
         Err(TrackerError::NotFound {
             kind: "ProjectDirectory",
             ..
@@ -1035,7 +1045,11 @@ fn test_two_stage_directory_ingestion_gitignore_filtering_and_scope_promotion() 
     // 3. Python package (`services/agent_worker`)
     let py_dir = root.join("services/agent_worker");
     fs::create_dir_all(&py_dir).unwrap();
-    fs::write(py_dir.join("pyproject.toml"), "[project]\nname = \"agent_worker\"\n").unwrap();
+    fs::write(
+        py_dir.join("pyproject.toml"),
+        "[project]\nname = \"agent_worker\"\n",
+    )
+    .unwrap();
     fs::write(py_dir.join("worker.py"), "def run(): pass\n").unwrap();
 
     // 4. Un-manifested top-level functional directories: `scripts/`, `iso/`, `config/`
@@ -1044,10 +1058,18 @@ fn test_two_stage_directory_ingestion_gitignore_filtering_and_scope_promotion() 
     fs::write(root.join("scripts/verify-qemu.sh"), "#!/usr/bin/env bash\n").unwrap();
 
     fs::create_dir_all(root.join("iso")).unwrap();
-    fs::write(root.join("iso/packages.sid.list"), "systemd\nlinux-image-xanmod\n").unwrap();
+    fs::write(
+        root.join("iso/packages.sid.list"),
+        "systemd\nlinux-image-xanmod\n",
+    )
+    .unwrap();
 
     fs::create_dir_all(root.join("config")).unwrap();
-    fs::write(root.join("config/apt.conf"), "APT::Default-Release \"sid\";\n").unwrap();
+    fs::write(
+        root.join("config/apt.conf"),
+        "APT::Default-Release \"sid\";\n",
+    )
+    .unwrap();
 
     // Run Stage 1 ingestion with `write_manifests = true`
     let report = storage
@@ -1194,11 +1216,19 @@ fn test_novos_component_manifest_pinning_rolling_updates_and_rollback() {
 
     fs::create_dir_all(root.join("iso")).unwrap();
     fs::write(root.join("iso/live-build.sh"), "#!/usr/bin/env bash\n").unwrap();
-    fs::write(root.join("iso/packages.list"), "linux-image-xanmod\nsystemd\n").unwrap();
+    fs::write(
+        root.join("iso/packages.list"),
+        "linux-image-xanmod\nsystemd\n",
+    )
+    .unwrap();
 
     // 1. Author a `nebulous.component.toml` for NovOS ISO image tracking Debian Sid + XanMod kernel
     let mut novos_iso = ComponentManifest::new("novos_iso", "NovOS Live ISO", "iso", "os_image");
-    novos_iso.tech_stack = vec!["debian_sid".to_string(), "xanmod".to_string(), "shell".to_string()];
+    novos_iso.tech_stack = vec![
+        "debian_sid".to_string(),
+        "xanmod".to_string(),
+        "shell".to_string(),
+    ];
     novos_iso.tags = vec!["rolling".to_string(), "bootable".to_string()];
     novos_iso.flags = vec!["--arch=amd64".to_string(), "--comp=zstd".to_string()];
     novos_iso.files = vec![
@@ -1254,7 +1284,9 @@ fn test_novos_component_manifest_pinning_rolling_updates_and_rollback() {
     assert_eq!(pin.commit_sha, "a1b2c3d");
     assert_eq!(pin.build_script_path.as_deref(), Some("iso/live-build.sh"));
     assert_eq!(
-        pin.dependency_pins.get("linux-image-6.11-xanmod1").map(String::as_str),
+        pin.dependency_pins
+            .get("linux-image-6.11-xanmod1")
+            .map(String::as_str),
         Some("6.11.4-xanmod1")
     );
     assert_eq!(
@@ -1302,21 +1334,25 @@ fn test_novos_component_manifest_pinning_rolling_updates_and_rollback() {
                 exit_code: 1,
                 command: "./scripts/verify-qemu.sh --iso build/novos.iso".to_string(),
                 summary: "Initramfs dracut module missing for 6.11.8-xanmod1".to_string(),
-                logs_excerpt: Some("Kernel panic - not syncing: VFS: Unable to mount root fs".to_string()),
+                logs_excerpt: Some(
+                    "Kernel panic - not syncing: VFS: Unable to mount root fs".to_string(),
+                ),
                 verified_at: Some("2026-11-03T13:05:00Z".to_string()),
             },
         )
         .expect("should record failed verification");
     assert_eq!(after_fail.rolling_updates[0].status, "failed");
     // Pinned release's last passing verification run must remain intact
-    assert!(after_fail
-        .pinned_release
-        .as_ref()
-        .unwrap()
-        .last_verification_run
-        .as_ref()
-        .unwrap()
-        .passed);
+    assert!(
+        after_fail
+            .pinned_release
+            .as_ref()
+            .unwrap()
+            .last_verification_run
+            .as_ref()
+            .unwrap()
+            .passed
+    );
 
     // 5. Roll back to `last_known_good` pin
     let rolled_back = storage
@@ -1373,8 +1409,7 @@ fn test_ingestion_subpath_duplicate_leaf_ids_and_promote_all() {
     let root = temp.path().join("workspace");
     fs::create_dir_all(&root).unwrap();
 
-    let storage =
-        TrackerStorage::init(&root, "DupLeafWorkspace", "01_init", "Init Phase").unwrap();
+    let storage = TrackerStorage::init(&root, "DupLeafWorkspace", "01_init", "Init Phase").unwrap();
 
     // Two directories with the same leaf name `utils`: `crates/utils` and `packages/utils`
     fs::create_dir_all(root.join("crates/utils/src")).unwrap();
@@ -1420,8 +1455,13 @@ fn test_ingestion_subpath_duplicate_leaf_ids_and_promote_all() {
     // Also exercise the top-level global registry functions via NEBULOUS_CONFIG_DIR
     let cfg_dir = temp.path().join("env_global_cfg");
     std::env::set_var("NEBULOUS_CONFIG_DIR", &cfg_dir);
-    let reg_entry =
-        register_project(&root, Some("DupLeafWorkspace"), vec!["polyglot".into()], true).unwrap();
+    let reg_entry = register_project(
+        &root,
+        Some("DupLeafWorkspace"),
+        vec!["polyglot".into()],
+        true,
+    )
+    .unwrap();
     assert_eq!(reg_entry.id, "dupleafworkspace");
     let loaded_reg = load_global_registry().unwrap();
     assert_eq!(
@@ -1577,7 +1617,11 @@ fn test_nested_monorepo_unmanifested_parent_with_manifested_child_and_root_manif
     // Root package with `Cargo.toml` + `src/lib.rs`, plus a nested crate `crates/sub_crate/Cargo.toml`
     // AND an un-manifested `scripts/` directory that also contains a nested manifested `scripts/helper_tool/Cargo.toml`.
     fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(root.join("Cargo.toml"), "[package]\nname = \"hybrid_root\"\n").unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"hybrid_root\"\n",
+    )
+    .unwrap();
     fs::write(root.join("src/lib.rs"), "pub fn root_fn() {}").unwrap();
 
     fs::create_dir_all(root.join("crates/sub_crate/src")).unwrap();
@@ -1595,11 +1639,7 @@ fn test_nested_monorepo_unmanifested_parent_with_manifested_child_and_root_manif
         "[package]\nname = \"helper_tool\"\n",
     )
     .unwrap();
-    fs::write(
-        root.join("scripts/helper_tool/src/main.rs"),
-        "fn main() {}",
-    )
-    .unwrap();
+    fs::write(root.join("scripts/helper_tool/src/main.rs"), "fn main() {}").unwrap();
 
     let report = storage
         .ingest_project_directory(IngestionOptions::new())
@@ -1613,7 +1653,10 @@ fn test_nested_monorepo_unmanifested_parent_with_manifested_child_and_root_manif
     // - `scripts/helper_tool` (helper_tool)
     assert_eq!(report.components.len(), 4);
 
-    let root_comp = proj.components.find(".").expect("should find root component");
+    let root_comp = proj
+        .components
+        .find(".")
+        .expect("should find root component");
     assert_eq!(
         root_comp.files,
         vec!["Cargo.toml".to_string(), "src/lib.rs".to_string()]

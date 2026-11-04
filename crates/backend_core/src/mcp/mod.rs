@@ -217,8 +217,8 @@ impl McpServer {
 
     /// Runs the JSON-RPC 2.0 loop over arbitrary buffered reader and writer streams.
     pub fn serve_io<R: BufRead, W: Write>(&mut self, mut reader: R, mut writer: W) -> Result<()> {
-        while let Some((raw_message, used_content_length)) =
-            read_next_jsonrpc_message(&mut reader).map_err(|source| TrackerError::Io {
+        while let Some((raw_message, used_content_length)) = read_next_jsonrpc_message(&mut reader)
+            .map_err(|source| TrackerError::Io {
                 path: PathBuf::from("<stdio>"),
                 source,
             })?
@@ -273,8 +273,12 @@ impl McpServer {
 
         if let Value::Array(batch) = parsed {
             if batch.is_empty() {
-                let resp =
-                    JsonRpcResponse::error(Value::Null, -32600, "Invalid Request: empty batch", None);
+                let resp = JsonRpcResponse::error(
+                    Value::Null,
+                    -32600,
+                    "Invalid Request: empty batch",
+                    None,
+                );
                 return serde_json::to_string(&resp).ok();
             }
             let mut responses = Vec::new();
@@ -531,13 +535,11 @@ impl McpServer {
         let trimmed = uri.trim();
         let payload = if trimmed == "nebulous://projects" {
             let reg = self.load_registry()?;
-            serde_json::to_value(reg)
-                .map_err(|e| TrackerError::ValidationError(e.to_string()))?
+            serde_json::to_value(reg).map_err(|e| TrackerError::ValidationError(e.to_string()))?
         } else if trimmed == "nebulous://project" {
             let storage = self.resolve_active_storage()?;
             let proj = storage.read_project()?;
-            serde_json::to_value(proj)
-                .map_err(|e| TrackerError::ValidationError(e.to_string()))?
+            serde_json::to_value(proj).map_err(|e| TrackerError::ValidationError(e.to_string()))?
         } else if trimmed == "nebulous://components" {
             let storage = self.resolve_active_storage()?;
             let proj = storage.read_project()?;
@@ -557,8 +559,7 @@ impl McpServer {
             });
         };
 
-        let text =
-            serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
+        let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
         Ok(json!({
             "contents": [
                 {
@@ -958,8 +959,9 @@ impl McpServer {
             scope_id: Option<String>,
         }
 
-        let parsed: Args = serde_json::from_value(args)
-            .map_err(|e| TrackerError::ValidationError(format!("Invalid get_active_task args: {e}")))?;
+        let parsed: Args = serde_json::from_value(args).map_err(|e| {
+            TrackerError::ValidationError(format!("Invalid get_active_task args: {e}"))
+        })?;
         let storage = self.resolve_active_storage()?;
         let active_timer = storage.read_active_timer()?;
 
@@ -1222,7 +1224,12 @@ impl McpServer {
                 .as_deref()
                 .and_then(|cid| index.project.components.find(cid))
                 .or_else(|| index.project.components.find(&scope_idx.scope_id))
-                .or_else(|| index.project.components.find(&scope_idx.manifest.scope.target));
+                .or_else(|| {
+                    index
+                        .project
+                        .components
+                        .find(&scope_idx.manifest.scope.target)
+                });
 
             let tracked_files = if !scope_idx.manifest.scope.tracked_files.is_empty() {
                 scope_idx.manifest.scope.tracked_files.clone()
@@ -1397,10 +1404,8 @@ impl McpServer {
             TrackerError::ValidationError(format!("Invalid record_regression args: {e}"))
         })?;
         let storage = self.resolve_active_storage()?;
-        let detail = storage.record_regression(
-            parsed.item_id.trim(),
-            non_empty(parsed.reason.as_deref()),
-        )?;
+        let detail = storage
+            .record_regression(parsed.item_id.trim(), non_empty(parsed.reason.as_deref()))?;
 
         Ok(json!({
             "id": detail.manifest.item.id,
@@ -1481,7 +1486,8 @@ impl McpServer {
         if let Some(sub) = non_empty(parsed.subpath.as_deref()) {
             let sub_path = Path::new(sub);
             if sub_path.is_absolute() {
-                let root_canon = crate::storage::validate_safe_project_root(&storage.project_root())?;
+                let root_canon =
+                    crate::storage::validate_safe_project_root(&storage.project_root())?;
                 let sub_canon = std::fs::canonicalize(sub_path).map_err(|_| {
                     TrackerError::ValidationError(format!(
                         "Scan subpath '{sub}' does not exist or is outside the active project root '{}'",
@@ -1548,22 +1554,16 @@ impl McpServer {
         let storage = self.resolve_active_storage()?;
         let comp_id = parsed.id.trim();
 
-        let existing = storage
-            .read_component_manifest(comp_id)
-            .ok()
-            .or_else(|| {
-                parsed
-                    .relative_path
-                    .as_deref()
-                    .and_then(|p| storage.read_component_manifest(p).ok())
-            });
+        let existing = storage.read_component_manifest(comp_id).ok().or_else(|| {
+            parsed
+                .relative_path
+                .as_deref()
+                .and_then(|p| storage.read_component_manifest(p).ok())
+        });
 
         let mut manifest = existing.unwrap_or_else(|| ComponentManifest {
             id: comp_id.to_string(),
-            name: parsed
-                .name
-                .clone()
-                .unwrap_or_else(|| comp_id.to_string()),
+            name: parsed.name.clone().unwrap_or_else(|| comp_id.to_string()),
             relative_path: parsed
                 .relative_path
                 .clone()
@@ -1704,14 +1704,16 @@ impl McpServer {
         }
 
         // Ensure dependency exists on the component manifest so `pin_stable_release` captures it
-        let prev_ver = non_empty(parsed.previous_version.as_deref()).map(str::to_string).or_else(|| {
-            manifest
-                .dependencies
-                .iter()
-                .find(|d| d.name == dep_name)
-                .map(|d| d.current_version.clone())
-                .filter(|v| !v.trim().is_empty())
-        });
+        let prev_ver = non_empty(parsed.previous_version.as_deref())
+            .map(str::to_string)
+            .or_else(|| {
+                manifest
+                    .dependencies
+                    .iter()
+                    .find(|d| d.name == dep_name)
+                    .map(|d| d.current_version.clone())
+                    .filter(|v| !v.trim().is_empty())
+            });
 
         if !manifest.dependencies.iter().any(|d| d.name == dep_name) {
             manifest.dependencies.push(ComponentDependency {
@@ -1930,7 +1932,10 @@ impl McpServer {
 
         if let Some(explicit_pins) = parsed.dependency_pins {
             for (dep_name, dep_ver) in explicit_pins {
-                if let Some(existing) = manifest.dependencies.iter_mut().find(|d| d.name == dep_name)
+                if let Some(existing) = manifest
+                    .dependencies
+                    .iter_mut()
+                    .find(|d| d.name == dep_name)
                 {
                     existing.current_version = dep_ver;
                 } else {

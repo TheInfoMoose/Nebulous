@@ -231,4 +231,3 @@ fn default_true() -> bool {
 fn default_min_summary_length() -> usize {
     12
 }
-

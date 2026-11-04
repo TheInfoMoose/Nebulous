@@ -74,8 +74,7 @@ impl IngestionOptions {
             None
         } else {
             Some(norm)
-        }
-        ;
+        };
         self
     }
 
@@ -137,10 +136,11 @@ impl TrackerStorage {
                         id: rel.to_string(),
                     });
                 }
-                let target_canon = fs::canonicalize(&target).map_err(|source| TrackerError::Io {
-                    path: target.clone(),
-                    source,
-                })?;
+                let target_canon =
+                    fs::canonicalize(&target).map_err(|source| TrackerError::Io {
+                        path: target.clone(),
+                        source,
+                    })?;
                 if !target_canon.starts_with(&project_root) {
                     return Err(TrackerError::ValidationError(format!(
                         "Relative tracker path '{rel}' resolves outside the active project root '{}'",
@@ -245,9 +245,7 @@ impl TrackerStorage {
             .unwrap_or(false);
         let root_has_primary_sources = all_rel_files.iter().any(|f| {
             find_deepest_non_root_manifest_dir(f, &manifest_dirs).is_none()
-                && (f.starts_with("src/")
-                    || f.starts_with("lib/")
-                    || f.starts_with("include/"))
+                && (f.starts_with("src/") || f.starts_with("lib/") || f.starts_with("include/"))
         });
         let has_only_root_files =
             !all_rel_files.is_empty() && all_rel_files.iter().all(|f| !f.contains('/'));
@@ -558,21 +556,21 @@ impl TrackerStorage {
                 path: direct_path.clone(),
                 source,
             })?;
-            let mut disk_manifest = ComponentManifest::from_toml_str(&raw).map_err(|err| match err {
-                TrackerError::TomlDeserialize { source, .. } => TrackerError::TomlDeserialize {
-                    path: Some(direct_path.clone()),
-                    source,
-                },
-                other => other,
-            })?;
+            let mut disk_manifest =
+                ComponentManifest::from_toml_str(&raw).map_err(|err| match err {
+                    TrackerError::TomlDeserialize { source, .. } => TrackerError::TomlDeserialize {
+                        path: Some(direct_path.clone()),
+                        source,
+                    },
+                    other => other,
+                })?;
             let norm_rel = normalize_relative_path_str(id_or_rel_path);
             if disk_manifest.relative_path == "." && !norm_rel.is_empty() && norm_rel != "." {
                 disk_manifest.relative_path = norm_rel;
             }
             if disk_manifest.files.is_empty() {
                 if let Some(parent_dir) = direct_path.parent() {
-                    disk_manifest.files =
-                        collect_directory_files(&self.project_root(), parent_dir);
+                    disk_manifest.files = collect_directory_files(&self.project_root(), parent_dir);
                 }
             }
             disk_manifest.normalize_paths();
@@ -595,13 +593,12 @@ impl TrackerStorage {
         normalized.normalize_paths();
 
         if normalized.files.is_empty() {
-            let target_dir = if normalized.relative_path == "."
-                || normalized.relative_path.is_empty()
-            {
-                self.project_root()
-            } else {
-                resolve_safe_relative_path(&self.project_root(), &normalized.relative_path)?
-            };
+            let target_dir =
+                if normalized.relative_path == "." || normalized.relative_path.is_empty() {
+                    self.project_root()
+                } else {
+                    resolve_safe_relative_path(&self.project_root(), &normalized.relative_path)?
+                };
             if target_dir.is_dir() {
                 normalized.files = collect_directory_files(&self.project_root(), &target_dir);
             }

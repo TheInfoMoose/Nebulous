@@ -13,7 +13,6 @@ use crate::crypto::{ensure_secure_dir, set_secure_file_permissions, SecureStorag
 use crate::error::{Result, TrackerError};
 use crate::storage::{atomic_write_bytes, TrackerStorage};
 
-
 const SSH_PRIVATE_KEY_PREFIX: &str = "ssh_priv:";
 const SSH_PUBLIC_META_PREFIX: &str = "ssh_pub:";
 
@@ -114,8 +113,8 @@ impl KeyPairManager {
 
         let ed25519_kp = Ed25519Keypair::from_seed(&seed);
 
-        let private_key =
-            PrivateKey::new(KeypairData::Ed25519(ed25519_kp), effective_comment).map_err(|e| {
+        let private_key = PrivateKey::new(KeypairData::Ed25519(ed25519_kp), effective_comment)
+            .map_err(|e| {
                 TrackerError::KeyringError(format!("Failed to build Ed25519 SSH private key: {e}"))
             })?;
 
@@ -181,11 +180,9 @@ impl KeyPairManager {
         passphrase: Option<&str>,
     ) -> Result<SshKeyPairRecord> {
         let path = private_key_path.as_ref();
-        let raw = Zeroizing::new(fs::read_to_string(path).map_err(|source| {
-            TrackerError::Io {
-                path: path.to_path_buf(),
-                source,
-            }
+        let raw = Zeroizing::new(fs::read_to_string(path).map_err(|source| TrackerError::Io {
+            path: path.to_path_buf(),
+            source,
         })?);
         self.import_ssh_keypair(account, &raw, passphrase)
     }
@@ -197,7 +194,9 @@ impl KeyPairManager {
         let private_key_openssh = self.storage.get_secret(&priv_key_slot)?;
 
         let parsed = PrivateKey::from_openssh(private_key_openssh.as_str()).map_err(|e| {
-            TrackerError::KeyringError(format!("Stored SSH key for '{normalized_account}' is invalid: {e}"))
+            TrackerError::KeyringError(format!(
+                "Stored SSH key for '{normalized_account}' is invalid: {e}"
+            ))
         })?;
 
         build_record_from_private_key(normalized_account, &parsed, private_key_openssh)
@@ -362,7 +361,6 @@ fn build_record_from_private_key(
         Some(comment_str.to_string())
     };
 
-
     Ok(SshKeyPairRecord {
         account,
         algorithm,
@@ -438,4 +436,3 @@ impl TrackerStorage {
         manager.delete_ssh_keypair(&project.project.name)
     }
 }
-

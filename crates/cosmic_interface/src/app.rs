@@ -275,11 +275,8 @@ impl SettingsFormState {
         self.commit_policy_require_item_id = project.git.commit_policy.require_item_id;
         self.commit_policy_require_scope = project.git.commit_policy.require_scope;
         self.commit_policy_require_summary = project.git.commit_policy.require_summary;
-        self.commit_policy_min_summary_len_input = project
-            .git
-            .commit_policy
-            .min_summary_length
-            .to_string();
+        self.commit_policy_min_summary_len_input =
+            project.git.commit_policy.min_summary_length.to_string();
         self.commit_policy_auto_append_to_desc = project.git.commit_policy.auto_append_to_desc;
         self.stored_ssh_public_key = storage.get_ssh_public_key_info().ok();
         self.has_stored_ssh_key = self.stored_ssh_public_key.is_some();
@@ -700,7 +697,11 @@ impl NebulousApp {
                 return Some(idx);
             }
         }
-        let current_root = self.storage.project_root().to_string_lossy().replace('\\', "/");
+        let current_root = self
+            .storage
+            .project_root()
+            .to_string_lossy()
+            .replace('\\', "/");
         if let Some(proj) = self
             .project_registry
             .projects
@@ -768,12 +769,7 @@ impl NebulousApp {
     /// Returns the canonical section titles rendered by the currently active `view_mode`.
     pub fn active_view_section_titles(&self) -> &'static [&'static str] {
         match self.view_mode {
-            ViewMode::Board => &[
-                "OPEN",
-                "IN PROGRESS",
-                "PENDING",
-                "CLOSED / MERGED",
-            ],
+            ViewMode::Board => &["OPEN", "IN PROGRESS", "PENDING", "CLOSED / MERGED"],
             ViewMode::Metrics => &[
                 "TOTAL LOGGED EFFORT",
                 "PROJECT COMPLETION",
@@ -1256,10 +1252,7 @@ impl Application for NebulousApp {
                 match set_active_project_in(&self.registry_path, &id_or_name) {
                     Ok(registered) => {
                         let root_path = PathBuf::from(&registered.root_path);
-                        match Self::open_or_init_project_root(
-                            &root_path,
-                            Some(&registered.name),
-                        ) {
+                        match Self::open_or_init_project_root(&root_path, Some(&registered.name)) {
                             Ok(new_storage) => {
                                 if let Err(err) = self.switch_to_storage(new_storage) {
                                     self.status_banner = Some(format!(
@@ -1386,12 +1379,11 @@ impl Application for NebulousApp {
                     Ok(removed) => {
                         self.project_registry =
                             load_global_registry_from(&self.registry_path).unwrap_or_default();
-                        let removed_was_active =
-                            was_active_id.as_deref() == Some(removed.id.as_str())
-                                || removed.root_path == current_root_str;
+                        let removed_was_active = was_active_id.as_deref()
+                            == Some(removed.id.as_str())
+                            || removed.root_path == current_root_str;
                         if removed_was_active {
-                            if let Some(next_proj) =
-                                self.project_registry.active_project().cloned()
+                            if let Some(next_proj) = self.project_registry.active_project().cloned()
                             {
                                 let next_root = PathBuf::from(&next_proj.root_path);
                                 if let Ok(next_storage) = Self::open_or_init_project_root(
@@ -2042,10 +2034,8 @@ impl Application for NebulousApp {
                             let _ = self.reload_indexes();
                             self.settings_form
                                 .sync_from_index(&self.index, &self.storage);
-                            self.status_banner = Some(format!(
-                                "Wrote component manifest to {}",
-                                path.display()
-                            ));
+                            self.status_banner =
+                                Some(format!("Wrote component manifest to {}", path.display()));
                         }
                         Err(err) => {
                             self.status_banner =
@@ -2060,12 +2050,10 @@ impl Application for NebulousApp {
             }
             Message::PromoteComponentToScope(comp_id) => {
                 let phase_id = self.active_phase_id.clone();
-                match self.storage.promote_component_to_scope(
-                    Some(&phase_id),
-                    &comp_id,
-                    None,
-                    None,
-                ) {
+                match self
+                    .storage
+                    .promote_component_to_scope(Some(&phase_id), &comp_id, None, None)
+                {
                     Ok(scope) => {
                         let _ = self.reload_indexes();
                         self.status_banner = Some(format!(
@@ -2093,8 +2081,7 @@ impl Application for NebulousApp {
             }
             Message::SaveComponentMetadata => {
                 let Some(comp_id) = self.effective_selected_component_id() else {
-                    self.status_banner =
-                        Some("Select or enter a component ID first.".to_string());
+                    self.status_banner = Some("Select or enter a component ID first.".to_string());
                     return Task::none();
                 };
                 match self.storage.read_component_manifest(&comp_id) {
@@ -2150,8 +2137,7 @@ impl Application for NebulousApp {
             }
             Message::UpsertComponentDependency => {
                 let Some(comp_id) = self.effective_selected_component_id() else {
-                    self.status_banner =
-                        Some("Select or enter a component ID first.".to_string());
+                    self.status_banner = Some("Select or enter a component ID first.".to_string());
                     return Task::none();
                 };
                 let dep_name = self.settings_form.dep_name_input.trim().to_string();
@@ -2387,8 +2373,9 @@ impl Application for NebulousApp {
                     let behind = status.behind_count;
                     self.git_status = Some(status);
                     let _ = self.reload_indexes();
-                    self.status_banner =
-                        Some(format!("Fetched remote tracking branch (↑{ahead} ↓{behind})"));
+                    self.status_banner = Some(format!(
+                        "Fetched remote tracking branch (↑{ahead} ↓{behind})"
+                    ));
                 }
                 Err(err) => {
                     self.status_banner = Some(format!("Git fetch note: {err}"));
@@ -2722,9 +2709,8 @@ impl Application for NebulousApp {
                     .trim()
                     .to_string();
                 if raw_input.is_empty() {
-                    self.status_banner = Some(
-                        "Enter a private key file path or OpenSSH PEM to import.".to_string(),
-                    );
+                    self.status_banner =
+                        Some("Enter a private key file path or OpenSSH PEM to import.".to_string());
                     return Task::none();
                 }
                 let passphrase = {
@@ -2936,7 +2922,9 @@ fn expand_tilde_path(raw: &str) -> PathBuf {
     if trimmed == "~" || trimmed.starts_with("~/") || trimmed.starts_with("~\\") {
         if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
             let mut buf = PathBuf::from(home);
-            let rest = trimmed.trim_start_matches('~').trim_start_matches(['/', '\\']);
+            let rest = trimmed
+                .trim_start_matches('~')
+                .trim_start_matches(['/', '\\']);
             if !rest.is_empty() {
                 buf.push(rest);
             }
@@ -2989,10 +2977,7 @@ fn normalize_openssh_pem_input(raw: &str) -> String {
 /// Computes a structural widget-tree fingerprint `(total_nodes, depth_child_counts)` for an `iced`
 /// [`Element`] by traversing `as_widget().children()` recursively.
 pub fn widget_tree_fingerprint(element: &Element<'_, Message>) -> (usize, Vec<usize>) {
-    fn visit_tree(
-        tree: &cosmic::iced::advanced::widget::Tree,
-        counts: &mut Vec<usize>,
-    ) -> usize {
+    fn visit_tree(tree: &cosmic::iced::advanced::widget::Tree, counts: &mut Vec<usize>) -> usize {
         counts.push(tree.children.len());
         let mut total = 1usize;
         for child in &tree.children {
@@ -4172,8 +4157,7 @@ mod tests {
     #[test]
     fn test_phases_and_scopes_view_vs_settings_view_render_distinct_hierarchies() {
         let (_temp, storage) = create_sample_tracker_workspace();
-        let mut app =
-            NebulousApp::new_from_storage(Core::default(), storage).expect("boot app");
+        let mut app = NebulousApp::new_from_storage(Core::default(), storage).expect("boot app");
 
         let _ = app.update(Message::SwitchView(ViewMode::Board));
         let board_titles = app.active_view_section_titles();
@@ -4192,8 +4176,7 @@ mod tests {
         let _ = app.update(Message::SwitchView(ViewMode::Settings));
         let settings_titles = app.active_view_section_titles();
         let settings_fp = widget_tree_fingerprint(&app.view());
-        let direct_settings_fp =
-            widget_tree_fingerprint(&settings_view::view_settings(&app));
+        let direct_settings_fp = widget_tree_fingerprint(&settings_view::view_settings(&app));
 
         // Verify PhasesAndScopes and Settings have completely distinct section titles and widget trees
         assert_ne!(phases_titles, settings_titles);
@@ -4221,7 +4204,10 @@ mod tests {
         let crate_src = temp.path().join("crates").join("backend_core").join("src");
         fs::create_dir_all(&crate_src).unwrap();
         fs::write(
-            temp.path().join("crates").join("backend_core").join("Cargo.toml"),
+            temp.path()
+                .join("crates")
+                .join("backend_core")
+                .join("Cargo.toml"),
             "[package]\nname = \"backend_core\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
@@ -4308,9 +4294,7 @@ mod tests {
         let _ = app.update(Message::ComponentDepKindChanged(
             "kernel_xanmod".to_string(),
         ));
-        let _ = app.update(Message::ComponentDepConstraintChanged(
-            ">=6.11".to_string(),
-        ));
+        let _ = app.update(Message::ComponentDepConstraintChanged(">=6.11".to_string()));
         let _ = app.update(Message::ComponentDepVersionChanged(
             "6.11.5-xanmod1".to_string(),
         ));
@@ -4378,12 +4362,9 @@ mod tests {
     fn test_multi_project_registry_switcher_add_switch_and_remove() {
         let (temp, storage) = create_sample_tracker_workspace();
         let reg_path = temp.path().join("isolated_registry").join("projects.toml");
-        let mut app = NebulousApp::new_from_storage_with_registry(
-            Core::default(),
-            storage,
-            reg_path,
-        )
-        .expect("boot app with isolated registry");
+        let mut app =
+            NebulousApp::new_from_storage_with_registry(Core::default(), storage, reg_path)
+                .expect("boot app with isolated registry");
 
         assert_eq!(app.project_name(), "NebulousTest");
         assert_eq!(app.project_registry.projects.len(), 1);
@@ -4459,7 +4440,8 @@ mod tests {
         assert_eq!(app.project_registry.projects.len(), 1);
         assert_eq!(app.project_name(), "NebulousTest");
         assert_eq!(app.selected_project_dropdown_index(), Some(0));
-        app.reload_indexes().expect("reload indexes after active project removal");
+        app.reload_indexes()
+            .expect("reload indexes after active project removal");
         assert_eq!(app.project_registry.projects.len(), 1);
         assert_eq!(app.project_name(), "NebulousTest");
 
@@ -4476,9 +4458,12 @@ mod tests {
         assert_eq!(app.project_registry.projects.len(), 1);
 
         // Removing the last project must leave registry empty even after reload_indexes()
-        let _ = app.update(Message::RemoveProjectFromRegistry("nebuloustest".to_string()));
+        let _ = app.update(Message::RemoveProjectFromRegistry(
+            "nebuloustest".to_string(),
+        ));
         assert!(app.project_registry.projects.is_empty());
-        app.reload_indexes().expect("reload indexes with empty registry");
+        app.reload_indexes()
+            .expect("reload indexes with empty registry");
         assert!(app.project_registry.projects.is_empty());
     }
 
@@ -4530,10 +4515,7 @@ mod tests {
         assert!(app.index.project.git.commit_policy.require_item_id);
         assert!(app.index.project.git.commit_policy.require_scope);
         assert!(app.index.project.git.commit_policy.auto_append_to_desc);
-        assert_eq!(
-            app.index.project.git.commit_policy.min_summary_length,
-            15
-        );
+        assert_eq!(app.index.project.git.commit_policy.min_summary_length, 15);
 
         // 3. Undocumented workspace code commit (missing item_id) is rejected by policy
         let _ = app.update(Message::SetCommitTrackerOnly(false));
@@ -4575,12 +4557,9 @@ mod tests {
             .contains("Committed"));
 
         let (_, bug1) = storage.load_item_detail_by_id("BUG-0001").unwrap();
-        assert!(bug1
-            .manifest
-            .history
-            .previous_fixes
-            .iter()
-            .any(|f| f.summary.contains("Resolve TOML empty array deserialization edge case")));
+        assert!(bug1.manifest.history.previous_fixes.iter().any(|f| f
+            .summary
+            .contains("Resolve TOML empty array deserialization edge case")));
         assert!(bug1
             .description_markdown
             .contains("## Fix Log & Agent Notes"));
@@ -4752,18 +4731,18 @@ mod tests {
         )
         .expect("resolve active project from registry when cwd is untracked");
         assert_eq!(
-            resolved_from_registry.project_root().canonicalize().unwrap(),
+            resolved_from_registry
+                .project_root()
+                .canonicalize()
+                .unwrap(),
             storage.project_root().canonicalize().unwrap()
         );
         assert!(!untracked_cwd.path().join(".tracker").exists());
 
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-            let resolved_from_home = NebulousApp::resolve_or_init_storage_from_cwd_with_registry(
-                None,
-                &home,
-                &reg_path,
-            )
-            .expect("resolve active project from registry when cwd is $HOME");
+            let resolved_from_home =
+                NebulousApp::resolve_or_init_storage_from_cwd_with_registry(None, &home, &reg_path)
+                    .expect("resolve active project from registry when cwd is $HOME");
             assert_eq!(
                 resolved_from_home.project_root().canonicalize().unwrap(),
                 storage.project_root().canonicalize().unwrap()

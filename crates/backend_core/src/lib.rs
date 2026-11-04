@@ -24,7 +24,6 @@ pub use workflow::{
     StoppedTimerSession, TimerStatus,
 };
 
-
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -494,8 +493,14 @@ bug = -1
                 .permissions()
                 .mode()
                 & 0o777;
-            assert_eq!(dir_mode, 0o700, "vault directory must have 0700 permissions");
-            assert_eq!(file_mode, 0o600, "vault.enc file must have 0600 permissions");
+            assert_eq!(
+                dir_mode, 0o700,
+                "vault directory must have 0700 permissions"
+            );
+            assert_eq!(
+                file_mode, 0o600,
+                "vault.enc file must have 0600 permissions"
+            );
         }
 
         // Reopen vault from disk using a fresh SecureStorage instance
@@ -757,7 +762,9 @@ sIrutI2NuqcarHHe39XSQPcgOvzeKMOaWd1FA=\n\
         // 3. Linux default (~/.config/nebulous)
         assert_eq!(
             resolve_nebulous_config_dir_from(None, None, None, Some("/home/alice"), "linux"),
-            PathBuf::from("/home/alice").join(".config").join("nebulous")
+            PathBuf::from("/home/alice")
+                .join(".config")
+                .join("nebulous")
         );
 
         // 4. macOS default (~/Library/Application Support/nebulous)
@@ -811,13 +818,9 @@ sIrutI2NuqcarHHe39XSQPcgOvzeKMOaWd1FA=\n\
 
         // 7. Verify TrackerStorage normalizes backslash paths on write & read
         let temp_dir = tempfile::tempdir().unwrap();
-        let storage = TrackerStorage::init(
-            temp_dir.path(),
-            "NormTest",
-            "01_core_engine",
-            "Core Engine",
-        )
-        .unwrap();
+        let storage =
+            TrackerStorage::init(temp_dir.path(), "NormTest", "01_core_engine", "Core Engine")
+                .unwrap();
 
         let mut project = storage.read_project().unwrap();
         project.phases.registry[0].path = "phases\\01_core_engine".to_string();
@@ -848,7 +851,10 @@ sIrutI2NuqcarHHe39XSQPcgOvzeKMOaWd1FA=\n\
 
         atomic_write_str(&readonly_target, "v = 2\n")
             .expect("atomic_write_str should succeed over read-only target file");
-        assert_eq!(std::fs::read_to_string(&readonly_target).unwrap(), "v = 2\n");
+        assert_eq!(
+            std::fs::read_to_string(&readonly_target).unwrap(),
+            "v = 2\n"
+        );
         assert!(
             !std::fs::metadata(&readonly_target)
                 .unwrap()
@@ -865,11 +871,10 @@ sIrutI2NuqcarHHe39XSQPcgOvzeKMOaWd1FA=\n\
         std::fs::write(&manual_tmp, b"v = 3\n").unwrap();
         replace_target_after_rename_error(&manual_tmp, &readonly_target, b"v = 3\n")
             .expect("fallback replacement should clear readonly and replace target");
-        assert_eq!(std::fs::read_to_string(&readonly_target).unwrap(), "v = 3\n");
+        assert_eq!(
+            std::fs::read_to_string(&readonly_target).unwrap(),
+            "v = 3\n"
+        );
         assert!(!manual_tmp.exists());
     }
 }
-
-
-
-

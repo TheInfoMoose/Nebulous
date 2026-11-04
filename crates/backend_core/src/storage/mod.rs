@@ -509,7 +509,6 @@ impl TrackerStorage {
         atomic_write_str(path, &serialized)
     }
 
-
     /// Reads and parses Tier 4 `items/<item_id>/item.toml`.
     pub fn read_item_manifest(
         &self,

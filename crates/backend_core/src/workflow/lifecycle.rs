@@ -551,7 +551,6 @@ impl TrackerStorage {
             ));
         }
 
-
         let project = self.read_project()?;
         let resolved_phase = match phase_id.map(str::trim).filter(|s| !s.is_empty()) {
             Some(p) => {

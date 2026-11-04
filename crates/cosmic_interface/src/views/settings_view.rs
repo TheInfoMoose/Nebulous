@@ -83,7 +83,11 @@ pub fn view_settings(app: &NebulousApp) -> Element<'_, Message> {
 }
 
 fn view_multi_project_registry_section(app: &NebulousApp) -> Element<'_, Message> {
-    let current_root_str = app.storage.project_root().to_string_lossy().replace('\\', "/");
+    let current_root_str = app
+        .storage
+        .project_root()
+        .to_string_lossy()
+        .replace('\\', "/");
     let active_root_caption = if app.storage.project_toml_path().is_file() {
         format!(
             "Active Project: {} · Active Project Root: {current_root_str}",
@@ -423,12 +427,9 @@ fn view_commit_policy_and_remote_config_section(app: &NebulousApp) -> Element<'_
         .push(auto_append_btn)
         .push(widget::text::caption("Min Summary Chars:"))
         .push(
-            widget::text_input(
-                "12",
-                &app.settings_form.commit_policy_min_summary_len_input,
-            )
-            .on_input(Message::CommitPolicyMinSummaryLengthChanged)
-            .width(Length::Fixed(70.0)),
+            widget::text_input("12", &app.settings_form.commit_policy_min_summary_len_input)
+                .on_input(Message::CommitPolicyMinSummaryLengthChanged)
+                .width(Length::Fixed(70.0)),
         )
         .spacing(8)
         .align_y(Alignment::Center)

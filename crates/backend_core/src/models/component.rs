@@ -576,7 +576,11 @@ pub struct RollingUpdateEntry {
     pub dependency_name: String,
     #[serde(default = "default_dependency_kind")]
     pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "from_version")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "from_version"
+    )]
     pub previous_version: Option<String>,
     #[serde(default, alias = "to_version", alias = "version")]
     pub new_version: String,

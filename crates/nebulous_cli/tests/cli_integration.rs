@@ -804,8 +804,7 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
     assert_eq!(list_projects["total"], 2);
     assert_eq!(list_projects["active_project_id"], "neb_beta");
 
-    let switch_alpha =
-        run_neb_json_with_env(&["project", "switch", "NovOS Alpha"], None, &cfg_dir);
+    let switch_alpha = run_neb_json_with_env(&["project", "switch", "NovOS Alpha"], None, &cfg_dir);
     assert_eq!(switch_alpha["action"], "switch");
     assert_eq!(switch_alpha["active_project_id"], "novos_alpha");
 
@@ -1071,13 +1070,8 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
     )
     .unwrap();
 
-    let storage = TrackerStorage::init(
-        &root,
-        "NovOS",
-        "01_rolling_core",
-        "Rolling Release Core",
-    )
-    .expect("should init NovOS tracker");
+    let storage = TrackerStorage::init(&root, "NovOS", "01_rolling_core", "Rolling Release Core")
+        .expect("should init NovOS tracker");
     let _ = backend_core::register_project_in(
         &cfg_dir,
         storage.project_root(),
@@ -1412,18 +1406,26 @@ fn test_mcp_remaining_tools_resources_content_length_and_error_paths() {
     assert!(ping_resp["result"].is_object());
 
     // 2. list_projects & switch_project
-    let lp_val = server.call_tool("list_projects", serde_json::json!({})).unwrap();
+    let lp_val = server
+        .call_tool("list_projects", serde_json::json!({}))
+        .unwrap();
     assert_eq!(lp_val["total"], 2);
     assert_eq!(lp_val["active_project_id"], "projone");
 
     let sw_val = server
-        .call_tool("switch_project", serde_json::json!({ "id_or_name": "ProjTwo" }))
+        .call_tool(
+            "switch_project",
+            serde_json::json!({ "id_or_name": "ProjTwo" }),
+        )
         .unwrap();
     assert_eq!(sw_val["active_project_id"], "projtwo");
 
     // Switch back to ProjOne
     server
-        .call_tool("switch_project", serde_json::json!({ "id_or_name": "projone" }))
+        .call_tool(
+            "switch_project",
+            serde_json::json!({ "id_or_name": "projone" }),
+        )
         .unwrap();
 
     // 3. upsert_component_manifest & promote_component_to_scope
@@ -1557,10 +1559,8 @@ fn test_mcp_remaining_tools_resources_content_length_and_error_paths() {
         .contains("BUG-0001"));
 
     // 6. Error handling: malformed JSON (-32700), unknown method (-32601), rollback without pin (isError: true)
-    let parse_err: Value = serde_json::from_str(
-        &server.handle_raw_message("{not valid json").unwrap(),
-    )
-    .unwrap();
+    let parse_err: Value =
+        serde_json::from_str(&server.handle_raw_message("{not valid json").unwrap()).unwrap();
     assert_eq!(parse_err["error"]["code"], -32700);
 
     let method_err: Value = serde_json::from_str(
@@ -1594,10 +1594,7 @@ fn test_mcp_remaining_tools_resources_content_length_and_error_paths() {
         )
         .unwrap();
     assert!(rolling_new_dep["rolling_update"]["previous_version"].is_null());
-    assert_eq!(
-        rolling_new_dep["rolling_update"]["new_version"],
-        "3.3.0-1"
-    );
+    assert_eq!(rolling_new_dep["rolling_update"]["new_version"], "3.3.0-1");
 
     // 8. Content-Length framed stdio session AND newline-delimited malformed line recovery
     let body = r#"{"jsonrpc":"2.0","id":99,"method":"ping"}"#;
@@ -1772,4 +1769,3 @@ fn test_cli_active_directory_and_declared_directory_isolation() {
             .is_err());
     }
 }
-
