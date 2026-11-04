@@ -29,8 +29,10 @@ impl Hash for WatcherSubscriptionId {
 pub fn subscription(app: &NebulousApp) -> Subscription<Message> {
     let mut subs = Vec::with_capacity(3);
 
-    // 1. Live `.tracker/` notify filesystem watcher subscription
-    subs.push(tracker_watcher_subscription(app.storage.clone()));
+    // 1. Live `.tracker/` notify filesystem watcher subscription (only when an active project exists)
+    if app.storage.project_toml_path().is_file() {
+        subs.push(tracker_watcher_subscription(app.storage.clone()));
+    }
 
     // 2. Active session timer 1-second tick
     if app.active_timer.is_some() {

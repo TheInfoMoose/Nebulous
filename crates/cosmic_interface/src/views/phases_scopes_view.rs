@@ -102,7 +102,7 @@ fn view_ingestion_and_component_catalog(app: &NebulousApp) -> Element<'_, Messag
     let scan_controls = widget::row::with_capacity(5)
         .push(
             widget::text_input(
-                "Optional subpath filter (leave empty for full workspace)...",
+                "Optional subpath within active project (leave empty for active project root)...",
                 &app.settings_form.ingest_subpath_input,
             )
             .on_input(Message::IngestSubpathChanged)
@@ -121,11 +121,21 @@ fn view_ingestion_and_component_catalog(app: &NebulousApp) -> Element<'_, Messag
         .align_y(Alignment::Center)
         .width(Length::Fill);
 
+    let active_root_caption = if app.storage.project_toml_path().is_file() {
+        format!(
+            "Active Project: {} · Active Project Root: {}",
+            app.project_name(),
+            app.storage.project_root().display()
+        )
+    } else {
+        "Active Project Root: (none — select or register a project in Settings)".to_string()
+    };
     let components = &app.index.project.components.registry;
-    let mut comp_col = widget::column::with_capacity(components.len() + 3)
+    let mut comp_col = widget::column::with_capacity(components.len() + 4)
         .push(widget::text::heading(
             "1. Project Directory Ingestion & Component Catalog",
         ))
+        .push(widget::text::caption(active_root_caption))
         .push(scan_controls)
         .spacing(8)
         .width(Length::Fill);

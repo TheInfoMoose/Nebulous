@@ -1837,6 +1837,169 @@ recorded_at = 2026-11-03T14:25:00Z
     assert_eq!(active_by_path.id, "alpha");
 }
 
+#[test]
+fn test_safe_project_root_validation_poisoned_registry_pruning_and_hidden_dir_skip() {
+    use backend_core::{
+        is_unsafe_broad_directory, load_global_registry_from, register_project_in,
+        validate_safe_project_root, GlobalProjectRegistry, IngestionOptions,
+    };
+
+    // 1. Verify filesystem root, system directories, /tmp root, and $HOME are rejected
+    assert!(is_unsafe_broad_directory(Path::new("/")));
+    assert!(is_unsafe_broad_directory(Path::new("/.tracker")));
+    assert!(is_unsafe_broad_directory(Path::new("/etc")));
+    assert!(is_unsafe_broad_directory(Path::new("/usr")));
+    assert!(is_unsafe_broad_directory(Path::new("/home")));
+    assert!(is_unsafe_broad_directory(Path::new("/tmp")));
+    assert!(is_unsafe_broad_directory(&std::env::temp_dir()));
+    assert!(validate_safe_project_root(Path::new("/")).is_err());
+    assert!(validate_safe_project_root(Path::new("/tmp")).is_err());
+    assert!(TrackerStorage::init(Path::new("/"), "Root", "01_init", "Init").is_err());
+    assert!(TrackerStorage::init(Path::new("/tmp"), "TmpRoot", "01_init", "Init").is_err());
+
+    if let Some(home_os) = std::env::var_os("HOME") {
+        let home_path = PathBuf::from(home_os);
+        if !home_path.starts_with(std::env::temp_dir()) {
+            assert!(is_unsafe_broad_directory(&home_path));
+            assert!(is_unsafe_broad_directory(&home_path.join(".tracker")));
+            assert!(validate_safe_project_root(&home_path).is_err());
+            assert!(TrackerStorage::init(&home_path, "HomeBad", "01_init", "Init").is_err());
+        }
+    }
+
+    // 2. Verify GlobalProjectRegistry refuses to register unsafe broad roots and prunes legacy
+    // poisoned entries (`root_path = "/home"` or `$HOME` or `/`) on load while falling back `active_project_id`
+    let temp = TempTrackerDir::new("safe_root_and_pruning");
+    let cfg_dir = temp.path().join("cfg");
+    fs::create_dir_all(&cfg_dir).unwrap();
+    let valid_proj = temp.path().join("valid_workspace");
+    fs::create_dir_all(&valid_proj).unwrap();
+    let storage =
+        TrackerStorage::init(&valid_proj, "ValidWorkspace", "01_init", "Init Phase").unwrap();
+
+    assert!(register_project_in(&cfg_dir, Path::new("/"), None, vec![], true).is_err());
+    assert!(register_project_in(&cfg_dir, Path::new("/tmp"), None, vec![], true).is_err());
+
+    let poisoned_toml = format!(
+        r#"active_project_id = "poisoned_home"
+
+[[projects]]
+id = "poisoned_home"
+name = "theinfomoose"
+root_path = "/home"
+tracker_path = "/home/.tracker"
+default_branch = "main"
+last_opened_at = "2026-11-04T00:00:00Z"
+
+[[projects]]
+id = "valid_workspace"
+name = "ValidWorkspace"
+root_path = "{}"
+tracker_path = "{}"
+default_branch = "main"
+last_opened_at = "2026-11-04T00:00:00Z"
+"#,
+        valid_proj.display(),
+        valid_proj.join(".tracker").display()
+    );
+    fs::write(cfg_dir.join("projects.toml"), &poisoned_toml).unwrap();
+
+    let loaded_reg = load_global_registry_from(&cfg_dir).expect("should load and prune registry");
+    assert_eq!(loaded_reg.projects.len(), 1);
+    assert_eq!(loaded_reg.projects[0].id, "valid_workspace");
+    assert_eq!(
+        loaded_reg.active_project_id.as_deref(),
+        Some("valid_workspace")
+    );
+    let persisted_raw = fs::read_to_string(cfg_dir.join("projects.toml")).unwrap();
+    assert!(
+        !persisted_raw.contains("poisoned_home"),
+        "poisoned unsafe entry must be pruned on disk as well as in memory"
+    );
+
+    let parsed_reg = GlobalProjectRegistry::from_toml_str(&poisoned_toml).unwrap();
+    assert_eq!(parsed_reg.projects.len(), 1);
+    assert_eq!(
+        parsed_reg.active_project_id.as_deref(),
+        Some("valid_workspace")
+    );
+
+    // 3. Verify `ingest_project_directory` refuses to scan an unsafe broad root (e.g. `TrackerStorage::new("/tmp")`)
+    // and skips hidden dot-directories (`.cargo`, `.cache`, `.local`, `.config`) inside a valid project
+    let unsafe_storage = TrackerStorage::new(Path::new("/tmp"));
+    assert!(unsafe_storage
+        .ingest_project_directory(IngestionOptions::new())
+        .is_err());
+
+    for hidden_dir in [".cargo/bin", ".cache/pip", ".local/share", ".config/nvim"] {
+        let p = valid_proj.join(hidden_dir);
+        fs::create_dir_all(&p).unwrap();
+        fs::write(p.join("Cargo.toml"), "[package]\nname = \"hidden_pkg\"\n").unwrap();
+        fs::write(p.join("secret.rs"), "pub fn secret() {}\n").unwrap();
+    }
+    fs::create_dir_all(valid_proj.join("crates/app/src")).unwrap();
+    fs::write(
+        valid_proj.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\n",
+    )
+    .unwrap();
+    fs::write(valid_proj.join("crates/app/src/main.rs"), "fn main() {}\n").unwrap();
+
+    let report = storage
+        .ingest_project_directory(IngestionOptions::new())
+        .expect("should ingest valid_proj while skipping hidden dot-directories");
+    assert_eq!(report.components.len(), 1);
+    assert_eq!(report.components[0].id, "app");
+    assert_eq!(
+        report.components[0].files,
+        vec![
+            "crates/app/Cargo.toml".to_string(),
+            "crates/app/src/main.rs".to_string(),
+        ]
+    );
+
+    // 4. Verify symlinked project roots work cleanly with follow_links(false), while symlinks inside
+    // a project pointing outside the project root are rejected when passed as `subpath`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let outside_dir = temp.path().join("outside_secret");
+        fs::create_dir_all(&outside_dir).unwrap();
+        fs::write(
+            outside_dir.join("Cargo.toml"),
+            "[package]\nname = \"outside_pkg\"\n",
+        )
+        .unwrap();
+        fs::write(outside_dir.join("lib.rs"), "pub fn outside() {}\n").unwrap();
+
+        let symlink_in_proj = valid_proj.join("external_link");
+        symlink(&outside_dir, &symlink_in_proj).unwrap();
+
+        // Full project scan skips the symlink (`follow_links(false)`)
+        let full_report = storage
+            .ingest_project_directory(IngestionOptions::new())
+            .expect("full scan should skip symlink");
+        assert_eq!(full_report.components.len(), 1);
+        assert_eq!(full_report.components[0].id, "app");
+
+        // Targeted subpath scan of a symlink pointing outside `valid_proj` must be rejected
+        assert!(storage
+            .ingest_project_directory(IngestionOptions::new().with_subpath("external_link"))
+            .is_err());
+
+        // Opening the project through a symlinked project root must still index `app`
+        let symlink_proj_root = temp.path().join("symlink_to_valid_proj");
+        symlink(&valid_proj, &symlink_proj_root).unwrap();
+        let symlink_storage = TrackerStorage::new(&symlink_proj_root);
+        let symlink_report = symlink_storage
+            .ingest_project_directory(IngestionOptions::new())
+            .expect("symlinked project root should resolve and index components");
+        assert_eq!(symlink_report.components.len(), 1);
+        assert_eq!(symlink_report.components[0].id, "app");
+    }
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {

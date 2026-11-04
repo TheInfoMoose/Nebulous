@@ -4,10 +4,11 @@ use std::process::Command;
 
 use backend_core::{
     global_registry_path, load_global_registry_from, register_project_in, remove_project_in,
-    set_active_project_in, ComponentDependency, ComponentManifest, CreateItemInput,
-    DocumentedCommitInput, GitRepoStatus, GitSyncMode, GlobalProjectRegistry, IngestionOptions,
-    ItemDetail, ItemLocation, ItemManifest, ItemStatus, ItemType, PhaseIndex, ProjectMetricsReport,
-    Result, Severity, SshPublicKeyInfo, TimerStatus, TrackerError, TrackerIndex, TrackerStorage,
+    set_active_project_in, validate_safe_project_root, ComponentDependency, ComponentManifest,
+    CreateItemInput, DocumentedCommitInput, GitRepoStatus, GitSyncMode, GlobalProjectRegistry,
+    IngestionOptions, ItemDetail, ItemLocation, ItemManifest, ItemStatus, ItemType, PhaseIndex,
+    ProjectMetricsReport, Result, Severity, SshPublicKeyInfo, TimerStatus, TrackerError,
+    TrackerIndex, TrackerStorage,
 };
 use chrono::Utc;
 use cosmic::app::{Core, Task};
@@ -510,22 +511,68 @@ pub struct NebulousApp {
 }
 
 impl NebulousApp {
-    /// Resolves `TrackerStorage` from an optional workspace path or current working directory,
-    /// and initializes a new `.tracker/` if none exists yet.
+    /// Resolves `TrackerStorage` from an optional workspace path, current working directory,
+    /// or the global `projects.toml` registry without creating `.tracker/` in an untracked CWD.
     pub fn resolve_or_init_storage(workspace_path: Option<&Path>) -> Result<TrackerStorage> {
-        let base_dir = match workspace_path {
-            Some(p) => p.to_path_buf(),
-            None => std::env::current_dir().map_err(|source| TrackerError::Io {
-                path: PathBuf::from("."),
-                source,
-            })?,
-        };
-        let fallback_name = base_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or("Nebulous");
-        Self::resolve_or_init_storage_named(&base_dir, Some(fallback_name))
+        let registry_path = global_registry_path();
+        Self::resolve_or_init_storage_with_registry(workspace_path, &registry_path)
+    }
+
+    /// Resolves `TrackerStorage` using a 4-tier priority order:
+    /// 1. Explicit `workspace_path` (`--workspace <PATH>`), validated via [`validate_safe_project_root`].
+    /// 2. Existing `.tracker/` discovered from `std::env::current_dir()`, if its root is safe.
+    /// 3. Active (or first valid) project registered in `registry_path` (`projects.toml`).
+    /// 4. Returns `Err(TrackerError::TrackerRootNotFound)` without creating `.tracker/` in CWD.
+    pub fn resolve_or_init_storage_with_registry(
+        workspace_path: Option<&Path>,
+        registry_path: &Path,
+    ) -> Result<TrackerStorage> {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::resolve_or_init_storage_from_cwd_with_registry(workspace_path, &cwd, registry_path)
+    }
+
+    /// Resolves `TrackerStorage` using `cwd` when `workspace_path` is `None`.
+    pub fn resolve_or_init_storage_from_cwd_with_registry(
+        workspace_path: Option<&Path>,
+        cwd: &Path,
+        registry_path: &Path,
+    ) -> Result<TrackerStorage> {
+        if let Some(p) = workspace_path {
+            validate_safe_project_root(p)?;
+            let fallback_name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("Nebulous");
+            return Self::resolve_or_init_storage_named(p, Some(fallback_name));
+        }
+
+        if let Ok(discovered) = TrackerStorage::discover(cwd) {
+            if validate_safe_project_root(&discovered.project_root()).is_ok() {
+                return Ok(discovered);
+            }
+        }
+
+        if let Ok(registry) = load_global_registry_from(registry_path) {
+            if let Some(active) = registry.active_project() {
+                let root = Path::new(&active.root_path);
+                if root.is_dir() && validate_safe_project_root(root).is_ok() {
+                    if let Ok(storage) = Self::open_or_init_project_root(root, Some(&active.name)) {
+                        return Ok(storage);
+                    }
+                }
+            }
+            for proj in &registry.projects {
+                let root = Path::new(&proj.root_path);
+                if root.is_dir() && validate_safe_project_root(root).is_ok() {
+                    if let Ok(storage) = Self::open_or_init_project_root(root, Some(&proj.name)) {
+                        return Ok(storage);
+                    }
+                }
+            }
+        }
+
+        Err(TrackerError::TrackerRootNotFound(cwd.to_path_buf()))
     }
 
     /// Resolves `TrackerStorage` at `base_dir` or initializes `.tracker/` with `project_name_hint` if missing.
@@ -534,7 +581,10 @@ impl NebulousApp {
         project_name_hint: Option<&str>,
     ) -> Result<TrackerStorage> {
         match TrackerStorage::discover(base_dir) {
-            Ok(storage) => Ok(storage),
+            Ok(storage) => {
+                validate_safe_project_root(&storage.project_root())?;
+                Ok(storage)
+            }
             Err(TrackerError::TrackerRootNotFound(_)) => {
                 Self::open_or_init_project_root(base_dir, project_name_hint)
             }
@@ -549,6 +599,7 @@ impl NebulousApp {
         project_name_hint: Option<&str>,
     ) -> Result<TrackerStorage> {
         let storage = TrackerStorage::new(base_dir);
+        validate_safe_project_root(&storage.project_root())?;
         if storage.project_toml_path().is_file() {
             return Ok(storage);
         }
@@ -586,13 +637,17 @@ impl NebulousApp {
         let git_status = storage.git_status().ok();
         let settings_form = SettingsFormState::from_index_and_storage(&index, &storage);
 
-        let _ = register_project_in(
-            &registry_path,
-            storage.project_root(),
-            Some(&index.project.project.name),
-            Vec::new(),
-            true,
-        );
+        if storage.project_toml_path().is_file()
+            && validate_safe_project_root(&storage.project_root()).is_ok()
+        {
+            let _ = register_project_in(
+                &registry_path,
+                storage.project_root(),
+                Some(&index.project.project.name),
+                Vec::new(),
+                true,
+            );
+        }
         let project_registry = load_global_registry_from(&registry_path).unwrap_or_default();
         let (project_ids, project_labels) =
             build_project_dropdown_lists(&project_registry, &index.project.project.name);
@@ -690,7 +745,10 @@ impl NebulousApp {
             .project_root()
             .to_string_lossy()
             .replace('\\', "/");
-        if current.find_project(&root_str).is_some() {
+        if self.storage.project_toml_path().is_file()
+            && validate_safe_project_root(&self.storage.project_root()).is_ok()
+            && current.find_project(&root_str).is_some()
+        {
             let _ = register_project_in(
                 &self.registry_path,
                 self.storage.project_root(),
@@ -1112,12 +1170,12 @@ impl Application for NebulousApp {
     fn init(mut core: Core, flags: Self::Flags) -> (Self, Task<Self::Message>) {
         core.window.header_title = "Nebulous — Project & Bug Tracker".to_string();
 
-        let storage = Self::resolve_or_init_storage(flags.workspace_path.as_deref())
-            .unwrap_or_else(|_| TrackerStorage::new("."));
+        let resolved = Self::resolve_or_init_storage(flags.workspace_path.as_deref())
+            .and_then(|storage| Self::new_from_storage(core.clone(), storage));
 
-        let app = Self::new_from_storage(core, storage).unwrap_or_else(|err| {
+        let app = resolved.unwrap_or_else(|_err| {
             let fallback_storage = TrackerStorage::new(".");
-            let registry_path = resolve_app_registry_path(&fallback_storage);
+            let registry_path = global_registry_path();
             let empty_project = backend_core::ProjectManifest {
                 project: backend_core::ProjectMetadata {
                     name: "Nebulous".to_string(),
@@ -1138,11 +1196,11 @@ impl Application for NebulousApp {
             };
             let settings_form =
                 SettingsFormState::from_index_and_storage(&empty_index, &fallback_storage);
-            let project_registry = GlobalProjectRegistry::default();
+            let project_registry = load_global_registry_from(&registry_path).unwrap_or_default();
             let (project_ids, project_labels) =
                 build_project_dropdown_lists(&project_registry, "Nebulous");
             Self {
-                core: Core::default(),
+                core,
                 storage: fallback_storage,
                 registry_path,
                 project_registry,
@@ -1154,7 +1212,7 @@ impl Application for NebulousApp {
                 phase_labels: Vec::new(),
                 selected_scope: None,
                 active_filter: FilterPill::All,
-                view_mode: ViewMode::Board,
+                view_mode: ViewMode::Settings,
                 selected_item_id: None,
                 selected_item_location: None,
                 selected_item_detail: None,
@@ -1173,7 +1231,10 @@ impl Application for NebulousApp {
                 git_status: None,
                 quick_add: QuickAddState::default(),
                 settings_form,
-                status_banner: Some(format!("Failed to load .tracker index: {err}")),
+                status_banner: Some(
+                    "No active project selected. Add or select a project directory below."
+                        .to_string(),
+                ),
             }
         });
 
@@ -1875,12 +1936,74 @@ impl Application for NebulousApp {
                 self.settings_form.ingest_promote_all = promote;
             }
             Message::IngestProjectDirectory => {
+                if !self.storage.project_toml_path().is_file()
+                    || validate_safe_project_root(&self.storage.project_root()).is_err()
+                {
+                    self.status_banner = Some(
+                        "Cannot scan directory: no valid active project is loaded. Select or add a project in Settings first."
+                            .to_string(),
+                    );
+                    return Task::none();
+                }
+
+                let project_root = self
+                    .storage
+                    .project_root()
+                    .canonicalize()
+                    .unwrap_or_else(|_| self.storage.project_root());
                 let mut opts = IngestionOptions::new()
                     .with_write_manifests(self.settings_form.ingest_write_manifests)
                     .with_promote_all(self.settings_form.ingest_promote_all)
                     .with_promote_phase(self.active_phase_id.clone());
-                if !self.settings_form.ingest_subpath_input.trim().is_empty() {
-                    opts = opts.with_subpath(self.settings_form.ingest_subpath_input.trim());
+
+                let raw_subpath = self.settings_form.ingest_subpath_input.trim();
+                if !raw_subpath.is_empty() {
+                    let expanded = expand_tilde_path(raw_subpath);
+                    if expanded.is_absolute() || raw_subpath.starts_with('~') {
+                        let resolved = expanded.canonicalize().unwrap_or(expanded);
+                        match resolved.strip_prefix(&project_root) {
+                            Ok(rel) => {
+                                let rel_str = rel
+                                    .to_string_lossy()
+                                    .replace('\\', "/")
+                                    .trim_matches('/')
+                                    .to_string();
+                                if !rel_str.is_empty() && rel_str != "." {
+                                    opts = opts.with_subpath(rel_str);
+                                }
+                            }
+                            Err(_) => {
+                                self.status_banner = Some(format!(
+                                    "Scan path must be within the active project ({})",
+                                    project_root.display()
+                                ));
+                                return Task::none();
+                            }
+                        }
+                    } else {
+                        if expanded
+                            .components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir))
+                        {
+                            self.status_banner = Some(format!(
+                                "Scan path must be within the active project ({})",
+                                project_root.display()
+                            ));
+                            return Task::none();
+                        }
+                        let joined = project_root.join(&expanded);
+                        if joined.exists() {
+                            let resolved = joined.canonicalize().unwrap_or(joined);
+                            if !resolved.starts_with(&project_root) {
+                                self.status_banner = Some(format!(
+                                    "Scan path must be within the active project ({})",
+                                    project_root.display()
+                                ));
+                                return Task::none();
+                            }
+                        }
+                        opts = opts.with_subpath(raw_subpath);
+                    }
                 }
                 match self.storage.ingest_project_directory(opts) {
                     Ok(report) => {
@@ -4594,5 +4717,132 @@ mod tests {
                 Some("enc@nebulous.local")
             );
         }
+    }
+
+    #[test]
+    fn test_active_project_isolation_startup_resolution_and_subpath_boundary_guards() {
+        let (temp, storage) = create_sample_tracker_workspace();
+        let reg_path = temp.path().join("isolated_registry").join("projects.toml");
+
+        // 1. When CWD has no `.tracker/` and registry is empty, `resolve_or_init_storage_from_cwd_with_registry`
+        // must return `Err(TrackerRootNotFound)` and must NOT create `.tracker/` in CWD.
+        let untracked_cwd = TempDir::new().expect("untracked cwd");
+        let err = NebulousApp::resolve_or_init_storage_from_cwd_with_registry(
+            None,
+            untracked_cwd.path(),
+            &reg_path,
+        )
+        .expect_err("untracked cwd with empty registry must not auto-init .tracker");
+        assert!(matches!(err, TrackerError::TrackerRootNotFound(_)));
+        assert!(!untracked_cwd.path().join(".tracker").exists());
+
+        // 2. Registering the sample workspace in `projects.toml` allows startup from an untracked CWD
+        // (or `$HOME`) to load the active project from `projects.toml` without creating `.tracker/` in CWD.
+        let mut app = NebulousApp::new_from_storage_with_registry(
+            Core::default(),
+            storage.clone(),
+            reg_path.clone(),
+        )
+        .expect("boot app");
+
+        let resolved_from_registry = NebulousApp::resolve_or_init_storage_from_cwd_with_registry(
+            None,
+            untracked_cwd.path(),
+            &reg_path,
+        )
+        .expect("resolve active project from registry when cwd is untracked");
+        assert_eq!(
+            resolved_from_registry.project_root().canonicalize().unwrap(),
+            storage.project_root().canonicalize().unwrap()
+        );
+        assert!(!untracked_cwd.path().join(".tracker").exists());
+
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            let resolved_from_home = NebulousApp::resolve_or_init_storage_from_cwd_with_registry(
+                None,
+                &home,
+                &reg_path,
+            )
+            .expect("resolve active project from registry when cwd is $HOME");
+            assert_eq!(
+                resolved_from_home.project_root().canonicalize().unwrap(),
+                storage.project_root().canonicalize().unwrap()
+            );
+            assert!(NebulousApp::resolve_or_init_storage(Some(&home)).is_err());
+        }
+        assert!(NebulousApp::resolve_or_init_storage(Some(Path::new("/"))).is_err());
+
+        // 3. Seed two crates inside the active project (`crates/alpha` and `crates/beta`) and a sibling
+        // directory outside the active project (`sibling_outside/crates/gamma`).
+        let alpha_src = temp.path().join("crates").join("alpha").join("src");
+        let beta_src = temp.path().join("crates").join("beta").join("src");
+        fs::create_dir_all(&alpha_src).unwrap();
+        fs::create_dir_all(&beta_src).unwrap();
+        fs::write(
+            temp.path().join("crates").join("alpha").join("Cargo.toml"),
+            "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(alpha_src.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+        fs::write(
+            temp.path().join("crates").join("beta").join("Cargo.toml"),
+            "[package]\nname = \"beta\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(beta_src.join("lib.rs"), "pub fn beta() {}\n").unwrap();
+
+        let sibling_outside = TempDir::new().expect("sibling outside dir");
+        let gamma_src = sibling_outside
+            .path()
+            .join("crates")
+            .join("gamma")
+            .join("src");
+        fs::create_dir_all(&gamma_src).unwrap();
+        fs::write(
+            sibling_outside
+                .path()
+                .join("crates")
+                .join("gamma")
+                .join("Cargo.toml"),
+            "[package]\nname = \"gamma\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(gamma_src.join("lib.rs"), "pub fn gamma() {}\n").unwrap();
+
+        // 4. Attempting to scan an absolute path outside the active project is rejected with banner.
+        let _ = app.update(Message::IngestSubpathChanged(
+            sibling_outside.path().to_string_lossy().to_string(),
+        ));
+        let _ = app.update(Message::IngestProjectDirectory);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Scan path must be within the active project"));
+        assert!(app.index.project.components.is_empty());
+
+        // 5. Attempting to scan a `../` relative path escaping the active project is rejected.
+        let _ = app.update(Message::IngestSubpathChanged("../outside".to_string()));
+        let _ = app.update(Message::IngestProjectDirectory);
+        assert!(app
+            .status_banner
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Scan path must be within the active project"));
+        assert!(app.index.project.components.is_empty());
+
+        // 6. Scanning an absolute path inside the active project (`<project_root>/crates/alpha`)
+        // strips the project root prefix and scans strictly `crates/alpha` without indexing `beta`.
+        let alpha_abs = temp
+            .path()
+            .join("crates")
+            .join("alpha")
+            .to_string_lossy()
+            .to_string();
+        let _ = app.update(Message::IngestSubpathChanged(alpha_abs));
+        let _ = app.update(Message::IngestProjectDirectory);
+        assert!(app.index.project.components.find("alpha").is_some());
+        assert!(app.index.project.components.find("beta").is_none());
+        assert!(app.index.project.components.find("gamma").is_none());
     }
 }

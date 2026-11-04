@@ -1625,3 +1625,151 @@ fn test_mcp_remaining_tools_resources_content_length_and_error_paths() {
     assert_eq!(line_responses[0]["error"]["code"], -32700);
     assert_eq!(line_responses[1]["id"], 100);
 }
+
+#[test]
+fn test_cli_active_directory_and_declared_directory_isolation() {
+    use backend_core::McpServer;
+
+    let temp = TempDir::new().expect("should create temp dir");
+    let cfg_dir = temp.path().join("nebulous_cfg");
+    let proj_dir = temp.path().join("active_proj");
+    let untracked_dir = temp.path().join("untracked_folder");
+    fs::create_dir_all(&proj_dir).unwrap();
+    fs::create_dir_all(&untracked_dir).unwrap();
+
+    // Initialize proj_dir and register it as active in projects.toml
+    let proj_str = proj_dir.to_str().unwrap();
+    run_neb_json_with_env(
+        &["project", "add", proj_str, "--name", "ActiveProj"],
+        None,
+        &cfg_dir,
+    );
+
+    // Create two distinct component subdirectories in proj_dir: `crates/core_lib` and `iso`
+    let core_lib_dir = proj_dir.join("crates/core_lib");
+    fs::create_dir_all(core_lib_dir.join("src")).unwrap();
+    fs::write(
+        core_lib_dir.join("Cargo.toml"),
+        "[package]\nname = \"core_lib\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(core_lib_dir.join("src/lib.rs"), "pub fn init() {}\n").unwrap();
+
+    let iso_dir = proj_dir.join("iso");
+    fs::create_dir_all(&iso_dir).unwrap();
+    fs::write(iso_dir.join("build.sh"), "#!/usr/bin/env bash\n").unwrap();
+
+    // 1. Calling `neb list` or `neb ingest` in an uninitialized directory outside any `.tracker/`
+    // MUST fail cleanly with TrackerRootNotFound and MUST NOT fall back to `projects.toml`!
+    let list_untracked = run_neb_with_env(&["list"], Some(&untracked_dir), &cfg_dir);
+    assert!(
+        !list_untracked.status.success(),
+        "neb list in untracked directory must not fall back to global registry"
+    );
+    let ingest_untracked = run_neb_with_env(&["ingest"], Some(&untracked_dir), &cfg_dir);
+    assert!(
+        !ingest_untracked.status.success(),
+        "neb ingest in untracked directory must not fall back to global registry"
+    );
+
+    // 2. Calling `neb ingest` from a project subdirectory (`crates/core_lib`) without arguments
+    // MUST isolate scanning strictly to the active directory (`crates/core_lib`) and NOT scan `iso/`!
+    let ingest_from_subdir = run_neb_json_with_env(&["ingest"], Some(&core_lib_dir), &cfg_dir);
+    assert_eq!(ingest_from_subdir["total_components"], 1);
+    assert_eq!(ingest_from_subdir["components"][0]["id"], "core_lib");
+
+    let storage = TrackerStorage::new(&proj_dir);
+    let proj_after_subdir = storage.read_project().unwrap();
+    assert_eq!(proj_after_subdir.components.len(), 1);
+    assert!(proj_after_subdir.components.find("core_lib").is_some());
+    assert!(
+        proj_after_subdir.components.find("iso").is_none(),
+        "sibling iso/ directory must not be scanned when neb ingest is called inside crates/core_lib"
+    );
+
+    // 3. Calling `neb ingest <DECLARED_DIR>` (even from an untracked directory or another subdir)
+    // with an explicit path to `iso` isolates scanning strictly to `iso`!
+    let iso_abs_str = iso_dir.to_str().unwrap();
+    let ingest_declared_abs =
+        run_neb_json_with_env(&["ingest", iso_abs_str], Some(&untracked_dir), &cfg_dir);
+    assert_eq!(ingest_declared_abs["total_components"], 1);
+    assert_eq!(ingest_declared_abs["components"][0]["id"], "iso");
+
+    // Calling `neb ingest --path ../iso` (relative declared path from `crates/` directory)
+    let crates_dir = proj_dir.join("crates");
+    let ingest_declared_rel =
+        run_neb_json_with_env(&["ingest", "--path", "../iso"], Some(&crates_dir), &cfg_dir);
+    assert_eq!(ingest_declared_rel["total_components"], 1);
+    assert_eq!(ingest_declared_rel["components"][0]["id"], "iso");
+
+    // Calling `neb --root <PROJ> ingest <OUTSIDE_DIR>` must fail validation
+    let outside_str = untracked_dir.to_str().unwrap();
+    let ingest_outside_root = run_neb_with_env(
+        &["--root", proj_str, "ingest", outside_str],
+        Some(&proj_dir),
+        &cfg_dir,
+    );
+    assert!(!ingest_outside_root.status.success());
+
+    // Calling `neb --root . list` from a project subdirectory (`crates/core_lib`) resolves `.`
+    // against CWD and walks up ancestor directories to find `.tracker/`
+    let list_from_dot_root =
+        run_neb_with_env(&["--root", ".", "list"], Some(&core_lib_dir), &cfg_dir);
+    assert!(
+        list_from_dot_root.status.success(),
+        "neb --root . list from a project subdirectory should discover ancestor .tracker"
+    );
+
+    // 4. MCP `ingest_project_directory` with an absolute subdirectory path inside the active project
+    // cleanly strips `project_root` and isolates scanning to that subdirectory
+    let mut mcp = McpServer::from_storage(storage).with_registry_path(&cfg_dir);
+    let mcp_ingest = mcp
+        .call_tool(
+            "ingest_project_directory",
+            serde_json::json!({
+                "subpath": core_lib_dir.to_string_lossy()
+            }),
+        )
+        .expect("MCP ingest_project_directory should accept absolute path inside project_root");
+    assert_eq!(mcp_ingest["total_components"], 1);
+    assert_eq!(mcp_ingest["components"][0]["id"], "core_lib");
+
+    // 5. MCP and CLI must reject an absolute path outside the active project or a symlink inside
+    // the project that resolves outside the active project root
+    assert!(mcp
+        .call_tool(
+            "ingest_project_directory",
+            serde_json::json!({
+                "subpath": untracked_dir.to_string_lossy()
+            }),
+        )
+        .is_err());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let escape_link = proj_dir.join("escape_link");
+        symlink(&untracked_dir, &escape_link).unwrap();
+
+        let cli_escape = run_neb_with_env(
+            &["ingest", escape_link.to_str().unwrap()],
+            Some(&proj_dir),
+            &cfg_dir,
+        );
+        assert!(
+            !cli_escape.status.success(),
+            "neb ingest on a symlink resolving outside project_root must fail"
+        );
+
+        assert!(mcp
+            .call_tool(
+                "ingest_project_directory",
+                serde_json::json!({
+                    "subpath": escape_link.to_string_lossy()
+                }),
+            )
+            .is_err());
+    }
+}
+

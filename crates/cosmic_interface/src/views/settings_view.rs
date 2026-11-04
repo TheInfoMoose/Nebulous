@@ -83,12 +83,20 @@ pub fn view_settings(app: &NebulousApp) -> Element<'_, Message> {
 }
 
 fn view_multi_project_registry_section(app: &NebulousApp) -> Element<'_, Message> {
-    let mut projects_col = widget::column::with_capacity(app.project_registry.projects.len() + 3)
+    let current_root_str = app.storage.project_root().to_string_lossy().replace('\\', "/");
+    let active_root_caption = if app.storage.project_toml_path().is_file() {
+        format!(
+            "Active Project: {} · Active Project Root: {current_root_str}",
+            app.project_name()
+        )
+    } else {
+        "Active Project Root: (none — select or register a project below)".to_string()
+    };
+    let mut projects_col = widget::column::with_capacity(app.project_registry.projects.len() + 4)
         .push(widget::text::heading("1. Multi-Project Registry"))
+        .push(widget::text::caption(active_root_caption))
         .spacing(6)
         .width(Length::Fill);
-
-    let current_root_str = app.storage.project_root().to_string_lossy().replace('\\', "/");
 
     for proj in &app.project_registry.projects {
         let is_active = match app.project_registry.active_project_id.as_deref() {

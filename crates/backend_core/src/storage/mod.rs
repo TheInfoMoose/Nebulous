@@ -164,21 +164,42 @@ impl TrackerStorage {
     }
 
     /// Discovers a `.tracker/` directory by walking up ancestor directories from `start_dir`.
+    ///
+    /// Skips any `.tracker/` directory located directly inside an unsafe broad root (such as
+    /// `/`, `$HOME`, or `/tmp`) so a stray `~/.tracker` never hijacks unrelated workspaces.
     pub fn discover(start_dir: impl AsRef<Path>) -> Result<Self> {
         let start = start_dir.as_ref();
-        let mut current = Some(start);
+        let abs = if start.is_relative() {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(start))
+                .unwrap_or_else(|_| start.to_path_buf())
+        } else {
+            start.to_path_buf()
+        };
+        let resolved_start = if abs.exists() {
+            fs::canonicalize(&abs).unwrap_or_else(|_| lexical_normalize_path(&abs))
+        } else {
+            lexical_normalize_path(&abs)
+        };
+
+        let mut current = Some(resolved_start.as_path());
         while let Some(dir) = current {
             if dir.file_name() == Some(OsStr::new(".tracker")) && dir.join("project.toml").is_file()
             {
-                return Ok(Self {
-                    tracker_dir: dir.to_path_buf(),
-                });
+                let parent = dir.parent().unwrap_or(dir);
+                if !is_unsafe_broad_directory(parent) {
+                    return Ok(Self {
+                        tracker_dir: dir.to_path_buf(),
+                    });
+                }
             }
-            let candidate = dir.join(".tracker");
-            if candidate.join("project.toml").is_file() {
-                return Ok(Self {
-                    tracker_dir: candidate,
-                });
+            if !is_unsafe_broad_directory(dir) {
+                let candidate = dir.join(".tracker");
+                if candidate.join("project.toml").is_file() {
+                    return Ok(Self {
+                        tracker_dir: candidate,
+                    });
+                }
             }
             current = dir.parent();
         }
@@ -194,6 +215,7 @@ impl TrackerStorage {
         initial_phase_title: impl Into<String>,
     ) -> Result<Self> {
         let storage = Self::new(root_or_tracker_dir);
+        validate_safe_project_root(&storage.project_root())?;
         let phase_id = initial_phase_id.into();
         let phase_title = initial_phase_title.into();
         validate_identifier("Phase", &phase_id)?;
@@ -924,3 +946,171 @@ fn attach_toml_path(err: TrackerError, path: PathBuf) -> TrackerError {
     }
 }
 
+const UNSAFE_SYSTEM_DIRS: &[&str] = &[
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/home",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/media",
+    "/mnt",
+    "/opt",
+    "/proc",
+    "/root",
+    "/run",
+    "/sbin",
+    "/srv",
+    "/sys",
+    "/tmp",
+    "/usr",
+    "/var",
+    "/Users",
+    "/System",
+    "/Library",
+    "/Volumes",
+    "/private",
+    "/private/tmp",
+    "/var/tmp",
+];
+
+fn lexical_normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::Prefix(p) => out.push(p.as_os_str()),
+            Component::RootDir => out.push(comp.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let _ = out.pop();
+            }
+            Component::Normal(part) => out.push(part),
+        }
+    }
+    out
+}
+
+fn normalize_comparable_path_str(path: &Path) -> String {
+    let mut s = path.to_string_lossy().replace('\\', "/");
+    if let Some(stripped) = s.strip_prefix("//?/UNC/") {
+        s = format!("//{stripped}");
+    } else if let Some(stripped) = s.strip_prefix("//?/") {
+        s = stripped.to_string();
+    }
+    while s.len() > 1 && s.ends_with('/') {
+        s.pop();
+    }
+    s
+}
+
+fn resolve_project_root_candidate(path: &Path) -> PathBuf {
+    if path.as_os_str().is_empty() {
+        return PathBuf::new();
+    }
+    let abs = if path.is_relative() {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    };
+
+    let mut norm = lexical_normalize_path(&abs);
+    if norm.file_name() == Some(OsStr::new("project.toml")) {
+        if let Some(parent) = norm.parent() {
+            norm = parent.to_path_buf();
+        }
+    }
+    if norm.file_name() == Some(OsStr::new(".tracker")) {
+        if let Some(parent) = norm.parent() {
+            norm = parent.to_path_buf();
+        }
+    }
+
+    if norm.exists() {
+        if let Ok(mut canon) = fs::canonicalize(&norm) {
+            if canon.file_name() == Some(OsStr::new(".tracker")) {
+                if let Some(parent) = canon.parent() {
+                    canon = parent.to_path_buf();
+                }
+            }
+            return canon;
+        }
+    }
+    norm
+}
+
+/// Returns `true` if `path` (or its parent when `path` is `.tracker`) resolves to an unsafe broad
+/// directory such as a filesystem root (`/`, `C:\`), the user's home directory (`$HOME` /
+/// `%USERPROFILE%`), a top-level system tree (`/usr`, `/etc`, `/var`, `/proc`, `/sys`, `/dev`,
+/// `/home`), or the top-level temporary directory (`/tmp`) itself.
+pub fn is_unsafe_broad_directory(path: &Path) -> bool {
+    let resolved = resolve_project_root_candidate(path);
+    if resolved.as_os_str().is_empty() || resolved.parent().is_none() {
+        return true;
+    }
+
+    let s = normalize_comparable_path_str(&resolved);
+    if s.is_empty()
+        || s == "/"
+        || (s.len() == 2 && s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':')
+    {
+        return true;
+    }
+
+    if UNSAFE_SYSTEM_DIRS.contains(&s.as_str()) {
+        return true;
+    }
+    if s.starts_with("/proc/") || s.starts_with("/sys/") || s.starts_with("/dev/") {
+        return true;
+    }
+
+    let temp_dir = std::env::temp_dir();
+    let temp_norm_s = normalize_comparable_path_str(&lexical_normalize_path(&temp_dir));
+    let temp_canon_s = fs::canonicalize(&temp_dir)
+        .map(|p| normalize_comparable_path_str(&p))
+        .unwrap_or_else(|_| temp_norm_s.clone());
+
+    if s == temp_norm_s || s == temp_canon_s {
+        return true;
+    }
+
+    if let Some(home_os) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let home_path = PathBuf::from(home_os);
+        if !home_path.as_os_str().is_empty() {
+            let home_norm = lexical_normalize_path(&home_path);
+            let home_norm_s = normalize_comparable_path_str(&home_norm);
+            let home_canon_s = fs::canonicalize(&home_path)
+                .map(|p| normalize_comparable_path_str(&p))
+                .unwrap_or_else(|_| home_norm_s.clone());
+
+            let temp_norm_prefix = format!("{temp_norm_s}/");
+            let temp_canon_prefix = format!("{temp_canon_s}/");
+            let home_in_temp = home_norm_s == temp_norm_s
+                || home_norm_s.starts_with(&temp_norm_prefix)
+                || home_canon_s == temp_canon_s
+                || home_canon_s.starts_with(&temp_canon_prefix);
+
+            if !home_in_temp && (s == home_norm_s || s == home_canon_s) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Validates that `path` is a safe, specific project root directory (rejecting `/`, `$HOME`,
+/// top-level OS directories, and `/tmp` itself), returning the normalized/canonicalized path.
+pub fn validate_safe_project_root(path: &Path) -> Result<PathBuf> {
+    let resolved = resolve_project_root_candidate(path);
+    if is_unsafe_broad_directory(path) {
+        return Err(TrackerError::ValidationError(format!(
+            "Refusing to use broad system or home directory '{}' as a Nebulous project root. Please select a specific project directory.",
+            resolved.display()
+        )));
+    }
+    Ok(resolved)
+}

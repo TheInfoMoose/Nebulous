@@ -243,13 +243,14 @@ pub enum Commands {
         action: ProjectCommand,
     },
 
-    /// Scan and ingest project directory components into `.tracker/project.toml` (`[components]`).
+    /// Scan and ingest project directory components into `.tracker/project.toml` (`[components]`),
+    /// isolating to the active working directory or the declared directory.
     Ingest {
-        /// Optional relative subdirectory path to restrict scanning.
+        /// Optional target directory or subdirectory path to restrict scanning (defaults to current working directory).
         #[arg(long = "path", short = 'p', value_name = "SUBDIR")]
         path: Option<String>,
 
-        /// Positional subdirectory fallback when `--path` is omitted.
+        /// Positional directory or subdirectory fallback when `--path` is omitted.
         #[arg(value_name = "SUBDIR")]
         positional_path: Option<String>,
 

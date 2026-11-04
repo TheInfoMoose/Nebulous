@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::crypto::nebulous_config_dir;
 use crate::error::{Result, TrackerError};
 use crate::models::{deserialize_datetime_string, parse_timestamp_utc};
-use crate::storage::{atomic_write_str, TrackerStorage};
+use crate::storage::{
+    atomic_write_str, is_unsafe_broad_directory, validate_safe_project_root, TrackerStorage,
+};
 
 /// Default filename for the global multi-project registry inside [`nebulous_config_dir()`].
 pub const GLOBAL_PROJECTS_FILE_NAME: &str = "projects.toml";
@@ -72,9 +74,29 @@ impl RegisteredProject {
 }
 
 impl GlobalProjectRegistry {
-    /// Deserializes a [`GlobalProjectRegistry`] from a TOML string.
+    /// Deserializes a [`GlobalProjectRegistry`] from a TOML string and prunes any unsafe broad root entries.
     pub fn from_toml_str(input: &str) -> Result<Self> {
-        Ok(toml::from_str(input)?)
+        let mut registry: Self = toml::from_str(input)?;
+        registry.prune_unsafe_projects();
+        Ok(registry)
+    }
+
+    /// Removes any registered project entries whose `root_path` or `tracker_path` points to an
+    /// unsafe broad directory (such as `/`, `$HOME`, or `/tmp`), updating `active_project_id` if needed.
+    /// Returns `true` if any entry was removed or `active_project_id` changed.
+    pub fn prune_unsafe_projects(&mut self) -> bool {
+        let before_len = self.projects.len();
+        let before_active = self.active_project_id.clone();
+        self.projects.retain(|p| {
+            !is_unsafe_broad_directory(Path::new(&p.root_path))
+                && !is_unsafe_broad_directory(Path::new(&p.tracker_path))
+        });
+        if let Some(active_id) = &self.active_project_id {
+            if !self.projects.iter().any(|p| &p.id == active_id) {
+                self.active_project_id = self.projects.first().map(|p| p.id.clone());
+            }
+        }
+        self.projects.len() != before_len || self.active_project_id != before_active
     }
 
     /// Serializes this [`GlobalProjectRegistry`] into a formatted TOML string.
@@ -174,6 +196,7 @@ impl GlobalProjectRegistry {
             fs::canonicalize(target_dir).unwrap_or_else(|_| target_dir.to_path_buf());
         let storage = TrackerStorage::new(&canonical_input);
         let project_root_buf = storage.project_root();
+        validate_safe_project_root(&project_root_buf)?;
         let tracker_dir_buf = storage.tracker_dir().to_path_buf();
 
         let root_path_str = normalize_display_path(&project_root_buf);
@@ -408,13 +431,15 @@ fn load_registry_unlocked(path: &Path) -> Result<GlobalProjectRegistry> {
     if raw.trim().is_empty() {
         return Ok(GlobalProjectRegistry::default());
     }
-    GlobalProjectRegistry::from_toml_str(&raw).map_err(|err| match err {
-        TrackerError::TomlDeserialize { source, .. } => TrackerError::TomlDeserialize {
+    let mut registry: GlobalProjectRegistry =
+        toml::from_str(&raw).map_err(|source| TrackerError::TomlDeserialize {
             path: Some(path.to_path_buf()),
             source,
-        },
-        other => other,
-    })
+        })?;
+    if registry.prune_unsafe_projects() {
+        let _ = save_registry_unlocked(path, &registry);
+    }
+    Ok(registry)
 }
 
 fn save_registry_unlocked(path: &Path, registry: &GlobalProjectRegistry) -> Result<()> {

@@ -1479,7 +1479,29 @@ impl McpServer {
             .with_write_manifests(parsed.write_manifests)
             .with_promote_all(parsed.promote_all);
         if let Some(sub) = non_empty(parsed.subpath.as_deref()) {
-            opts = opts.with_subpath(sub);
+            let sub_path = Path::new(sub);
+            if sub_path.is_absolute() {
+                let root_canon = crate::storage::validate_safe_project_root(&storage.project_root())?;
+                let sub_canon = std::fs::canonicalize(sub_path).map_err(|_| {
+                    TrackerError::ValidationError(format!(
+                        "Scan subpath '{sub}' does not exist or is outside the active project root '{}'",
+                        root_canon.display()
+                    ))
+                })?;
+                if let Ok(rel) = sub_canon.strip_prefix(&root_canon) {
+                    let norm = crate::storage::normalize_relative_path(rel);
+                    if !norm.is_empty() && norm != "." {
+                        opts = opts.with_subpath(norm);
+                    }
+                } else {
+                    return Err(TrackerError::ValidationError(format!(
+                        "Scan subpath '{sub}' is outside the active project root '{}'",
+                        root_canon.display()
+                    )));
+                }
+            } else {
+                opts = opts.with_subpath(sub);
+            }
         }
         if let Some(phase) = non_empty(parsed.promote_phase_id.as_deref()) {
             opts = opts.with_promote_phase(phase);

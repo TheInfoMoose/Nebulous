@@ -14,7 +14,8 @@ use crate::models::{
 };
 use crate::storage::{
     atomic_write_str, normalize_relative_path, normalize_relative_path_list,
-    normalize_relative_path_str, resolve_safe_relative_path, validate_identifier, TrackerStorage,
+    normalize_relative_path_str, resolve_safe_relative_path, validate_identifier,
+    validate_safe_project_root, TrackerStorage,
 };
 
 /// Directories unconditionally skipped during project directory ingestion.
@@ -73,7 +74,8 @@ impl IngestionOptions {
             None
         } else {
             Some(norm)
-        };
+        }
+        ;
         self
     }
 
@@ -105,14 +107,14 @@ pub struct IngestionReport {
 impl TrackerStorage {
     /// Stage 1: Walks `project_root` (or `options.subpath`) using [`ignore::WalkBuilder`],
     /// respecting `.gitignore` and skipping `.git/`, `.tracker/`, `target/`, `node_modules/`,
-    /// `dist/`, `build/`, `__pycache__/`, and `.venv/`.
+    /// `dist/`, `build/`, `__pycache__/`, `.venv/`, and any hidden dot-directories.
     ///
     /// Detects ecosystem manifests (`Cargo.toml`, `package.json`, `pyproject.toml`, `CMakeLists.txt`,
     /// `Makefile`, `Dockerfile`, `nebulous.component.toml`) and top-level un-manifested functional
     /// directories (e.g. `scripts/`, `iso/`, `config/`), recording relative file paths (`files = [...]`)
     /// into `.tracker/project.toml` `[components]` without reading or parsing source file ASTs.
     pub fn ingest_project_directory(&self, options: IngestionOptions) -> Result<IngestionReport> {
-        let project_root = self.project_root();
+        let project_root = validate_safe_project_root(&self.project_root())?;
         if !project_root.is_dir() {
             return Err(TrackerError::NotFound {
                 kind: "ProjectRoot",
@@ -120,7 +122,7 @@ impl TrackerStorage {
             });
         }
 
-        let norm_subpath = options
+        let mut norm_subpath = options
             .subpath
             .as_deref()
             .map(normalize_relative_path_str)
@@ -135,7 +137,26 @@ impl TrackerStorage {
                         id: rel.to_string(),
                     });
                 }
-                target
+                let target_canon = fs::canonicalize(&target).map_err(|source| TrackerError::Io {
+                    path: target.clone(),
+                    source,
+                })?;
+                if !target_canon.starts_with(&project_root) {
+                    return Err(TrackerError::ValidationError(format!(
+                        "Relative tracker path '{rel}' resolves outside the active project root '{}'",
+                        project_root.display()
+                    )));
+                }
+                validate_safe_project_root(&target_canon)?;
+                if let Ok(canon_rel) = target_canon.strip_prefix(&project_root) {
+                    let canon_rel_str = normalize_relative_path(canon_rel);
+                    norm_subpath = if canon_rel_str.is_empty() || canon_rel_str == "." {
+                        None
+                    } else {
+                        Some(canon_rel_str)
+                    };
+                }
+                target_canon
             }
             None => project_root.clone(),
         };
@@ -146,6 +167,8 @@ impl TrackerStorage {
             .git_ignore(true)
             .git_global(false)
             .git_exclude(true)
+            .same_file_system(true)
+            .follow_links(false)
             .hidden(false);
 
         if scan_root != project_root {
@@ -835,28 +858,41 @@ fn should_skip_entry(entry: &DirEntry, scan_root: &Path) -> bool {
     }
     let name = entry.file_name().to_string_lossy();
     if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-        return IGNORED_INGESTION_DIRS.contains(&name.as_ref());
+        return name.starts_with('.') || IGNORED_INGESTION_DIRS.contains(&name.as_ref());
     }
     false
 }
 
 fn collect_directory_files(project_root: &Path, target_dir: &Path) -> Vec<String> {
-    let mut walk_builder = WalkBuilder::new(target_dir);
+    let Ok(root_canon) = validate_safe_project_root(project_root) else {
+        return Vec::new();
+    };
+    let Ok(target_canon) = fs::canonicalize(target_dir) else {
+        return Vec::new();
+    };
+    if !target_canon.starts_with(&root_canon) || validate_safe_project_root(&target_canon).is_err()
+    {
+        return Vec::new();
+    }
+
+    let mut walk_builder = WalkBuilder::new(&target_canon);
     walk_builder
         .require_git(false)
         .git_ignore(true)
         .git_global(false)
         .git_exclude(true)
+        .same_file_system(true)
+        .follow_links(false)
         .hidden(false);
 
-    if target_dir != project_root {
-        let root_gitignore = project_root.join(".gitignore");
+    if target_canon != root_canon {
+        let root_gitignore = root_canon.join(".gitignore");
         if root_gitignore.is_file() {
             let _ = walk_builder.add_ignore(root_gitignore);
         }
     }
 
-    let scan_root_clone = target_dir.to_path_buf();
+    let scan_root_clone = target_canon.clone();
     walk_builder.filter_entry(move |entry| !should_skip_entry(entry, &scan_root_clone));
 
     let mut files = Vec::new();
@@ -876,7 +912,7 @@ fn collect_directory_files(project_root: &Path, target_dir: &Path) -> Vec<String
         {
             continue;
         }
-        if let Ok(rel) = path.strip_prefix(project_root) {
+        if let Ok(rel) = path.strip_prefix(&root_canon) {
             let norm = normalize_relative_path(rel);
             if !norm.is_empty() {
                 files.push(norm);

@@ -195,11 +195,11 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
             promote_all,
             phase,
         } => {
-            let storage = resolve_storage(cli.root.as_deref())?;
-            let subpath = path.as_deref().or(positional_path.as_deref());
+            let declared_dir = path.as_deref().or(positional_path.as_deref());
+            let (storage, subpath) = resolve_ingest_target(cli.root.as_deref(), declared_dir)?;
             handle_ingest(
                 &storage,
-                subpath,
+                subpath.as_deref(),
                 *write_manifests,
                 *promote_all,
                 phase.as_deref(),
@@ -223,7 +223,7 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
 }
 
 /// Discovers `.tracker/` from `--root <PATH>` if provided, or by walking up from the current
-/// working directory (falling back to the active project in `projects.toml` when `--root` is omitted).
+/// working directory without falling back to `projects.toml`.
 pub fn resolve_storage(root: Option<&Path>) -> Result<TrackerStorage> {
     match root {
         Some(explicit_root) => TrackerStorage::discover(explicit_root),
@@ -232,19 +232,123 @@ pub fn resolve_storage(root: Option<&Path>) -> Result<TrackerStorage> {
                 path: PathBuf::from("."),
                 source,
             })?;
-            match TrackerStorage::discover(&cwd) {
-                Ok(storage) => Ok(storage),
-                Err(err) => {
-                    if let Ok(registry) = load_global_registry() {
-                        if let Some(active) = registry.active_project() {
-                            if let Ok(storage) = TrackerStorage::discover(&active.root_path) {
-                                return Ok(storage);
-                            }
-                        }
+            TrackerStorage::discover(&cwd)
+        }
+    }
+}
+
+fn compute_subpath_within_project(
+    storage: &TrackerStorage,
+    target_dir: &Path,
+) -> Result<Option<String>> {
+    let project_root = backend_core::validate_safe_project_root(&storage.project_root())?;
+    let tracker_dir = storage.tracker_dir();
+    let tracker_canon =
+        std::fs::canonicalize(tracker_dir).unwrap_or_else(|_| tracker_dir.to_path_buf());
+    let target_canon = std::fs::canonicalize(target_dir).map_err(|source| TrackerError::Io {
+        path: target_dir.to_path_buf(),
+        source,
+    })?;
+
+    if target_canon == tracker_canon || target_canon == project_root {
+        return Ok(None);
+    }
+
+    if let Ok(rel) = target_canon.strip_prefix(&project_root) {
+        let norm = backend_core::normalize_relative_path(rel);
+        if norm.is_empty() || norm == "." {
+            Ok(None)
+        } else {
+            Ok(Some(norm))
+        }
+    } else {
+        Err(TrackerError::ValidationError(format!(
+            "Target directory '{}' is outside the active project root '{}'",
+            target_dir.display(),
+            project_root.display()
+        )))
+    }
+}
+
+/// Resolves the [`TrackerStorage`] and optional relative `subpath` for `neb ingest`:
+/// - When a declared directory (`neb ingest <DIR>` or `neb ingest --path <DIR>`) is provided,
+///   isolates scanning strictly to `<DIR>`.
+/// - When no directory is declared (`neb ingest`), isolates scanning strictly to `--root` (if
+///   provided) or the active working directory (`std::env::current_dir()`).
+pub fn resolve_ingest_target(
+    root: Option<&Path>,
+    declared_dir: Option<&str>,
+) -> Result<(TrackerStorage, Option<String>)> {
+    let declared = declared_dir.map(str::trim).filter(|s| !s.is_empty());
+
+    if let Some(raw_dir) = declared {
+        let raw_path = Path::new(raw_dir);
+        if let Some(explicit_root) = root {
+            let storage = TrackerStorage::discover(explicit_root)?;
+            let target_dir = if raw_path.is_absolute() {
+                raw_path.to_path_buf()
+            } else {
+                let from_root = storage.project_root().join(raw_path);
+                if from_root.exists() {
+                    from_root
+                } else if let Ok(cwd) = std::env::current_dir() {
+                    let from_cwd = cwd.join(raw_path);
+                    if from_cwd.exists() {
+                        from_cwd
+                    } else {
+                        from_root
                     }
-                    Err(err)
+                } else {
+                    from_root
                 }
+            };
+
+            if !target_dir.is_dir() {
+                return Err(TrackerError::NotFound {
+                    kind: "Directory",
+                    id: raw_dir.to_string(),
+                });
             }
+            let subpath = compute_subpath_within_project(&storage, &target_dir)?;
+            return Ok((storage, subpath));
+        }
+
+        let target_dir = if raw_path.is_absolute() {
+            raw_path.to_path_buf()
+        } else {
+            let cwd = std::env::current_dir().map_err(|source| TrackerError::Io {
+                path: PathBuf::from("."),
+                source,
+            })?;
+            cwd.join(raw_path)
+        };
+
+        if !target_dir.is_dir() {
+            return Err(TrackerError::NotFound {
+                kind: "Directory",
+                id: raw_dir.to_string(),
+            });
+        }
+
+        let storage = TrackerStorage::discover(&target_dir)?;
+        let subpath = compute_subpath_within_project(&storage, &target_dir)?;
+        return Ok((storage, subpath));
+    }
+
+    match root {
+        Some(explicit_root) => {
+            let storage = TrackerStorage::discover(explicit_root)?;
+            let subpath = compute_subpath_within_project(&storage, explicit_root)?;
+            Ok((storage, subpath))
+        }
+        None => {
+            let cwd = std::env::current_dir().map_err(|source| TrackerError::Io {
+                path: PathBuf::from("."),
+                source,
+            })?;
+            let storage = TrackerStorage::discover(&cwd)?;
+            let subpath = compute_subpath_within_project(&storage, &cwd)?;
+            Ok((storage, subpath))
         }
     }
 }
