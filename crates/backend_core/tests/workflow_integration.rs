@@ -761,9 +761,25 @@ fn test_watcher_detects_external_changes_and_auto_reconciles_indexes() {
         .expect("should write external item");
 
     // Wait for watcher event and automatic reconciliation
-    let event = rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("should receive TrackerWatchEvent within 5 seconds");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut reconciled_event = None;
+    while std::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if let Ok(ev) = rx.recv_timeout(remaining) {
+            assert!(!ev.changed_paths.is_empty());
+            if ev
+                .reconcile_report
+                .as_ref()
+                .map(|r| r.total_items >= 1)
+                .unwrap_or(false)
+            {
+                reconciled_event = Some(ev);
+                break;
+            }
+        }
+    }
+    let event = reconciled_event
+        .expect("should receive TrackerWatchEvent with reconciled item within 5 seconds");
     assert!(!event.changed_paths.is_empty());
     assert!(event.reconcile_report.is_some());
 

@@ -11,7 +11,7 @@ env:
 
 jobs:
   verify:
-    name: Format, Clippy, Test & Headless Self-Test (Linux x86_64)
+    name: Format, Clippy, Test & CLI Smoke Check (Linux x86_64)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -26,19 +26,7 @@ jobs:
             cmake \
             clang \
             libssl-dev \
-            libdbus-1-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libx11-dev \
-            libxi-dev \
-            libgl1-mesa-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libexpat1-dev \
-            libxcb1-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev
+            libdbus-1-dev
 
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -57,5 +45,5 @@ jobs:
       - name: Run unit and integration tests (cargo test)
         run: cargo test --workspace
 
-      - name: Run headless COSMIC GUI self-test
-        run: cargo run -p cosmic_interface -- --self-test
+      - name: Verify CLI/TUI binary (nebulous_cli --help)
+        run: cargo run -p nebulous_cli -- --help

@@ -31,6 +31,7 @@ impl TrackerStorage {
     /// - Reconciles `project.toml` `[counters]` so monotonic IDs never collide with existing items.
     pub fn reconcile_indexes(&self) -> Result<ReconcileReport> {
         let mut project = self.read_project()?;
+        let original_project = project.clone();
         let mut max_counters = project.counters.clone();
 
         // Discover any phase directories on disk not yet listed in `project.phases.registry`
@@ -79,6 +80,7 @@ impl TrackerStorage {
             }
 
             let mut phase_manifest = self.read_phase_from_path(&phase_toml_path)?;
+            let original_phase_manifest = phase_manifest.clone();
             // Keep project phase title in sync with authoritative phase.toml title
             phase_entry.title = phase_manifest.phase.title.clone();
 
@@ -139,6 +141,7 @@ impl TrackerStorage {
                 }
 
                 let mut scope_manifest = self.read_scope_from_path(&scope_toml_path)?;
+                let original_scope_manifest = scope_manifest.clone();
                 let items_dir = scope_dir.join("items");
 
                 let (bugs, features, scope_completed) =
@@ -151,7 +154,9 @@ impl TrackerStorage {
                 scope_manifest.items.bugs = bugs;
                 scope_manifest.items.features = features;
 
-                self.write_scope_to_path(&scope_toml_path, &scope_manifest)?;
+                if scope_manifest != original_scope_manifest {
+                    self.write_scope_to_path(&scope_toml_path, &scope_manifest)?;
+                }
                 report.scopes_reconciled += 1;
                 valid_scopes.push(scope_entry);
             }
@@ -160,7 +165,9 @@ impl TrackerStorage {
             phase_manifest.summary.total_items = phase_total_items;
             phase_manifest.summary.completed_items = phase_completed_items;
 
-            self.write_phase_to_path(&phase_toml_path, &phase_manifest)?;
+            if phase_manifest != original_phase_manifest {
+                self.write_phase_to_path(&phase_toml_path, &phase_manifest)?;
+            }
 
             report.phases_reconciled += 1;
             report.total_items += phase_total_items;
@@ -184,7 +191,9 @@ impl TrackerStorage {
         project.counters.feature = project.counters.feature.max(max_counters.feature);
         report.counters = project.counters.clone();
 
-        self.write_project(&project)?;
+        if project != original_project {
+            self.write_project(&project)?;
+        }
 
         Ok(report)
     }
