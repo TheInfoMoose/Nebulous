@@ -10,6 +10,13 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_S
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Release-archive mode: the extracted archive ships `install.sh` next to a prebuilt `neb`
+# and has no Cargo workspace, so install that binary instead of building from source.
+ARCHIVE_MODE=0
+if [[ -x "${SCRIPT_DIR}/neb" && ! -f "${SCRIPT_DIR}/Cargo.toml" ]]; then
+  ARCHIVE_MODE=1
+fi
+
 abs_path() {
   local target="$1"
   if command -v realpath >/dev/null 2>&1; then
@@ -37,6 +44,7 @@ Options:
   --system          Install to system prefix (/usr/local)
   --prefix <PATH>   Install to an explicit custom prefix path
   --skip-build      Use existing target/release/neb binary without running cargo build
+                    (implied when run from an extracted release archive)
   --uninstall       Remove installed neb binary from target prefix
   -h, --help        Show this help message
 EOF
@@ -107,11 +115,16 @@ fi
 
 if [[ -n "${NEBULOUS_BIN_DIR:-}" ]]; then
   BIN_SOURCE_DIR="$(abs_path "${NEBULOUS_BIN_DIR}")"
+elif [[ "${ARCHIVE_MODE}" -eq 1 ]]; then
+  BIN_SOURCE_DIR="${SCRIPT_DIR}"
+  SKIP_BUILD=1
 else
   BIN_SOURCE_DIR="${REPO_ROOT}/target/release"
 fi
 
-cd "${REPO_ROOT}"
+if [[ "${ARCHIVE_MODE}" -eq 0 ]]; then
+  cd "${REPO_ROOT}"
+fi
 
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
   echo "Building Nebulous CLI release binary (neb)..."

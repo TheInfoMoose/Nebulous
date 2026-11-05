@@ -57,8 +57,18 @@ pub enum TrackerError {
     #[error("No active timer is currently running")]
     NoActiveTimer,
 
-    #[error("Could not locate '.tracker' directory starting from '{0}'")]
+    #[error(
+        "Could not locate '.tracker' directory starting from '{0}'. \
+         Run 'neb init' to create one, or pass --root <PATH>."
+    )]
     TrackerRootNotFound(PathBuf),
+
+    #[error(
+        "No '.tracker' workspace found starting from '{0}' and no active project is registered \
+         in projects.toml. Run 'neb init' here, 'neb project add <PATH>', \
+         or 'neb --root <PATH>'."
+    )]
+    NoWorkspaceForTui(PathBuf),
 
     #[error("Git synchronization error: {0}")]
     GitError(String),

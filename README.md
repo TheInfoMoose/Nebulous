@@ -47,7 +47,20 @@
 
 ## Installation
 
-### Option 1: Turnkey Installer (`scripts/install.sh`)
+### Option 0: Prebuilt Release Archive (Linux x86_64)
+
+Download `nebulous-<tag>-x86_64-unknown-linux-gnu.tar.gz` and its `.sha256` from the GitHub Releases page, then:
+
+```bash
+sha256sum -c nebulous-<tag>-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar xzf nebulous-<tag>-x86_64-unknown-linux-gnu.tar.gz
+cd nebulous-<tag>-x86_64-unknown-linux-gnu
+
+# Installs the bundled prebuilt `neb` to ~/.local/bin (no Rust toolchain needed)
+./install.sh --user
+```
+
+### Option 1: Turnkey Installer from a Checkout (`scripts/install.sh`)
 
 Builds and installs the `neb` CLI/TUI binary in release mode:
 
@@ -73,6 +86,12 @@ cargo build --workspace --release
 ## Quick Start
 
 ### 1. One-Command Bootstrap & Predictive Capture
+
+`neb` works on the `.tracker/` workspace found in the current directory or its ancestors. Run
+`neb init` inside your project first. Launched outside any workspace, the interactive dashboard
+(`neb` / `neb tui`) opens the active project registered in `projects.toml`
+(`neb project list` / `neb project switch`); every other command requires being inside a
+workspace or passing `--root <PATH>`.
 
 ```bash
 # Scaffolds pre_production, production, post_production, ingests crates into scopes across all 3 stages, and registers the project

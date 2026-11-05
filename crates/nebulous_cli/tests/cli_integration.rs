@@ -1688,6 +1688,17 @@ fn test_cli_active_directory_and_declared_directory_isolation() {
         !ingest_untracked.status.success(),
         "neb ingest in untracked directory must not fall back to global registry"
     );
+    // Non-interactive bare `neb` (no TTY) keeps the strict rule; only the interactive TUI
+    // falls back to the active registered project.
+    let bare_untracked = run_neb_with_env(&[], Some(&untracked_dir), &cfg_dir);
+    assert!(
+        !bare_untracked.status.success(),
+        "non-interactive bare neb in untracked directory must not fall back to global registry"
+    );
+    assert!(
+        String::from_utf8_lossy(&bare_untracked.stderr).contains("neb init"),
+        "TrackerRootNotFound error must include an actionable hint"
+    );
 
     // 2. Calling `neb ingest` from a project subdirectory (`crates/core_lib`) without arguments
     // MUST isolate scanning strictly to the active directory (`crates/core_lib`) and NOT scan `iso/`!

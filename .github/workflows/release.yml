@@ -66,11 +66,20 @@ jobs:
 
           mkdir -p "${STAGING_DIR}"
           cp target/release/neb "${STAGING_DIR}/"
+          install -m 0755 scripts/install.sh "${STAGING_DIR}/install.sh"
           cp README.md LICENSE "${STAGING_DIR}/"
           cp -r docs "${STAGING_DIR}/"
 
           tar -C dist -czf "dist/${ARCHIVE_BASENAME}.tar.gz" "${ARCHIVE_BASENAME}"
           (cd dist && sha256sum "${ARCHIVE_BASENAME}.tar.gz" > "${ARCHIVE_BASENAME}.tar.gz.sha256")
+
+      - name: Smoke-test archive install (extract → install.sh → neb --help)
+        run: |
+          SMOKE_DIR="${RUNNER_TEMP}/archive-smoke"
+          mkdir -p "${SMOKE_DIR}/extract"
+          tar -C "${SMOKE_DIR}/extract" -xzf dist/nebulous-*.tar.gz
+          "${SMOKE_DIR}"/extract/nebulous-*/install.sh --prefix "${SMOKE_DIR}/prefix"
+          "${SMOKE_DIR}/prefix/bin/neb" --help
 
       - name: Upload release archive and checksum
         uses: actions/upload-artifact@v4

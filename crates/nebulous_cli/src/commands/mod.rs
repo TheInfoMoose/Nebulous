@@ -6,10 +6,10 @@ use std::str::FromStr;
 use backend_core::{
     load_global_registry, normalize_relative_path_str, register_project, remove_project,
     set_active_project, AgentContextBundle, ComponentDependency, ComponentManifest, ComponentType,
-    CreateItemInput, DocumentedCommitInput, GitAuthRequest, IngestionOptions, ItemDetail,
-    ItemStatus, ItemType, McpServer, PhaseStatus, PinnedReleaseConfig, PreviousFix,
-    ProjectCounters, RegisteredProject, Result, ScopeManifest, Severity, TrackerError,
-    TrackerStorage, Zeroizing,
+    CreateItemInput, DocumentedCommitInput, GitAuthRequest, GlobalProjectRegistry,
+    IngestionOptions, ItemDetail, ItemStatus, ItemType, McpServer, PhaseStatus,
+    PinnedReleaseConfig, PreviousFix, ProjectCounters, RegisteredProject, Result, ScopeManifest,
+    Severity, TrackerError, TrackerStorage, Zeroizing,
 };
 use serde::Serialize;
 
@@ -31,8 +31,12 @@ pub fn execute(cli: &Cli) -> Result<()> {
         && std::io::IsTerminal::is_terminal(&std::io::stdin())
         && std::io::IsTerminal::is_terminal(&std::io::stdout())
     {
-        let storage = resolve_storage(cli.root.as_deref())?;
-        let cwd = resolve_context_cwd(&storage, cli.root.as_deref());
+        let (storage, from_registry) = resolve_tui_storage(cli.root.as_deref())?;
+        let cwd = if from_registry {
+            None
+        } else {
+            resolve_context_cwd(&storage, cli.root.as_deref())
+        };
         return crate::tui::run_tui(storage, cwd);
     }
 
@@ -297,6 +301,42 @@ pub fn resolve_storage(root: Option<&Path>) -> Result<TrackerStorage> {
             })?;
             TrackerStorage::discover(&cwd)
         }
+    }
+}
+
+/// Resolves storage for the interactive TUI only.
+///
+/// Behaves like [`resolve_storage`], except that when `--root` is omitted and no `.tracker/` is
+/// found from the current directory, it opens the active project from `projects.toml`. All other
+/// commands keep the strict cwd-only rule. Returns `(storage, opened_from_registry)`.
+pub fn resolve_tui_storage(root: Option<&Path>) -> Result<(TrackerStorage, bool)> {
+    match root {
+        Some(explicit_root) => Ok((TrackerStorage::discover(explicit_root)?, false)),
+        None => {
+            let cwd = std::env::current_dir().map_err(|source| TrackerError::Io {
+                path: PathBuf::from("."),
+                source,
+            })?;
+            resolve_tui_storage_from(&cwd, load_global_registry)
+        }
+    }
+}
+
+fn resolve_tui_storage_from(
+    cwd: &Path,
+    load_registry: impl FnOnce() -> Result<GlobalProjectRegistry>,
+) -> Result<(TrackerStorage, bool)> {
+    match TrackerStorage::discover(cwd) {
+        Ok(storage) => Ok((storage, false)),
+        Err(TrackerError::TrackerRootNotFound(_)) => {
+            let registry = load_registry()?;
+            registry
+                .active_project()
+                .and_then(|active| TrackerStorage::discover(&active.root_path).ok())
+                .map(|storage| (storage, true))
+                .ok_or_else(|| TrackerError::NoWorkspaceForTui(cwd.to_path_buf()))
+        }
+        Err(err) => Err(err),
     }
 }
 
@@ -2785,5 +2825,89 @@ fn handle_git(storage: &TrackerStorage, action: &GitCommand, json: bool) -> Resu
             *commit_only,
             json,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registry_with_active(root: &Path) -> GlobalProjectRegistry {
+        GlobalProjectRegistry {
+            active_project_id: Some("proj".to_string()),
+            projects: vec![RegisteredProject {
+                id: "proj".to_string(),
+                name: "Proj".to_string(),
+                root_path: root.to_string_lossy().into_owned(),
+                tracker_path: root.join(".tracker").to_string_lossy().into_owned(),
+                default_branch: "main".to_string(),
+                active_phase: None,
+                tags: Vec::new(),
+                last_opened_at: String::new(),
+                credential_accounts: Vec::new(),
+            }],
+        }
+    }
+
+    fn canon(p: &Path) -> PathBuf {
+        std::fs::canonicalize(p).unwrap()
+    }
+
+    #[test]
+    fn tui_falls_back_to_active_registry_project_outside_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("proj");
+        let untracked = tmp.path().join("untracked");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(&untracked).unwrap();
+        TrackerStorage::init_standard(&proj, "Proj").unwrap();
+
+        let (storage, from_registry) =
+            resolve_tui_storage_from(&untracked, || Ok(registry_with_active(&proj))).unwrap();
+        assert!(from_registry);
+        assert_eq!(canon(&storage.project_root()), canon(&proj));
+    }
+
+    #[test]
+    fn tui_reports_actionable_error_without_workspace_or_active_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = resolve_tui_storage_from(tmp.path(), || Ok(GlobalProjectRegistry::default()))
+            .unwrap_err();
+        assert!(matches!(err, TrackerError::NoWorkspaceForTui(_)));
+        assert!(err.to_string().contains("neb init"));
+    }
+
+    #[test]
+    fn tui_reports_actionable_error_when_active_project_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("deleted_proj");
+        let err = resolve_tui_storage_from(tmp.path(), || Ok(registry_with_active(&missing)))
+            .unwrap_err();
+        assert!(matches!(err, TrackerError::NoWorkspaceForTui(_)));
+    }
+
+    #[test]
+    fn tui_prefers_cwd_workspace_over_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join("local");
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        TrackerStorage::init_standard(&local, "Local").unwrap();
+        TrackerStorage::init_standard(&other, "Other").unwrap();
+
+        let (storage, from_registry) = resolve_tui_storage_from(&local, || {
+            panic!("registry must not be consulted when cwd has a workspace")
+        })
+        .unwrap();
+        assert!(!from_registry);
+        assert_eq!(canon(&storage.project_root()), canon(&local));
+    }
+
+    #[test]
+    fn tui_explicit_root_never_falls_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = resolve_tui_storage(Some(tmp.path())).unwrap_err();
+        assert!(matches!(err, TrackerError::TrackerRootNotFound(_)));
     }
 }
