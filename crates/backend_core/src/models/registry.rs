@@ -66,6 +66,13 @@ pub struct RegisteredProject {
     pub tags: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_datetime_string")]
     pub last_opened_at: String,
+    /// Machine-local vault account names this project may use for Git credentials (SSH keypair
+    /// and HTTPS PAT). The first entry is the default account.
+    ///
+    /// This lives only in the local `projects.toml` and is never derived from the git-synced
+    /// `project.toml`, so a cloned repository cannot select another project's credentials.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_accounts: Vec<String>,
 }
 
 impl RegisteredProject {
@@ -156,6 +163,49 @@ impl GlobalProjectRegistry {
         self.projects
             .iter()
             .position(|p| p.name.to_ascii_lowercase() == lower)
+    }
+
+    /// Looks up a registered project strictly by its project root directory (never by name or id).
+    pub fn find_project_by_root(&self, project_root: &Path) -> Option<&RegisteredProject> {
+        let idx = self.find_project_index_by_root(project_root)?;
+        self.projects.get(idx)
+    }
+
+    fn find_project_index_by_root(&self, project_root: &Path) -> Option<usize> {
+        let raw = normalize_display_path(project_root);
+        let canonical = fs::canonicalize(project_root)
+            .ok()
+            .map(|p| normalize_display_path(&p));
+        self.projects.iter().position(|p| {
+            let entry = normalize_query_path_str(&p.root_path);
+            entry == raw || canonical.as_deref() == Some(entry.as_str())
+        })
+    }
+
+    /// Binds the vault credential `account` to the project rooted at `project_root`,
+    /// registering the project first if it is not yet in this registry.
+    pub fn bind_credential_account(
+        &mut self,
+        project_root: &Path,
+        account: &str,
+    ) -> Result<RegisteredProject> {
+        let account = validate_credential_account_name(account)?;
+        let idx = match self.find_project_index_by_root(project_root) {
+            Some(idx) => idx,
+            None => {
+                self.register_project(project_root, None, Vec::new(), false)?;
+                self.find_project_index_by_root(project_root)
+                    .ok_or_else(|| TrackerError::NotFound {
+                        kind: "Project",
+                        id: project_root.display().to_string(),
+                    })?
+            }
+        };
+        let entry = &mut self.projects[idx];
+        if !entry.credential_accounts.contains(&account) {
+            entry.credential_accounts.push(account);
+        }
+        Ok(entry.clone())
     }
 
     /// Looks up a registered project by `id`, `root_path` / `tracker_path`, or case-insensitive `name`.
@@ -275,6 +325,7 @@ impl GlobalProjectRegistry {
             active_phase,
             tags: cleaned_tags,
             last_opened_at: now,
+            credential_accounts: Vec::new(),
         };
 
         self.projects.push(entry.clone());
@@ -425,6 +476,75 @@ pub fn set_active_project_in(
     let active = registry.set_active_project(id_or_name)?;
     save_registry_unlocked(&path, &registry)?;
     Ok(active)
+}
+
+/// Validates a vault credential account name for local binding.
+///
+/// Account names are opaque vault keys (e.g. `nebulous/origin`); filesystem paths, `~`, `..`,
+/// whitespace, and control characters are rejected so a name can never be mistaken for a key file.
+pub fn validate_credential_account_name(account: &str) -> Result<String> {
+    let trimmed = account.trim();
+    let invalid = |why: &str| {
+        Err(TrackerError::ValidationError(format!(
+            "Invalid credential account '{trimmed}': {why}"
+        )))
+    };
+    if trimmed.is_empty() {
+        return invalid("must not be empty");
+    }
+    if trimmed.len() > 128 {
+        return invalid("must be at most 128 characters");
+    }
+    if trimmed
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    {
+        return invalid("must not contain whitespace, control characters, or backslashes");
+    }
+    if trimmed.starts_with('/')
+        || trimmed.starts_with('.')
+        || trimmed.starts_with('~')
+        || trimmed.contains("..")
+        || trimmed.chars().nth(1) == Some(':')
+        || Path::new(trimmed).is_absolute()
+    {
+        return invalid("account names are vault keys, not file paths");
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Returns the vault credential accounts bound to `project_root` in the local registry at
+/// `registry_path_or_dir` (empty when the project is unregistered or unbound).
+pub fn credential_accounts_for_root_in(
+    registry_path_or_dir: impl AsRef<Path>,
+    project_root: &Path,
+) -> Result<Vec<String>> {
+    let path = resolve_registry_file_path(registry_path_or_dir);
+    let _guard = registry_lock()
+        .lock()
+        .map_err(|e| TrackerError::ValidationError(e.to_string()))?;
+    let registry = load_registry_unlocked(&path)?;
+    Ok(registry
+        .find_project_by_root(project_root)
+        .map(|p| p.credential_accounts.clone())
+        .unwrap_or_default())
+}
+
+/// Binds the vault credential `account` to `project_root` in the local registry at
+/// `registry_path_or_dir` and persists it (registering the project if needed).
+pub fn bind_credential_account_in(
+    registry_path_or_dir: impl AsRef<Path>,
+    project_root: &Path,
+    account: &str,
+) -> Result<RegisteredProject> {
+    let path = resolve_registry_file_path(registry_path_or_dir);
+    let _guard = registry_lock()
+        .lock()
+        .map_err(|e| TrackerError::ValidationError(e.to_string()))?;
+    let mut registry = load_registry_unlocked(&path)?;
+    let entry = registry.bind_credential_account(project_root, account)?;
+    save_registry_unlocked(&path, &registry)?;
+    Ok(entry)
 }
 
 fn load_registry_unlocked(path: &Path) -> Result<GlobalProjectRegistry> {

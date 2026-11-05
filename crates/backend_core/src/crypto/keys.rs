@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -9,9 +9,9 @@ use ssh_key::{
 };
 use zeroize::Zeroizing;
 
-use crate::crypto::{ensure_secure_dir, set_secure_file_permissions, SecureStorage};
+use crate::crypto::SecureStorage;
 use crate::error::{Result, TrackerError};
-use crate::storage::{atomic_write_bytes, TrackerStorage};
+use crate::storage::TrackerStorage;
 
 const SSH_PRIVATE_KEY_PREFIX: &str = "ssh_priv:";
 const SSH_PUBLIC_META_PREFIX: &str = "ssh_pub:";
@@ -234,41 +234,6 @@ impl KeyPairManager {
         }
     }
 
-    /// Materializes a stored SSH keypair to `<target_dir>/<file_stem>` (`0600` on Unix) and
-    /// `<target_dir>/<file_stem>.pub` for tools (such as `libgit2` or external `ssh`) that require
-    /// filesystem paths.
-    pub fn export_keypair_to_dir(
-        &self,
-        account: &str,
-        target_dir: impl AsRef<Path>,
-        file_stem: &str,
-    ) -> Result<(PathBuf, PathBuf)> {
-        let record = self.get_ssh_keypair(account)?;
-        let dir = target_dir.as_ref();
-        ensure_secure_dir(dir)?;
-
-        let stem = file_stem.trim();
-        if stem.is_empty() || stem.contains('/') || stem.contains('\\') || stem.contains("..") {
-            return Err(TrackerError::ValidationError(format!(
-                "Invalid SSH key file stem '{file_stem}'"
-            )));
-        }
-
-        let priv_path = dir.join(stem);
-        let pub_path = dir.join(format!("{stem}.pub"));
-
-        atomic_write_bytes(&priv_path, record.private_key_openssh.as_bytes())?;
-        set_secure_file_permissions(&priv_path)?;
-
-        let mut pub_line = record.public_key_openssh.clone();
-        if !pub_line.ends_with('\n') {
-            pub_line.push('\n');
-        }
-        atomic_write_bytes(&pub_path, pub_line.as_bytes())?;
-
-        Ok((priv_path, pub_path))
-    }
-
     /// Stores an HTTPS Personal Access Token (PAT) for `project_or_remote` in [`SecureStorage`].
     pub fn store_pat(&self, project_or_remote: &str, token: &str) -> Result<()> {
         let account = normalize_account_id(project_or_remote)?;
@@ -392,11 +357,12 @@ impl TrackerStorage {
         KeyPairManager::new()
     }
 
-    /// Generates an Ed25519 SSH keypair for this project and stores it in [`SecureStorage`].
+    /// Generates an Ed25519 SSH keypair for this project's locally bound credential account
+    /// (see [`TrackerStorage::bind_credential_account`]) and stores it in [`SecureStorage`].
     pub fn generate_ssh_keypair(&self, comment: Option<&str>) -> Result<SshKeyPairRecord> {
-        let project = self.read_project()?;
+        let account = self.require_credential_account()?;
         let manager = self.keypair_manager()?;
-        manager.generate_ed25519_keypair(&project.project.name, comment)
+        manager.generate_ed25519_keypair(&account, comment)
     }
 
     /// Imports an OpenSSH private key for this project into [`SecureStorage`].
@@ -405,29 +371,29 @@ impl TrackerStorage {
         private_key_openssh: &str,
         passphrase: Option<&str>,
     ) -> Result<SshKeyPairRecord> {
-        let project = self.read_project()?;
+        let account = self.require_credential_account()?;
         let manager = self.keypair_manager()?;
-        manager.import_ssh_keypair(&project.project.name, private_key_openssh, passphrase)
+        manager.import_ssh_keypair(&account, private_key_openssh, passphrase)
     }
 
     /// Retrieves the stored [`SshKeyPairRecord`] for this project from [`SecureStorage`].
     pub fn get_ssh_keypair(&self) -> Result<SshKeyPairRecord> {
-        let project = self.read_project()?;
+        let account = self.require_credential_account()?;
         let manager = self.keypair_manager()?;
-        manager.get_ssh_keypair(&project.project.name)
+        manager.get_ssh_keypair(&account)
     }
 
     /// Retrieves the stored [`SshPublicKeyInfo`] for this project without exposing private key material.
     pub fn get_ssh_public_key_info(&self) -> Result<SshPublicKeyInfo> {
-        let project = self.read_project()?;
+        let account = self.require_credential_account()?;
         let manager = self.keypair_manager()?;
-        manager.get_ssh_public_key_info(&project.project.name)
+        manager.get_ssh_public_key_info(&account)
     }
 
     /// Deletes the stored SSH keypair for this project from [`SecureStorage`].
     pub fn delete_ssh_keypair(&self) -> Result<()> {
-        let project = self.read_project()?;
+        let account = self.require_credential_account()?;
         let manager = self.keypair_manager()?;
-        manager.delete_ssh_keypair(&project.project.name)
+        manager.delete_ssh_keypair(&account)
     }
 }

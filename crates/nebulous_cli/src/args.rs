@@ -285,9 +285,10 @@ pub enum Commands {
         #[arg(long = "path", visible_alias = "paths", value_delimiter = ',')]
         paths: Vec<String>,
 
-        /// Optional Personal Access Token override for HTTPS push/pull.
-        #[arg(long)]
-        pat: Option<String>,
+        /// Read an HTTPS Personal Access Token from stdin (first line). Alternatively set
+        /// `NEB_GIT_PAT`. PATs are never accepted on the command line and only sent to `https://` remotes.
+        #[arg(long = "pat-stdin")]
+        pat_stdin: bool,
 
         /// Stage and commit locally without pushing or pulling the remote.
         #[arg(long)]
@@ -607,23 +608,26 @@ pub enum GitCommand {
 
     /// Fetch the configured remote branch without modifying the working tree.
     Fetch {
-        /// Optional Personal Access Token or SSH key override.
-        #[arg(long)]
-        pat: Option<String>,
+        /// Read an HTTPS Personal Access Token from stdin (first line). Alternatively set
+        /// `NEB_GIT_PAT`. PATs are never accepted on the command line and only sent to `https://` remotes.
+        #[arg(long = "pat-stdin")]
+        pat_stdin: bool,
     },
 
     /// Fetch and merge/fast-forward from the configured remote and reconcile `.tracker/` indexes.
     Pull {
-        /// Optional Personal Access Token or SSH key override.
-        #[arg(long)]
-        pat: Option<String>,
+        /// Read an HTTPS Personal Access Token from stdin (first line). Alternatively set
+        /// `NEB_GIT_PAT`. PATs are never accepted on the command line and only sent to `https://` remotes.
+        #[arg(long = "pat-stdin")]
+        pat_stdin: bool,
     },
 
     /// Push the configured branch to the configured remote.
     Push {
-        /// Optional Personal Access Token or SSH key override.
-        #[arg(long)]
-        pat: Option<String>,
+        /// Read an HTTPS Personal Access Token from stdin (first line). Alternatively set
+        /// `NEB_GIT_PAT`. PATs are never accepted on the command line and only sent to `https://` remotes.
+        #[arg(long = "pat-stdin")]
+        pat_stdin: bool,
     },
 
     /// Create a policy-validated, self-documenting Git commit linked to a tracked item (`[<ITEM_ID>](<scope>) <summary>`).
@@ -665,9 +669,10 @@ pub enum GitCommand {
         #[arg(short, long)]
         message: Option<String>,
 
-        /// Optional Personal Access Token override.
-        #[arg(long)]
-        pat: Option<String>,
+        /// Read an HTTPS Personal Access Token from stdin (first line). Alternatively set
+        /// `NEB_GIT_PAT`. PATs are never accepted on the command line and only sent to `https://` remotes.
+        #[arg(long = "pat-stdin")]
+        pat_stdin: bool,
 
         /// Commit `.tracker/` locally without pushing or pulling.
         #[arg(long)]

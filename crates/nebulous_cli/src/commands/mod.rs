@@ -6,9 +6,10 @@ use std::str::FromStr;
 use backend_core::{
     load_global_registry, normalize_relative_path_str, register_project, remove_project,
     set_active_project, AgentContextBundle, ComponentDependency, ComponentManifest, ComponentType,
-    CreateItemInput, DocumentedCommitInput, IngestionOptions, ItemDetail, ItemStatus, ItemType,
-    McpServer, PhaseStatus, PinnedReleaseConfig, PreviousFix, ProjectCounters, RegisteredProject,
-    Result, ScopeManifest, Severity, TrackerError, TrackerStorage,
+    CreateItemInput, DocumentedCommitInput, GitAuthRequest, IngestionOptions, ItemDetail,
+    ItemStatus, ItemType, McpServer, PhaseStatus, PinnedReleaseConfig, PreviousFix,
+    ProjectCounters, RegisteredProject, Result, ScopeManifest, Severity, TrackerError,
+    TrackerStorage, Zeroizing,
 };
 use serde::Serialize;
 
@@ -222,16 +223,17 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
             message,
             item,
             paths,
-            pat,
+            pat_stdin,
             commit_only,
         }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
+            let auth = cli_git_auth(*pat_stdin)?;
             handle_sync(
                 &storage,
                 message.as_deref(),
                 item.as_deref(),
                 paths,
-                pat.as_deref(),
+                &auth,
                 *commit_only,
                 cli.json,
             )
@@ -1593,12 +1595,53 @@ struct SyncOutputJson {
     tracker_dirty_after: bool,
 }
 
+/// Environment variable holding an HTTPS Personal Access Token for `neb git`/`neb sync`.
+pub const GIT_PAT_ENV: &str = "NEB_GIT_PAT";
+
+/// Builds the CLI credential request. The PAT comes from stdin (`--pat-stdin`) or
+/// [`GIT_PAT_ENV`], never from argv, so it stays out of `ps` output and shell history.
+fn cli_git_auth(pat_stdin: bool) -> Result<GitAuthRequest> {
+    let env_pat = std::env::var(GIT_PAT_ENV).ok();
+    let stdin = std::io::stdin();
+    let pat = read_pat_input(pat_stdin, env_pat, stdin.lock())?;
+    Ok(pat
+        .map(|p| GitAuthRequest::with_pat(&p))
+        .unwrap_or_default())
+}
+
+/// Resolves a PAT from `reader` (first line, when `pat_stdin`) or else from `env_pat`.
+/// Blank values yield `None`; `--pat-stdin` with empty input is an error.
+pub fn read_pat_input(
+    pat_stdin: bool,
+    env_pat: Option<String>,
+    mut reader: impl std::io::BufRead,
+) -> Result<Option<Zeroizing<String>>> {
+    if pat_stdin {
+        let mut line = Zeroizing::new(String::new());
+        reader.read_line(&mut line)?;
+        let token = line.trim();
+        if token.is_empty() {
+            return Err(TrackerError::ValidationError(
+                "--pat-stdin was given but no Personal Access Token was read from stdin"
+                    .to_string(),
+            ));
+        }
+        return Ok(Some(Zeroizing::new(token.to_string())));
+    }
+    let env_pat = env_pat.map(Zeroizing::new);
+    Ok(env_pat
+        .as_ref()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .map(|t| Zeroizing::new(t.to_string())))
+}
+
 fn handle_sync(
     storage: &TrackerStorage,
     message: Option<&str>,
     item: Option<&str>,
     paths: &[String],
-    pat: Option<&str>,
+    auth: &GitAuthRequest,
     commit_only: bool,
     json: bool,
 ) -> Result<String> {
@@ -1617,13 +1660,13 @@ fn handle_sync(
             paths: paths.to_vec(),
         })?;
         if !commit_only {
-            let _ = storage.git_sync(message, pat)?;
+            let _ = storage.git_sync(message, auth)?;
         }
         Some(outcome.commit_sha)
     } else if commit_only {
         storage.git_commit_tracker(message)?
     } else {
-        storage.git_sync(message, pat)?
+        storage.git_sync(message, auth)?
     };
     let tracker_dirty_after = storage
         .git_status()
@@ -2656,8 +2699,8 @@ fn handle_git(storage: &TrackerStorage, action: &GitCommand, json: bool) -> Resu
             );
             Ok(out.trim_end().to_string())
         }
-        GitCommand::Fetch { pat } => {
-            let status = storage.git_fetch(pat.as_deref())?;
+        GitCommand::Fetch { pat_stdin } => {
+            let status = storage.git_fetch(&cli_git_auth(*pat_stdin)?)?;
             if json {
                 return to_json_pretty(&status);
             }
@@ -2666,8 +2709,8 @@ fn handle_git(storage: &TrackerStorage, action: &GitCommand, json: bool) -> Resu
                 status.ahead_count, status.behind_count
             ))
         }
-        GitCommand::Pull { pat } => {
-            let updated = storage.git_pull(pat.as_deref())?;
+        GitCommand::Pull { pat_stdin } => {
+            let updated = storage.git_pull(&cli_git_auth(*pat_stdin)?)?;
             let status = storage.git_status()?;
             if json {
                 return to_json_pretty(&GitPullOutputJson {
@@ -2685,8 +2728,8 @@ fn handle_git(storage: &TrackerStorage, action: &GitCommand, json: bool) -> Resu
                 Ok("Already up to date.".to_string())
             }
         }
-        GitCommand::Push { pat } => {
-            storage.git_push(pat.as_deref())?;
+        GitCommand::Push { pat_stdin } => {
+            storage.git_push(&cli_git_auth(*pat_stdin)?)?;
             let status = storage.git_status()?;
             if json {
                 return to_json_pretty(&GitPushOutputJson {
@@ -2731,14 +2774,14 @@ fn handle_git(storage: &TrackerStorage, action: &GitCommand, json: bool) -> Resu
         }
         GitCommand::Sync {
             message,
-            pat,
+            pat_stdin,
             commit_only,
         } => handle_sync(
             storage,
             message.as_deref(),
             None,
             &[],
-            pat.as_deref(),
+            &cli_git_auth(*pat_stdin)?,
             *commit_only,
             json,
         ),

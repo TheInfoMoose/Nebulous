@@ -8,8 +8,9 @@ use tempfile::TempDir;
 
 use backend_core::{
     build_auth_callbacks, build_pat_callbacks, CommitPolicyConfig, CreateItemInput,
-    DocumentedCommitInput, ItemDetail, ItemEffort, ItemHistory, ItemManifest, ItemMetadata,
-    ItemStatus, ItemType, NextActionKind, PreviousFix, Severity, TrackerError, TrackerStorage,
+    DocumentedCommitInput, GitAuthRequest, ItemDetail, ItemEffort, ItemHistory, ItemManifest,
+    ItemMetadata, ItemStatus, ItemType, NextActionKind, PreviousFix, Severity, TrackerError,
+    TrackerStorage,
 };
 
 fn init_temp_tracker() -> (TempDir, TrackerStorage) {
@@ -577,7 +578,7 @@ fn test_git_sync_status_commit_push_pull_and_keyring() {
 
     // Push from workspace 1 to bare remote
     storage
-        .git_push(Some("test_pat_token_123"))
+        .git_push(&GitAuthRequest::with_pat("test_pat_token_123"))
         .expect("should push branch to bare remote");
 
     // Clone bare remote into workspace 2
@@ -598,7 +599,7 @@ fn test_git_sync_status_commit_push_pull_and_keyring() {
     storage
         .git_commit_tracker(Some("chore(tracker): add FEAT-0001"))
         .unwrap();
-    storage.git_push(None).unwrap();
+    storage.git_push(&GitAuthRequest::default()).unwrap();
 
     // Ensure workspace 2 is on the same branch name and pull via `TrackerStorage::git_pull`
     {
@@ -610,7 +611,7 @@ fn test_git_sync_status_commit_push_pull_and_keyring() {
     }
     let cloned_storage = TrackerStorage::new(clone_dir.path());
     let pulled = cloned_storage
-        .git_pull(None)
+        .git_pull(&GitAuthRequest::default())
         .expect("should pull new commit from remote and reconcile indexes");
     assert!(pulled);
 
@@ -621,16 +622,14 @@ fn test_git_sync_status_commit_push_pull_and_keyring() {
     assert_eq!(loc.scope_id, "backend_core");
     assert_eq!(detail.manifest.item.title, "Remote synced feature");
 
-    // Verify Keyring PAT lifecycle (`store_pat`, `get_pat`, `delete_pat`) and `build_pat_callbacks`
-    storage
+    // Project-level PAT storage is keyed only by a machine-local registry binding; the cloned
+    // workspace has none, so storing a PAT for it is refused rather than keyed by `project.toml`.
+    let unbound = cloned_storage
         .store_pat("ghp_secret_pat_token_abc123")
-        .expect("should store PAT");
-    assert_eq!(
-        storage.get_pat().expect("should retrieve stored PAT"),
-        "ghp_secret_pat_token_abc123"
-    );
-    storage.delete_pat().expect("should delete PAT");
-    assert!(storage.get_pat().is_err());
+        .expect_err("store_pat without a local credential binding must fail");
+    assert!(unbound
+        .to_string()
+        .contains("No credential account is bound"));
 
     let _callbacks = build_pat_callbacks(Some("ghp_secret_pat_token_abc123"));
 
@@ -647,7 +646,7 @@ fn test_git_sync_status_commit_push_pull_and_keyring() {
     storage
         .git_commit_tracker(Some("chore: divergent commit in workspace 1"))
         .unwrap();
-    storage.git_push(None).unwrap();
+    storage.git_push(&GitAuthRequest::default()).unwrap();
 
     // Commit an unrelated file in workspace 2 (re-reading the on-disk index first) so pull requires a normal merge commit
     let readme_path = clone_dir.path().join("README.md");
@@ -674,17 +673,17 @@ fn test_git_sync_status_commit_push_pull_and_keyring() {
     }
 
     let merged_pull = cloned_storage
-        .git_pull(None)
+        .git_pull(&GitAuthRequest::default())
         .expect("should perform clean normal merge on divergent branch");
     assert!(merged_pull);
     assert!(cloned_storage.load_item_detail_by_id("BUG-0002").is_ok());
 
     // Also verify divergent `.tracker/` item additions on both workspaces merge and auto-reconcile derived indexes cleanly!
     cloned_storage
-        .git_push(None)
+        .git_push(&GitAuthRequest::default())
         .expect("should push merged commit back to remote");
     storage
-        .git_pull(None)
+        .git_pull(&GitAuthRequest::default())
         .expect("workspace 1 should pull merge commit");
 
     // Workspace 1 creates BUG-0003 and pushes
@@ -700,7 +699,7 @@ fn test_git_sync_status_commit_push_pull_and_keyring() {
     storage
         .git_commit_tracker(Some("chore: add BUG-0003 in workspace 1"))
         .unwrap();
-    storage.git_push(None).unwrap();
+    storage.git_push(&GitAuthRequest::default()).unwrap();
 
     // Workspace 2 creates FEAT-0002 (diverging on project.toml, phase.toml, scope.toml) and pulls
     cloned_storage
@@ -717,7 +716,7 @@ fn test_git_sync_status_commit_push_pull_and_keyring() {
         .unwrap();
 
     let concurrent_tracker_pull = cloned_storage
-        .git_pull(None)
+        .git_pull(&GitAuthRequest::default())
         .expect("divergent tracker item additions should auto-reconcile derived index conflicts");
     assert!(concurrent_tracker_pull);
     assert!(cloned_storage.load_item_detail_by_id("BUG-0003").is_ok());
@@ -930,7 +929,9 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
         .unwrap();
 
     // Push initial state -> ahead = 0, behind = 0
-    storage.git_push(None).expect("should push to bare remote");
+    storage
+        .git_push(&GitAuthRequest::default())
+        .expect("should push to bare remote");
     let st_synced = storage.git_status().unwrap();
     assert_eq!(st_synced.remote_url.as_deref(), Some(bare_url.as_str()));
     assert_eq!(st_synced.ahead_count, 0);
@@ -967,7 +968,7 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
     cloned_storage
         .git_commit_tracker(Some("chore(tracker): add BUG-0001 from workspace 2"))
         .unwrap();
-    cloned_storage.git_push(None).unwrap();
+    cloned_storage.git_push(&GitAuthRequest::default()).unwrap();
 
     // Workspace 1 modifies a workspace file (uncommitted) and runs `git_fetch`
     let src_dir = dir.path().join("crates/backend_core/src");
@@ -976,7 +977,7 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
 
     let head_before_fetch = storage.git_head_short_sha();
     let fetch_status = storage
-        .git_fetch(None)
+        .git_fetch(&GitAuthRequest::default())
         .expect("git_fetch should succeed without modifying working tree");
 
     // Verify `git_fetch` updated `behind_count` to 1, left `ahead_count` at 0, preserved `HEAD`,
@@ -1016,15 +1017,15 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
     assert_eq!(diverged_status.behind_count, 1);
 
     // Pull and push to bring ahead_count and behind_count back to 0
-    assert!(storage.git_pull(None).unwrap());
-    storage.git_push(None).unwrap();
+    assert!(storage.git_pull(&GitAuthRequest::default()).unwrap());
+    storage.git_push(&GitAuthRequest::default()).unwrap();
     let final_status = storage.git_status().unwrap();
     assert_eq!(final_status.ahead_count, 0);
     assert_eq!(final_status.behind_count, 0);
 
     // Verify `git_pull` rejects overwriting an uncommitted dirty workspace file when remote modifies the same file,
     // without advancing local HEAD first.
-    cloned_storage.git_pull(None).unwrap();
+    cloned_storage.git_pull(&GitAuthRequest::default()).unwrap();
     let remote_src = clone_dir.path().join("crates/backend_core/src");
     fs::create_dir_all(&remote_src).unwrap();
     fs::write(
@@ -1038,7 +1039,7 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
                 .with_paths(["crates/backend_core/src/conflict.rs"]),
         )
         .unwrap();
-    cloned_storage.git_push(None).unwrap();
+    cloned_storage.git_push(&GitAuthRequest::default()).unwrap();
 
     // Create conflicting uncommitted file in workspace 1
     fs::write(
@@ -1048,7 +1049,7 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
     .unwrap();
     let head_before_failed_pull = storage.git_head_short_sha();
     let pull_err = storage
-        .git_pull(None)
+        .git_pull(&GitAuthRequest::default())
         .expect_err("git_pull must reject overwriting dirty workspace file");
     assert!(matches!(pull_err, TrackerError::GitError(ref msg) if msg.contains("conflict.rs")));
     assert_eq!(
@@ -1064,7 +1065,7 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
 
     // Remove conflicting dirty file -> git_pull now succeeds cleanly
     fs::remove_file(src_dir.join("conflict.rs")).unwrap();
-    assert!(storage.git_pull(None).unwrap());
+    assert!(storage.git_pull(&GitAuthRequest::default()).unwrap());
     assert_eq!(
         fs::read_to_string(src_dir.join("conflict.rs")).unwrap(),
         "pub fn remote_version() {}\n"
@@ -1362,27 +1363,45 @@ fn test_git_commit_documented_policy_enforcement_and_atomic_doc_updates() {
 fn test_git_auth_resolution_ssh_keypair_and_pat() {
     let (dir, storage) = init_temp_tracker();
     let vault_dir = dir.path().join("isolated_vault");
-    std::env::set_var("NEBULOUS_CONFIG_DIR", &vault_dir);
 
-    // Generate an Ed25519 SSH keypair for a custom account and configure `ssh_key_account` in `[git.commit_policy]`
+    // Generate an Ed25519 SSH keypair and a PAT under a vault account.
     let manager = backend_core::KeyPairManager::vault_only(&vault_dir)
         .expect("should init isolated KeyPairManager");
     let generated = manager
         .generate_ed25519_keypair("nebulous/ssh-deploy", Some("deploy@nebulous.local"))
         .expect("should generate Ed25519 SSH keypair");
-
-    let mut project = storage.read_project().unwrap();
-    project.git.commit_policy.ssh_key_account = Some("nebulous/ssh-deploy".to_string());
-    storage.write_project(&project).unwrap();
-
-    storage
-        .store_pat("ghp_auth_resolution_pat_token_456")
+    manager
+        .store_pat("nebulous/ssh-deploy", "ghp_auth_resolution_pat_token_456")
         .expect("should store PAT");
 
+    // Git-synced `project.toml` naming the account must NOT select it.
+    let mut project = storage.read_project().unwrap();
+    project.git.commit_policy.ssh_key_account = Some("nebulous/ssh-deploy".to_string());
+    project.git.ssh_key_account = Some("nebulous/ssh-deploy".to_string());
+    storage.write_project(&project).unwrap();
+    let unbound = storage
+        .resolve_git_auth_with_manager(Some(&manager), &GitAuthRequest::default())
+        .expect("resolution without a binding still succeeds");
+    assert!(!unbound.has_pat());
+    assert!(unbound.ssh_keypair.is_none());
+
+    // An explicit account that is not bound locally is rejected.
+    let err = storage
+        .resolve_git_auth_with_manager(
+            Some(&manager),
+            &GitAuthRequest::with_account("nebulous/ssh-deploy"),
+        )
+        .expect_err("unbound auth_override account must be rejected");
+    assert!(err.to_string().contains("not bound"));
+
+    // Bind the account in the machine-local registry next to the vault.
+    storage
+        .bind_credential_account_in(&vault_dir, "nebulous/ssh-deploy")
+        .expect("should bind credential account locally");
+
     let resolved = storage
-        .resolve_git_auth_with_manager(Some(&manager), None)
-        .expect("should resolve git auth from SecureStorage & KeyPairManager");
-    assert!(resolved.has_pat());
+        .resolve_git_auth_with_manager(Some(&manager), &GitAuthRequest::default())
+        .expect("should resolve git auth from the locally bound account");
     assert_eq!(
         resolved.pat.as_deref(),
         Some("ghp_auth_resolution_pat_token_456")
@@ -1396,12 +1415,57 @@ fn test_git_auth_resolution_ssh_keypair_and_pat() {
         Some(generated.fingerprint_sha256.as_str())
     );
 
-    let _callbacks = build_auth_callbacks(resolved);
+    // The explicit form resolves the same bound account; an explicit PAT takes precedence.
+    let explicit = storage
+        .resolve_git_auth_with_manager(
+            Some(&manager),
+            &GitAuthRequest {
+                account: Some("nebulous/ssh-deploy".to_string()),
+                ..GitAuthRequest::with_pat("ghp_explicit")
+            },
+        )
+        .unwrap();
+    assert_eq!(explicit.pat.as_deref(), Some("ghp_explicit"));
+    assert!(explicit.ssh_keypair.is_some());
 
-    // Clean up stored credentials
-    let _ = manager.delete_ssh_keypair("nebulous/ssh-deploy");
-    let _ = storage.delete_pat();
-    std::env::remove_var("NEBULOUS_CONFIG_DIR");
+    let _callbacks = build_auth_callbacks(resolved);
+}
+
+#[test]
+fn test_file_path_auth_override_is_rejected_and_never_imported() {
+    let (dir, storage) = init_temp_tracker();
+    let vault_dir = dir.path().join("isolated_vault");
+    let manager = backend_core::KeyPairManager::vault_only(&vault_dir).unwrap();
+
+    // A real OpenSSH private key file on disk.
+    let donor = backend_core::KeyPairManager::vault_only(dir.path().join("donor")).unwrap();
+    let key = donor.generate_ed25519_keypair("donor", None).unwrap();
+    let key_path = dir.path().join("id_ed25519_victim");
+    std::fs::write(&key_path, key.private_key_openssh.as_bytes()).unwrap();
+
+    // Even binding the key path itself as an "account" is refused.
+    assert!(storage
+        .bind_credential_account_in(&vault_dir, key_path.to_str().unwrap())
+        .is_err());
+
+    for candidate in [
+        key_path.to_str().unwrap().to_string(),
+        "id_ed25519_victim".to_string(),
+    ] {
+        let err = storage
+            .resolve_git_auth_with_manager(
+                Some(&manager),
+                &GitAuthRequest::with_account(candidate.clone()),
+            )
+            .expect_err("file-path auth_override must be rejected");
+        assert!(
+            err.to_string().contains("auth_override"),
+            "unexpected error for '{candidate}': {err}"
+        );
+    }
+
+    // Nothing was imported into the vault under any account.
+    assert!(manager.storage().list_vault_keys().unwrap().is_empty());
 }
 
 #[test]

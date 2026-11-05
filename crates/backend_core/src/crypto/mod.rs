@@ -13,9 +13,10 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 pub use keys::{KeyPairManager, SshKeyPairRecord, SshPublicKeyInfo};
+pub use zeroize::Zeroizing;
 
 use crate::error::{Result, TrackerError};
 use crate::storage::atomic_write_bytes;
@@ -48,6 +49,32 @@ static VAULT_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn vault_lock() -> &'static Mutex<()> {
     VAULT_FILE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Name of the legacy plaintext SSH key export directory (`<config_dir>/ssh_cache`).
+///
+/// Older releases wrote decrypted private keys here for `libgit2`. Keys are now handed to
+/// `libgit2` from memory only; any leftover directory is removed by [`purge_legacy_ssh_cache`].
+pub const LEGACY_SSH_CACHE_DIR_NAME: &str = "ssh_cache";
+
+/// Removes the legacy plaintext `<config_dir>/ssh_cache` key export directory if present.
+///
+/// Returns `true` if a directory (or stray file) was removed. Symlinks are unlinked, never followed.
+pub fn purge_legacy_ssh_cache(config_dir: impl AsRef<Path>) -> Result<bool> {
+    let cache = config_dir.as_ref().join(LEGACY_SSH_CACHE_DIR_NAME);
+    let Ok(meta) = fs::symlink_metadata(&cache) else {
+        return Ok(false);
+    };
+    let result = if meta.is_dir() {
+        fs::remove_dir_all(&cache)
+    } else {
+        fs::remove_file(&cache)
+    };
+    result.map_err(|source| TrackerError::Io {
+        path: cache.clone(),
+        source,
+    })?;
+    Ok(true)
 }
 
 /// Resolves the cross-platform Nebulous configuration directory.
@@ -270,6 +297,8 @@ impl SecureStorage {
     ) -> Result<Self> {
         let config_dir = config_dir.as_ref().to_path_buf();
         ensure_secure_dir(&config_dir)?;
+        // Startup hygiene: never leave plaintext key exports from older releases on disk.
+        purge_legacy_ssh_cache(&config_dir)?;
 
         let vault_path = config_dir.join(VAULT_FILE_NAME);
         let key_path = config_dir.join(VAULT_KEY_FILE_NAME);

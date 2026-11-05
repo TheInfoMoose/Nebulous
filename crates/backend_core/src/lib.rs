@@ -642,13 +642,11 @@ bug = -1
         assert_eq!(pub_info.fingerprint_sha256, generated.fingerprint_sha256);
         assert_eq!(pub_info.public_key_openssh, generated.public_key_openssh);
 
-        // 3. Export keypair to directory and re-import under another account
-        let export_dir = temp_dir.path().join("exported_ssh");
-        let (priv_path, pub_path) = manager
-            .export_keypair_to_dir("nebulous/origin", &export_dir, "id_ed25519_nebulous")
-            .expect("should export keypair to disk");
-        assert!(priv_path.is_file());
-        assert!(pub_path.is_file());
+        // 3. Write the OpenSSH private key to a user-owned file and import it under another
+        //    account (keys are never exported by Nebulous itself; this simulates `~/.ssh`).
+        let priv_path = temp_dir.path().join("id_ed25519_nebulous");
+        std::fs::write(&priv_path, generated.private_key_openssh.as_bytes())
+            .expect("should write test private key file");
 
         let imported = manager
             .import_ssh_key_file("novos/upstream", &priv_path, None)

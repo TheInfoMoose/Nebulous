@@ -8,7 +8,7 @@ use std::path::Path;
 use git2::{Repository, Signature, Status};
 use tempfile::TempDir;
 
-use backend_core::{DocumentedCommitInput, Severity, TrackerError, TrackerStorage};
+use backend_core::{DocumentedCommitInput, GitAuthRequest, Severity, TrackerError, TrackerStorage};
 
 fn init_tracker(root: &Path) -> TrackerStorage {
     let storage = TrackerStorage::init(root, "GitSafety", "01_core_engine", "Core Engine")
@@ -113,7 +113,9 @@ fn setup_remote_pair() -> RemotePair {
     storage1
         .git_commit_tracker(Some("chore: configure remote"))
         .unwrap();
-    storage1.git_push(None).expect("initial push");
+    storage1
+        .git_push(&GitAuthRequest::default())
+        .expect("initial push");
 
     let ws2_dir = TempDir::new().unwrap();
     let repo2 = Repository::clone(bare_dir.path().to_str().unwrap(), ws2_dir.path()).unwrap();
@@ -301,7 +303,7 @@ fn pull_and_push_on_non_configured_branch_error_and_leave_refs_unchanged() {
         )
         .unwrap();
     pair.storage1.git_commit_tracker(None).unwrap();
-    pair.storage1.git_push(None).unwrap();
+    pair.storage1.git_push(&GitAuthRequest::default()).unwrap();
 
     // Workspace 2 switches to a feature branch.
     let head_commit = pair.repo2.head().unwrap().peel_to_commit().unwrap();
@@ -314,7 +316,7 @@ fn pull_and_push_on_non_configured_branch_error_and_leave_refs_unchanged() {
 
     let err = pair
         .storage2
-        .git_pull(None)
+        .git_pull(&GitAuthRequest::default())
         .expect_err("pull on non-configured branch must fail");
     assert!(
         matches!(err, TrackerError::GitError(ref m) if m.contains("feature") && m.contains(&pair.branch)),
@@ -322,7 +324,7 @@ fn pull_and_push_on_non_configured_branch_error_and_leave_refs_unchanged() {
     );
     let push_err = pair
         .storage2
-        .git_push(None)
+        .git_push(&GitAuthRequest::default())
         .expect_err("push on non-configured branch must fail");
     assert!(matches!(push_err, TrackerError::GitError(ref m) if m.contains("feature")));
 
@@ -346,7 +348,7 @@ fn dirty_tracker_edit_survives_merge_attempt() {
         .git_commit_tracker(Some("docs: remote note"))
         .unwrap()
         .expect("remote commit");
-    pair.storage1.git_push(None).unwrap();
+    pair.storage1.git_push(&GitAuthRequest::default()).unwrap();
 
     // Workspace 2 diverges with an unrelated commit (forces the normal-merge path)...
     fs::write(pair.ws2_dir.path().join("README.md"), "# ws2\n").unwrap();
@@ -362,7 +364,7 @@ fn dirty_tracker_edit_survives_merge_attempt() {
     let head_before = pair.repo2.head().unwrap().target().unwrap();
     let err = pair
         .storage2
-        .git_pull(None)
+        .git_pull(&GitAuthRequest::default())
         .expect_err("pull must refuse to overwrite dirty .tracker edit");
     assert!(matches!(err, TrackerError::GitError(ref m) if m.contains("desc.md")));
     assert_eq!(fs::read_to_string(&ws2_desc).unwrap(), local_text);

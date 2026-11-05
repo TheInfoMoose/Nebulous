@@ -9,10 +9,12 @@ use git2::{
     StatusOptions, Tree,
 };
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::crypto::{nebulous_config_dir, KeyPairManager, SecureStorage, SshKeyPairRecord};
 use crate::error::{Result, TrackerError};
 pub use crate::models::project::CommitPolicyConfig;
+use crate::models::registry::{credential_accounts_for_root_in, validate_credential_account_name};
 use crate::models::PreviousFix;
 use crate::storage::{normalize_relative_path_str, TrackerStorage};
 use crate::workflow::lifecycle::now_rfc3339;
@@ -184,14 +186,65 @@ pub type DocumentedCommitReport = DocumentedCommitOutcome;
 /// Type alias for [`DocumentedCommitOutcome`].
 pub type DocumentedCommitResult = DocumentedCommitOutcome;
 
+/// Caller-supplied Git credential selection for fetch/pull/push/sync.
+///
+/// - `account`: a vault account name. It is honoured only when it is bound to this project in
+///   the machine-local registry (`projects.toml`); file paths are always rejected.
+/// - `pat`: an HTTPS Personal Access Token supplied out-of-band (stdin / `NEB_GIT_PAT`).
+///   It is only ever offered to `https://` remotes.
+#[derive(Clone, Default)]
+pub struct GitAuthRequest {
+    pub account: Option<String>,
+    pub pat: Option<Zeroizing<String>>,
+}
+
+impl GitAuthRequest {
+    /// Selects a locally bound vault account.
+    pub fn with_account(account: impl Into<String>) -> Self {
+        Self {
+            account: Some(account.into()),
+            pat: None,
+        }
+    }
+
+    /// Supplies an HTTPS PAT (blank tokens are ignored).
+    pub fn with_pat(pat: &str) -> Self {
+        let trimmed = pat.trim();
+        Self {
+            account: None,
+            pat: (!trimmed.is_empty()).then(|| Zeroizing::new(trimmed.to_string())),
+        }
+    }
+}
+
+impl std::fmt::Debug for GitAuthRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitAuthRequest")
+            .field("account", &self.account)
+            .field("pat", &self.pat.as_ref().map(|_| "<REDACTED>"))
+            .finish()
+    }
+}
+
 /// Resolved Git authentication material combining HTTPS PAT and SSH credentials
 /// (`SecureStorage` / `KeyPairManager`, `~/.ssh/id_ed25519`, or `SSH_AUTH_SOCK`).
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct GitAuthMaterial {
     pub pat: Option<String>,
     pub ssh_keypair: Option<SshKeyPairRecord>,
     pub ssh_key_file: Option<(PathBuf, Option<PathBuf>)>,
     pub ssh_auth_sock: Option<String>,
+}
+
+impl std::fmt::Debug for GitAuthMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitAuthMaterial")
+            .field("pat", &self.pat.as_ref().map(|_| "<REDACTED>"))
+            .field("ssh_keypair", &self.ssh_keypair)
+            .field("ssh_key_file", &self.ssh_key_file)
+            .field("ssh_auth_sock", &self.ssh_auth_sock)
+            .finish()
+    }
 }
 
 impl GitAuthMaterial {
@@ -216,27 +269,32 @@ pub fn store_pat_in_keyring(project_name: &str, token: &str) -> Result<()> {
         ));
     }
 
-    let mut stored_in_vault = false;
-    if let Ok(sec) = SecureStorage::new() {
-        if sec.store_secret(&account, trimmed_token).is_ok() {
-            stored_in_vault = true;
+    let vault_result =
+        SecureStorage::new().and_then(|sec| sec.store_secret(&account, trimmed_token));
+    let keyring_result = keyring::Entry::new(KEYRING_SERVICE, &account)
+        .and_then(|entry| entry.set_password(trimmed_token))
+        .map_err(|err| TrackerError::KeyringError(err.to_string()));
+    combine_pat_store_results(&account, trimmed_token, keyring_result, vault_result)
+}
+
+/// Succeeds when at least one durable store (OS keyring or encrypted vault) accepted the PAT.
+/// The process-local fallback cache is only populated after a durable write succeeded.
+fn combine_pat_store_results(
+    account: &str,
+    token: &str,
+    keyring_result: Result<()>,
+    vault_result: Result<()>,
+) -> Result<()> {
+    match (keyring_result, vault_result) {
+        (Err(keyring_err), Err(vault_err)) => Err(TrackerError::KeyringError(format!(
+            "Failed to store Personal Access Token (PAT) for '{account}': OS keyring: {keyring_err}; encrypted vault: {vault_err}"
+        ))),
+        _ => {
+            if let Ok(mut guard) = fallback_store().lock() {
+                guard.insert(account.to_string(), token.to_string());
+            }
+            Ok(())
         }
-    }
-
-    if let Ok(mut guard) = fallback_store().lock() {
-        guard.insert(account.clone(), trimmed_token.to_string());
-    }
-
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &account)?;
-    match entry.set_password(trimmed_token) {
-        Ok(()) => Ok(()),
-        Err(
-            keyring::Error::PlatformFailure(_)
-            | keyring::Error::NoStorageAccess(_)
-            | keyring::Error::NoEntry,
-        ) => Ok(()),
-        Err(_) if stored_in_vault => Ok(()),
-        Err(err) => Err(TrackerError::KeyringError(err.to_string())),
     }
 }
 
@@ -367,7 +425,7 @@ fn repo_status_with_hints(
         .find_remote(remote_name)
         .or_else(|_| repo.find_remote("origin"))
         .ok()
-        .and_then(|r| r.url().ok().map(str::to_string));
+        .and_then(|r| r.url().ok().map(redact_url_userinfo));
 
     let (ahead_count, behind_count) =
         compute_ahead_behind(&repo, remote_name, branch_hint, head_branch.as_deref());
@@ -495,6 +553,49 @@ fn compute_ahead_behind(
 
     repo.graph_ahead_behind(local_oid, upstream_oid)
         .unwrap_or((0, 0))
+}
+
+/// Strips URL userinfo (`user[:password]@`) from `scheme://` URLs so tokens embedded in a
+/// remote URL are never returned by `git_status`, the CLI, or MCP tools.
+///
+/// scp-style remotes (`git@host:org/repo`) carry only an SSH user name and are returned as-is.
+pub fn redact_url_userinfo(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let rest = &url[authority_start..];
+    let authority_len = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_len];
+    match authority.rfind('@') {
+        Some(at) => format!(
+            "{}{}{}",
+            &url[..authority_start],
+            &authority[at + 1..],
+            &rest[authority_len..]
+        ),
+        None => url.to_string(),
+    }
+}
+
+/// Returns `true` only for `https://` URLs; PATs are never offered over other transports.
+fn url_allows_pat(url: &str) -> bool {
+    url.trim_start()
+        .get(..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+}
+
+/// Returns the PAT to offer for `url`, or `None` when the transport did not ask for
+/// user/password credentials or the URL is not `https://`.
+fn pat_for_url<'a>(
+    auth: &'a GitAuthMaterial,
+    url: &str,
+    allowed_types: CredentialType,
+) -> Option<&'a str> {
+    if !allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) || !url_allows_pat(url) {
+        return None;
+    }
+    auth.pat.as_deref().filter(|t| !t.trim().is_empty())
 }
 
 fn is_tracker_relative_path(path: &str) -> bool {
@@ -867,88 +968,80 @@ pub fn build_auth_callbacks<'a>(auth: GitAuthMaterial) -> RemoteCallbacks<'a> {
     let mut callbacks = RemoteCallbacks::new();
     let mut attempts: u8 = 0;
 
-    callbacks.credentials(move |_url, username_from_url, allowed_types| {
+    callbacks.credentials(move |url, username_from_url, allowed_types| {
         attempts = attempts.saturating_add(1);
         if attempts > 5 {
             return Err(git2::Error::from_str(
                 "Maximum Git authentication attempts exceeded",
             ));
         }
-
-        if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) {
-            if let Some(ref token) = auth.pat {
-                let user = username_from_url.unwrap_or("x-access-token");
-                return Cred::userpass_plaintext(user, token);
-            }
-        }
-
-        if allowed_types.intersects(
-            CredentialType::SSH_KEY | CredentialType::SSH_MEMORY | CredentialType::SSH_CUSTOM,
-        ) {
-            let ssh_user = username_from_url.unwrap_or("git");
-
-            if let Some(ref record) = auth.ssh_keypair {
-                if allowed_types.contains(CredentialType::SSH_MEMORY)
-                    || allowed_types.contains(CredentialType::SSH_KEY)
-                {
-                    if let Ok(cred) = Cred::ssh_key_from_memory(
-                        ssh_user,
-                        Some(&record.public_key_openssh),
-                        record.private_key_openssh.as_str(),
-                        None,
-                    ) {
-                        return Ok(cred);
-                    }
-                }
-
-                if allowed_types.contains(CredentialType::SSH_KEY) {
-                    if let Ok(manager) = KeyPairManager::new() {
-                        let cache_dir = nebulous_config_dir().join("ssh_cache");
-                        let safe_stem: String = record
-                            .account
-                            .chars()
-                            .map(|c| {
-                                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                                    c
-                                } else {
-                                    '_'
-                                }
-                            })
-                            .collect();
-                        if let Ok((priv_path, pub_path)) =
-                            manager.export_keypair_to_dir(&record.account, &cache_dir, &safe_stem)
-                        {
-                            if let Ok(cred) =
-                                Cred::ssh_key(ssh_user, Some(&pub_path), &priv_path, None)
-                            {
-                                return Ok(cred);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if let Some((ref priv_path, ref pub_path)) = auth.ssh_key_file {
-                if let Ok(cred) = Cred::ssh_key(ssh_user, pub_path.as_deref(), priv_path, None) {
-                    return Ok(cred);
-                }
-            }
-
-            if auth.ssh_auth_sock.is_some() {
-                if let Ok(cred) = Cred::ssh_key_from_agent(ssh_user) {
-                    return Ok(cred);
-                }
-            }
-        }
-
-        if allowed_types.contains(CredentialType::USERNAME) {
-            return Cred::username(username_from_url.unwrap_or("git"));
-        }
-
-        Cred::default()
+        git_credential(&auth, url, username_from_url, allowed_types)
     });
 
     callbacks
+}
+
+/// Produces one credential for a `libgit2` credential request.
+///
+/// - PATs are offered only to `https://` URLs.
+/// - Vault SSH keys are handed to `libgit2` from memory only; no key material is written to disk.
+pub fn git_credential(
+    auth: &GitAuthMaterial,
+    url: &str,
+    username_from_url: Option<&str>,
+    allowed_types: CredentialType,
+) -> std::result::Result<Cred, git2::Error> {
+    if let Some(token) = pat_for_url(auth, url, allowed_types) {
+        let user = username_from_url.unwrap_or("x-access-token");
+        return Cred::userpass_plaintext(user, token);
+    }
+
+    if allowed_types.intersects(
+        CredentialType::SSH_KEY | CredentialType::SSH_MEMORY | CredentialType::SSH_CUSTOM,
+    ) {
+        let ssh_user = username_from_url.unwrap_or("git");
+
+        if let Some(ref record) = auth.ssh_keypair {
+            if allowed_types.intersects(CredentialType::SSH_MEMORY | CredentialType::SSH_KEY) {
+                if let Ok(cred) = Cred::ssh_key_from_memory(
+                    ssh_user,
+                    Some(&record.public_key_openssh),
+                    record.private_key_openssh.as_str(),
+                    None,
+                ) {
+                    return Ok(cred);
+                }
+            }
+        }
+
+        if let Some((ref priv_path, ref pub_path)) = auth.ssh_key_file {
+            if let Ok(cred) = Cred::ssh_key(ssh_user, pub_path.as_deref(), priv_path, None) {
+                return Ok(cred);
+            }
+        }
+
+        if auth.ssh_auth_sock.is_some() {
+            if let Ok(cred) = Cred::ssh_key_from_agent(ssh_user) {
+                return Ok(cred);
+            }
+        }
+    }
+
+    if allowed_types.contains(CredentialType::USERNAME) {
+        return Cred::username(username_from_url.unwrap_or("git"));
+    }
+
+    if allowed_types.contains(CredentialType::DEFAULT) {
+        return Cred::default();
+    }
+
+    Err(git2::Error::from_str(
+        if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) && auth.has_pat() {
+            "No usable Git credentials: a Personal Access Token is only sent to https:// remotes"
+        } else {
+            "No usable Git credentials for this remote"
+        },
+    ))
 }
 
 /// Fetches `branch` from `remote_name` without modifying the working tree or `HEAD`,
@@ -1371,93 +1464,110 @@ impl TrackerStorage {
         stage_and_commit_tracker(self.project_root(), message)
     }
 
+    /// Returns the vault credential accounts bound to this project in the machine-local
+    /// registry at `<config_dir>/projects.toml` (empty when unbound).
+    pub fn credential_accounts_in(&self, config_dir: &Path) -> Result<Vec<String>> {
+        credential_accounts_for_root_in(config_dir, &self.project_root())
+    }
+
+    /// Binds vault credential `account` to this project in the machine-local registry
+    /// (`<nebulous_config_dir>/projects.toml`). Git-synced `project.toml` is never consulted.
+    pub fn bind_credential_account(&self, account: &str) -> Result<()> {
+        self.bind_credential_account_in(&nebulous_config_dir(), account)
+    }
+
+    /// Binds vault credential `account` to this project in the registry under `config_dir`.
+    pub fn bind_credential_account_in(&self, config_dir: &Path, account: &str) -> Result<()> {
+        crate::models::registry::bind_credential_account_in(
+            config_dir,
+            &self.project_root(),
+            account,
+        )
+        .map(|_| ())
+    }
+
+    /// Returns this project's default locally bound credential account, or an error when none
+    /// is bound (credentials are never keyed from git-synced `project.toml`).
+    pub fn require_credential_account(&self) -> Result<String> {
+        self.credential_accounts_in(&nebulous_config_dir())?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                TrackerError::ValidationError(format!(
+                    "No credential account is bound to project root '{}' in the local registry; bind one with TrackerStorage::bind_credential_account",
+                    self.project_root().display()
+                ))
+            })
+    }
+
+    /// Selects the vault account to use: an explicit `requested` account must be bound to this
+    /// project in the local registry; otherwise the first bound account (if any) is used.
+    fn select_credential_account(
+        &self,
+        config_dir: &Path,
+        requested: Option<&str>,
+    ) -> Result<Option<String>> {
+        let bound = self.credential_accounts_in(config_dir)?;
+        let Some(raw) = requested.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(bound.into_iter().next());
+        };
+        let looks_like_path = Path::new(raw).exists();
+        let account = validate_credential_account_name(raw).map_err(|e| {
+            TrackerError::ValidationError(format!(
+                "auth_override must be a vault account name bound to this project in the local registry: {e}"
+            ))
+        })?;
+        if looks_like_path {
+            return Err(TrackerError::ValidationError(format!(
+                "auth_override '{account}' is a filesystem path; key files are never imported, use a bound vault account name"
+            )));
+        }
+        if !bound.contains(&account) {
+            return Err(TrackerError::ValidationError(format!(
+                "auth_override account '{account}' is not bound to this project in the local registry"
+            )));
+        }
+        Ok(Some(account))
+    }
+
     /// Resolves authentication material (HTTPS PAT and SSH credentials from `SecureStorage` /
     /// `KeyPairManager`, `~/.ssh/id_ed25519`, or `SSH_AUTH_SOCK`) for this project.
-    pub fn resolve_git_auth(&self, auth_override: Option<&str>) -> Result<GitAuthMaterial> {
+    pub fn resolve_git_auth(&self, request: &GitAuthRequest) -> Result<GitAuthMaterial> {
         let default_manager = self.keypair_manager().ok();
-        self.resolve_git_auth_with_manager(default_manager.as_ref(), auth_override)
+        self.resolve_git_auth_with_manager(default_manager.as_ref(), request)
     }
 
     /// Resolves authentication material using an explicit [`KeyPairManager`] (when provided)
     /// alongside keyring/fallback PAT storage, `~/.ssh/id_ed25519`, and `SSH_AUTH_SOCK`.
+    ///
+    /// Vault credentials are looked up only under accounts bound to this project in the
+    /// machine-local registry next to the manager's vault (or [`nebulous_config_dir`]).
     pub fn resolve_git_auth_with_manager(
         &self,
         manager: Option<&KeyPairManager>,
-        auth_override: Option<&str>,
+        request: &GitAuthRequest,
     ) -> Result<GitAuthMaterial> {
-        let project = self.read_project()?;
+        let config_dir = manager
+            .map(|m| m.storage().config_dir().to_path_buf())
+            .unwrap_or_else(nebulous_config_dir);
+        let account = self.select_credential_account(&config_dir, request.account.as_deref())?;
 
-        let mut pat = None;
+        let mut pat = request
+            .pat
+            .as_ref()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
         let mut ssh_keypair = None;
-        let mut ssh_key_file = discover_local_ssh_key_files();
 
-        if let Some(override_str) = auth_override.map(str::trim).filter(|s| !s.is_empty()) {
-            let candidate_path = Path::new(override_str);
-            if candidate_path.is_file() {
-                let pub_candidate = PathBuf::from(format!("{override_str}.pub"));
-                let pub_path = if pub_candidate.is_file() {
-                    Some(pub_candidate)
-                } else {
-                    None
-                };
-                ssh_key_file = Some((candidate_path.to_path_buf(), pub_path));
-                if let Some(mgr) = manager {
-                    let _ = mgr
-                        .import_ssh_key_file(&project.project.name, candidate_path, None)
-                        .map(|rec| {
-                            ssh_keypair = Some(rec);
-                        });
-                }
-            } else if let Some(mgr) = manager {
-                if let Ok(rec) = mgr.get_ssh_keypair(override_str) {
-                    ssh_keypair = Some(rec);
-                } else {
-                    pat = Some(override_str.to_string());
-                }
-            } else {
-                pat = Some(override_str.to_string());
+        if let Some(ref account) = account {
+            if pat.is_none() {
+                pat = manager
+                    .and_then(|mgr| mgr.get_pat_string(account).ok())
+                    .or_else(|| get_pat_from_keyring(account).ok());
             }
-        }
-
-        if pat.is_none() {
-            pat = get_pat_from_keyring(&project.project.name)
-                .ok()
-                .or_else(|| {
-                    manager.and_then(|mgr| {
-                        mgr.get_pat_string(&format!(
-                            "{}/{}",
-                            project.project.name, project.git.remote
-                        ))
-                        .ok()
-                        .or_else(|| mgr.get_pat_string(&project.project.name).ok())
-                    })
-                });
-        }
-
-        if ssh_keypair.is_none() {
             if let Some(mgr) = manager {
-                let mut candidate_accounts = Vec::new();
-                if let Some(ref acc) = project.git.commit_policy.ssh_key_account {
-                    if !acc.trim().is_empty() {
-                        candidate_accounts.push(acc.trim().to_string());
-                    }
-                }
-                if let Some(ref acc) = project.git.ssh_key_account {
-                    if !acc.trim().is_empty()
-                        && !candidate_accounts.contains(&acc.trim().to_string())
-                    {
-                        candidate_accounts.push(acc.trim().to_string());
-                    }
-                }
-                candidate_accounts.push(format!("{}/{}", project.project.name, project.git.remote));
-                candidate_accounts.push(project.project.name.clone());
-
-                for acc in candidate_accounts {
-                    if let Ok(rec) = mgr.get_ssh_keypair(&acc) {
-                        ssh_keypair = Some(rec);
-                        break;
-                    }
-                }
+                ssh_keypair = mgr.get_ssh_keypair(account).ok();
             }
         }
 
@@ -1468,34 +1578,32 @@ impl TrackerStorage {
         Ok(GitAuthMaterial {
             pat,
             ssh_keypair,
-            ssh_key_file,
+            ssh_key_file: discover_local_ssh_key_files(),
             ssh_auth_sock,
         })
     }
 
-    /// Stores a Personal Access Token (PAT) in the OS keyring and encrypted vault for this project.
+    /// Stores a Personal Access Token (PAT) in the OS keyring and encrypted vault under this
+    /// project's locally bound credential account.
     pub fn store_pat(&self, token: &str) -> Result<()> {
-        let project = self.read_project()?;
-        store_pat_in_keyring(&project.project.name, token)
+        store_pat_in_keyring(&self.require_credential_account()?, token)
     }
 
-    /// Retrieves the Personal Access Token (PAT) from the OS keyring or encrypted vault for this project.
+    /// Retrieves the Personal Access Token (PAT) for this project's locally bound credential account.
     pub fn get_pat(&self) -> Result<String> {
-        let project = self.read_project()?;
-        get_pat_from_keyring(&project.project.name)
+        get_pat_from_keyring(&self.require_credential_account()?)
     }
 
-    /// Deletes the Personal Access Token (PAT) from the OS keyring and encrypted vault for this project.
+    /// Deletes the Personal Access Token (PAT) for this project's locally bound credential account.
     pub fn delete_pat(&self) -> Result<()> {
-        let project = self.read_project()?;
-        delete_pat_from_keyring(&project.project.name)
+        delete_pat_from_keyring(&self.require_credential_account()?)
     }
 
     /// Fetches the configured remote and branch without modifying the working tree, returning
     /// the updated [`GitRepoStatus`] with `ahead_count` and `behind_count`.
-    pub fn git_fetch(&self, auth_override: Option<&str>) -> Result<GitRepoStatus> {
+    pub fn git_fetch(&self, auth: &GitAuthRequest) -> Result<GitRepoStatus> {
         let project = self.read_project()?;
-        let auth = self.resolve_git_auth(auth_override)?;
+        let auth = self.resolve_git_auth(auth)?;
         fetch_repo_with_auth(
             self.project_root(),
             &project.git.remote,
@@ -1506,11 +1614,11 @@ impl TrackerStorage {
 
     /// Pushes the configured branch to the configured remote in `project.toml` `[git]`.
     ///
-    /// Uses `auth_override` if provided, otherwise resolves HTTPS PAT or SSH credentials from
+    /// Uses the bound `auth.account` / `auth.pat` if provided, otherwise resolves HTTPS PAT or SSH credentials from
     /// [`SecureStorage`] / [`KeyPairManager`], `~/.ssh/id_ed25519`, or `SSH_AUTH_SOCK`.
-    pub fn git_push(&self, auth_override: Option<&str>) -> Result<()> {
+    pub fn git_push(&self, auth: &GitAuthRequest) -> Result<()> {
         let project = self.read_project()?;
-        let auth = self.resolve_git_auth(auth_override)?;
+        let auth = self.resolve_git_auth(auth)?;
         push_repo_with_auth(
             self.project_root(),
             &project.git.remote,
@@ -1521,9 +1629,9 @@ impl TrackerStorage {
 
     /// Pulls the configured branch from the configured remote in `project.toml` `[git]` and
     /// reconciles `.tracker/` indexes if new commits were pulled.
-    pub fn git_pull(&self, auth_override: Option<&str>) -> Result<bool> {
+    pub fn git_pull(&self, auth: &GitAuthRequest) -> Result<bool> {
         let project = self.read_project()?;
-        let auth = self.resolve_git_auth(auth_override)?;
+        let auth = self.resolve_git_auth(auth)?;
         let updated = pull_repo_with_auth(
             self.project_root(),
             &project.git.remote,
@@ -1867,18 +1975,50 @@ impl TrackerStorage {
 
     /// Stages and commits any dirty `.tracker/` changes, then pulls and pushes if the configured
     /// remote exists in the repository.
-    pub fn git_sync(
-        &self,
-        message: Option<&str>,
-        pat_override: Option<&str>,
-    ) -> Result<Option<String>> {
+    pub fn git_sync(&self, message: Option<&str>, auth: &GitAuthRequest) -> Result<Option<String>> {
         let committed_sha = self.git_commit_tracker(message)?;
         let project = self.read_project()?;
         let repo = Repository::discover(self.project_root())?;
         if repo.find_remote(&project.git.remote).is_ok() {
-            let _ = self.git_pull(pat_override)?;
-            self.git_push(pat_override)?;
+            let _ = self.git_pull(auth)?;
+            self.git_push(auth)?;
         }
         Ok(committed_sha.or_else(|| head_short_sha_from_repo(&repo).ok()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keyring_err() -> Result<()> {
+        Err(TrackerError::KeyringError("no secret service".to_string()))
+    }
+
+    fn vault_err() -> Result<()> {
+        Err(TrackerError::ValidationError(
+            "vault unwritable".to_string(),
+        ))
+    }
+
+    #[test]
+    fn store_pat_errors_when_keyring_and_vault_both_fail() {
+        let account = "step11/both-fail";
+        let err = combine_pat_store_results(account, "tok", keyring_err(), vault_err())
+            .expect_err("both stores failing must be an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("OS keyring") && msg.contains("encrypted vault"),
+            "{msg}"
+        );
+        assert!(!msg.contains("tok"), "error must not echo the token");
+        // Nothing was cached in-process for a failed store.
+        assert!(fallback_store().lock().unwrap().get(account).is_none());
+    }
+
+    #[test]
+    fn store_pat_succeeds_when_either_durable_store_succeeds() {
+        assert!(combine_pat_store_results("step11/kr-ok", "t", Ok(()), vault_err()).is_ok());
+        assert!(combine_pat_store_results("step11/vault-ok", "t", keyring_err(), Ok(())).is_ok());
     }
 }

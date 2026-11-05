@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::{Result, TrackerError};
-use crate::git_sync::DocumentedCommitInput;
+use crate::git_sync::{DocumentedCommitInput, GitAuthRequest};
 use crate::ingestion::IngestionOptions;
 use crate::models::{
     load_global_registry, load_global_registry_from, register_project, register_project_in,
@@ -208,6 +208,8 @@ impl McpServer {
 
     /// Runs the blocking JSON-RPC 2.0 loop over standard input (`stdin`) and standard output (`stdout`).
     pub fn serve_stdio(&mut self) -> Result<()> {
+        // Startup hygiene: remove plaintext key exports left by older releases.
+        let _ = crate::crypto::purge_legacy_ssh_cache(crate::crypto::nebulous_config_dir());
         let stdin = io::stdin();
         let stdout = io::stdout();
         let reader = stdin.lock();
@@ -857,7 +859,7 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "auth_override": { "type": "string", "description": "Optional PAT or SSH key override." }
+                        "auth_override": { "type": "string", "description": "Optional vault credential account name; must be bound to this project in the local registry. PATs and key file paths are not accepted." }
                     }
                 }),
             },
@@ -867,7 +869,7 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "auth_override": { "type": "string", "description": "Optional PAT or SSH key override." }
+                        "auth_override": { "type": "string", "description": "Optional vault credential account name; must be bound to this project in the local registry. PATs and key file paths are not accepted." }
                     }
                 }),
             },
@@ -877,7 +879,7 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "auth_override": { "type": "string", "description": "Optional PAT or SSH key override." }
+                        "auth_override": { "type": "string", "description": "Optional vault credential account name; must be bound to this project in the local registry. PATs and key file paths are not accepted." }
                     }
                 }),
             },
@@ -904,7 +906,7 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "message": { "type": "string", "description": "Optional commit message for .tracker/ state." },
-                        "pat": { "type": "string", "description": "Optional PAT or auth override." },
+                        "auth_override": { "type": "string", "description": "Optional vault credential account name; must be bound to this project in the local registry. PATs and key file paths are not accepted." },
                         "commit_only": { "type": "boolean", "description": "When true, commits .tracker/ locally without pushing or pulling." }
                     }
                 }),
@@ -2085,28 +2087,34 @@ impl McpServer {
     fn tool_git_fetch(&mut self, args: Value) -> Result<Value> {
         #[derive(Debug, Default, Deserialize)]
         struct Args {
-            #[serde(default, alias = "pat")]
+            #[serde(default)]
             auth_override: Option<String>,
+            #[serde(default)]
+            pat: Option<Value>,
         }
 
         let parsed: Args = serde_json::from_value(args)
             .map_err(|e| TrackerError::ValidationError(format!("Invalid git_fetch args: {e}")))?;
+        let auth = mcp_auth_request(parsed.auth_override.as_deref(), parsed.pat.as_ref())?;
         let storage = self.resolve_active_storage()?;
-        let status = storage.git_fetch(non_empty(parsed.auth_override.as_deref()))?;
+        let status = storage.git_fetch(&auth)?;
         serde_json::to_value(status).map_err(|e| TrackerError::ValidationError(e.to_string()))
     }
 
     fn tool_git_pull(&mut self, args: Value) -> Result<Value> {
         #[derive(Debug, Default, Deserialize)]
         struct Args {
-            #[serde(default, alias = "pat")]
+            #[serde(default)]
             auth_override: Option<String>,
+            #[serde(default)]
+            pat: Option<Value>,
         }
 
         let parsed: Args = serde_json::from_value(args)
             .map_err(|e| TrackerError::ValidationError(format!("Invalid git_pull args: {e}")))?;
+        let auth = mcp_auth_request(parsed.auth_override.as_deref(), parsed.pat.as_ref())?;
         let storage = self.resolve_active_storage()?;
-        let updated = storage.git_pull(non_empty(parsed.auth_override.as_deref()))?;
+        let updated = storage.git_pull(&auth)?;
         let status = storage.git_status()?;
         Ok(json!({
             "updated": updated,
@@ -2117,14 +2125,17 @@ impl McpServer {
     fn tool_git_push(&mut self, args: Value) -> Result<Value> {
         #[derive(Debug, Default, Deserialize)]
         struct Args {
-            #[serde(default, alias = "pat")]
+            #[serde(default)]
             auth_override: Option<String>,
+            #[serde(default)]
+            pat: Option<Value>,
         }
 
         let parsed: Args = serde_json::from_value(args)
             .map_err(|e| TrackerError::ValidationError(format!("Invalid git_push args: {e}")))?;
+        let auth = mcp_auth_request(parsed.auth_override.as_deref(), parsed.pat.as_ref())?;
         let storage = self.resolve_active_storage()?;
-        storage.git_push(non_empty(parsed.auth_override.as_deref()))?;
+        storage.git_push(&auth)?;
         let status = storage.git_status()?;
         Ok(json!({
             "pushed": true,
@@ -2172,22 +2183,22 @@ impl McpServer {
         struct Args {
             #[serde(default, alias = "summary")]
             message: Option<String>,
-            #[serde(default, alias = "auth_override")]
-            pat: Option<String>,
+            #[serde(default)]
+            auth_override: Option<String>,
+            #[serde(default)]
+            pat: Option<Value>,
             #[serde(default)]
             commit_only: bool,
         }
 
         let parsed: Args = serde_json::from_value(args)
             .map_err(|e| TrackerError::ValidationError(format!("Invalid git_sync args: {e}")))?;
+        let auth = mcp_auth_request(parsed.auth_override.as_deref(), parsed.pat.as_ref())?;
         let storage = self.resolve_active_storage()?;
         let sha = if parsed.commit_only {
             storage.git_commit_tracker(non_empty(parsed.message.as_deref()))?
         } else {
-            storage.git_sync(
-                non_empty(parsed.message.as_deref()),
-                non_empty(parsed.pat.as_deref()),
-            )?
+            storage.git_sync(non_empty(parsed.message.as_deref()), &auth)?
         };
         let tracker_dirty_after = storage
             .git_status()
@@ -2307,6 +2318,19 @@ fn read_next_jsonrpc_message<R: BufRead>(reader: &mut R) -> io::Result<Option<(S
         // Standard newline-delimited JSON-RPC message
         return Ok(Some((trimmed.to_string(), false)));
     }
+}
+
+/// Builds the credential request for an MCP git tool. Agents may only name a vault account that
+/// is bound to the project in the local registry; raw PATs are refused outright.
+fn mcp_auth_request(auth_override: Option<&str>, pat: Option<&Value>) -> Result<GitAuthRequest> {
+    if pat.is_some_and(|v| !v.is_null()) {
+        return Err(TrackerError::ValidationError(
+            "Personal Access Tokens are not accepted over MCP; use a vault account bound in the local registry (auth_override)".to_string(),
+        ));
+    }
+    Ok(non_empty(auth_override)
+        .map(GitAuthRequest::with_account)
+        .unwrap_or_default())
 }
 
 fn non_empty(val: Option<&str>) -> Option<&str> {
