@@ -1033,10 +1033,10 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
     )
     .unwrap();
     cloned_storage
-        .git_commit_documented(DocumentedCommitInput::for_item(
-            "BUG-0001",
-            "Add conflict.rs on remote workspace",
-        ))
+        .git_commit_documented(
+            DocumentedCommitInput::for_item("BUG-0001", "Add conflict.rs on remote workspace")
+                .with_paths(["crates/backend_core/src/conflict.rs"]),
+        )
         .unwrap();
     cloned_storage.git_push(None).unwrap();
 
@@ -1141,9 +1141,10 @@ fn test_git_commit_documented_policy_enforcement_and_atomic_doc_updates() {
 
     // 5. Policy Violation A: Missing item_id on workspace code commit when `require_item_id = true`
     let missing_item_err = storage
-        .git_commit_documented(DocumentedCommitInput::new(
-            "Implement scope parser fix without item ID",
-        ))
+        .git_commit_documented(
+            DocumentedCommitInput::new("Implement scope parser fix without item ID")
+                .with_paths(["crates/backend_core/src/parser.rs"]),
+        )
         .expect_err("must reject undocumented code commit without item_id");
     assert!(matches!(
         missing_item_err,
@@ -1193,6 +1194,7 @@ fn test_git_commit_documented_policy_enforcement_and_atomic_doc_updates() {
                 "BUG-0001",
                 "Add serde default fallback to ScopeItems arrays",
             )
+            .with_paths(["crates/backend_core/src/parser.rs"])
             .with_body("Verified with empty bugs and features arrays in unit tests."),
         )
         .expect("valid documented code commit should succeed");
@@ -1329,16 +1331,18 @@ fn test_git_commit_documented_policy_enforcement_and_atomic_doc_updates() {
 
     // Missing scope_id when require_scope = true and item_id is None must fail
     assert!(matches!(
-        storage.git_commit_documented(DocumentedCommitInput::new(
-            "Workspace commit missing required scope_id"
-        )),
+        storage.git_commit_documented(
+            DocumentedCommitInput::new("Workspace commit missing required scope_id")
+                .with_paths(["crates/backend_core/src/b.rs"])
+        ),
         Err(TrackerError::ValidationError(ref msg)) if msg.contains("scope_id")
     ));
 
     let workspace_scoped_outcome = storage
         .git_commit_documented(
             DocumentedCommitInput::new("Add module b in backend_core with custom policy")
-                .with_scope("backend_core"),
+                .with_scope("backend_core")
+                .with_paths(["crates/backend_core/src/b.rs"]),
         )
         .expect(
             "workspace commit with explicit scope should succeed when require_item_id is false",

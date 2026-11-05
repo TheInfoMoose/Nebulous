@@ -208,8 +208,19 @@ pub enum Commands {
         merged: bool,
 
         /// Automatically create a documented Git commit (`[<ID>](<scope>) <summary>`) in the same step.
+        /// Commits `.tracker/` only unless workspace files are listed with `--path`.
         #[arg(short = 'c', long = "commit-changes")]
         commit_changes: bool,
+
+        /// Explicit project-relative workspace files/directories to include in the `-c` commit.
+        /// Untracked files are committed only when listed by exact path; globs are rejected.
+        #[arg(
+            long = "path",
+            visible_alias = "paths",
+            value_delimiter = ',',
+            requires = "commit_changes"
+        )]
+        paths: Vec<String>,
     },
 
     /// Reopen a `closed` or `merged` item, incrementing `recurrence_count` and `iteration_count`.
@@ -269,9 +280,10 @@ pub enum Commands {
         #[arg(short = 'i', long = "item")]
         item: Option<String>,
 
-        /// Stage all workspace + `.tracker/` changes instead of `.tracker/` only.
-        #[arg(short = 'a', long = "all")]
-        all: bool,
+        /// Explicit project-relative workspace files/directories to commit alongside `.tracker/`.
+        /// Untracked files are committed only when listed by exact path; globs are rejected.
+        #[arg(long = "path", visible_alias = "paths", value_delimiter = ',')]
+        paths: Vec<String>,
 
         /// Optional Personal Access Token override for HTTPS push/pull.
         #[arg(long)]
@@ -637,15 +649,12 @@ pub enum GitCommand {
         #[arg(short = 'b', long = "body", visible_alias = "notes")]
         body: Option<String>,
 
-        /// Stage all modified/untracked workspace files alongside `.tracker/`.
-        #[arg(short = 'a', long = "all")]
-        all: bool,
-
-        /// Stage only `.tracker/` metadata files without workspace code changes.
-        #[arg(long)]
+        /// Stage only `.tracker/` metadata files (the default when no `--path` is given).
+        #[arg(long, conflicts_with = "paths")]
         tracker_only: bool,
 
-        /// Optional explicit workspace-relative file paths to stage alongside `.tracker/`.
+        /// Explicit project-relative workspace files/directories to stage alongside `.tracker/`.
+        /// Untracked files are staged only when listed by exact path; globs are rejected.
         #[arg(long = "path", visible_alias = "paths", value_delimiter = ',')]
         paths: Vec<String>,
     },

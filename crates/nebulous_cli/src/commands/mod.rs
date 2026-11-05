@@ -6,9 +6,9 @@ use std::str::FromStr;
 use backend_core::{
     load_global_registry, normalize_relative_path_str, register_project, remove_project,
     set_active_project, AgentContextBundle, ComponentDependency, ComponentManifest, ComponentType,
-    CreateItemInput, DocumentedCommitInput, IngestionOptions, ItemStatus, ItemType, McpServer,
-    PhaseStatus, PinnedReleaseConfig, PreviousFix, ProjectCounters, RegisteredProject, Result,
-    ScopeManifest, Severity, TrackerError, TrackerStorage,
+    CreateItemInput, DocumentedCommitInput, IngestionOptions, ItemDetail, ItemStatus, ItemType,
+    McpServer, PhaseStatus, PinnedReleaseConfig, PreviousFix, ProjectCounters, RegisteredProject,
+    Result, ScopeManifest, Severity, TrackerError, TrackerStorage,
 };
 use serde::Serialize;
 
@@ -169,6 +169,7 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
             commit,
             merged,
             commit_changes,
+            paths,
         }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_close(
@@ -178,6 +179,7 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
                 commit.as_deref(),
                 *merged,
                 *commit_changes,
+                paths,
                 cli.json,
             )
         }
@@ -219,7 +221,7 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
         Some(Commands::Sync {
             message,
             item,
-            all,
+            paths,
             pat,
             commit_only,
         }) => {
@@ -228,7 +230,7 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
                 &storage,
                 message.as_deref(),
                 item.as_deref(),
-                *all,
+                paths,
                 pat.as_deref(),
                 *commit_only,
                 cli.json,
@@ -1130,6 +1132,7 @@ struct CloseOutputJson {
     updated_at: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_close(
     storage: &TrackerStorage,
     id: Option<&str>,
@@ -1137,19 +1140,42 @@ fn handle_close(
     commit: Option<&str>,
     merged: bool,
     commit_changes: bool,
+    paths: &[String],
     json: bool,
 ) -> Result<String> {
     let resolved_id = storage.resolve_active_or_inferred_item_id(id)?;
     let loc = storage.locate_item(&resolved_id)?;
-    let mut detail = storage.close_item(&resolved_id, summary, commit, merged)?;
-    let mut committed_sha = None;
 
-    if commit_changes {
-        let auto_append = storage
-            .read_project()
-            .map(|p| p.git.commit_policy.auto_append_to_desc)
-            .unwrap_or(false);
+    if !commit_changes {
+        let detail = storage.close_item(&resolved_id, summary, commit, merged)?;
+        return render_close(detail, None, summary, json);
+    }
+
+    // `done -c`: validate the commit (paths + commit policy) before mutating anything, so a
+    // rejected commit leaves the item open with no new fix entry.
+    let commit_input = DocumentedCommitInput {
+        item_id: Some(resolved_id.clone()),
+        scope_id: Some(loc.scope_id.clone()),
+        summary: summary.to_string(),
+        body: None,
+        tracker_only: paths.is_empty(),
+        paths: paths.to_vec(),
+    };
+    storage.validate_documented_commit(&commit_input)?;
+
+    // Snapshot for rollback if the commit itself fails after the item was closed.
+    let (_, snapshot) = storage.load_item_detail_by_id(&resolved_id)?;
+    let timer_snapshot = storage.read_active_timer().ok().flatten();
+
+    let mut detail = storage.close_item(&resolved_id, summary, commit, merged)?;
+    let auto_append = storage
+        .read_project()
+        .map(|p| p.git.commit_policy.auto_append_to_desc)
+        .unwrap_or(false);
+
+    let commit_result = (|| -> Result<String> {
         if auto_append && !detail.manifest.history.previous_fixes.is_empty() {
+            // The documented commit records the fix entry with its real SHA.
             detail.manifest.history.previous_fixes.pop();
             storage.write_item_manifest(
                 &loc.phase_id,
@@ -1158,18 +1184,31 @@ fn handle_close(
                 &detail.manifest,
             )?;
         }
-        let outcome = storage.git_commit_documented(DocumentedCommitInput {
-            item_id: Some(detail.manifest.item.id.clone()),
-            scope_id: Some(loc.scope_id.clone()),
-            summary: summary.to_string(),
-            body: None,
-            tracker_only: false,
-            paths: Vec::new(),
-        })?;
-        committed_sha = Some(outcome.commit_sha);
-        detail = storage.load_item_detail_by_id(&detail.manifest.item.id)?.1;
-    }
+        Ok(storage.git_commit_documented(commit_input)?.commit_sha)
+    })();
 
+    match commit_result {
+        Ok(sha) => {
+            let detail = storage.load_item_detail_by_id(&resolved_id)?.1;
+            render_close(detail, Some(sha), summary, json)
+        }
+        Err(err) => {
+            let _ = storage.write_item_detail(&loc.phase_id, &loc.scope_id, &snapshot);
+            let _ = storage.reconcile_indexes();
+            if let Some(timer) = timer_snapshot {
+                let _ = storage.write_active_timer(&timer);
+            }
+            Err(err)
+        }
+    }
+}
+
+fn render_close(
+    detail: ItemDetail,
+    committed_sha: Option<String>,
+    summary: &str,
+    json: bool,
+) -> Result<String> {
     let latest_fix = detail.manifest.history.previous_fixes.last().cloned();
     let fixes_count = detail.manifest.history.previous_fixes.len();
 
@@ -1558,12 +1597,12 @@ fn handle_sync(
     storage: &TrackerStorage,
     message: Option<&str>,
     item: Option<&str>,
-    include_workspace: bool,
+    paths: &[String],
     pat: Option<&str>,
     commit_only: bool,
     json: bool,
 ) -> Result<String> {
-    let sha = if item.is_some() || include_workspace {
+    let sha = if item.is_some() || !paths.is_empty() {
         let summary = message
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -1574,8 +1613,8 @@ fn handle_sync(
             scope_id: None,
             summary,
             body: None,
-            tracker_only: !include_workspace && item.is_none(),
-            paths: Vec::new(),
+            tracker_only: paths.is_empty(),
+            paths: paths.to_vec(),
         })?;
         if !commit_only {
             let _ = storage.git_sync(message, pat)?;
@@ -2666,7 +2705,6 @@ fn handle_git(storage: &TrackerStorage, action: &GitCommand, json: bool) -> Resu
             summary,
             scope,
             body,
-            all,
             tracker_only,
             paths,
         } => {
@@ -2675,7 +2713,7 @@ fn handle_git(storage: &TrackerStorage, action: &GitCommand, json: bool) -> Resu
                 scope_id: scope.clone(),
                 summary: summary.clone(),
                 body: body.clone(),
-                tracker_only: *tracker_only && !*all,
+                tracker_only: *tracker_only || paths.is_empty(),
                 paths: paths.clone(),
             })?;
 
@@ -2699,7 +2737,7 @@ fn handle_git(storage: &TrackerStorage, action: &GitCommand, json: bool) -> Resu
             storage,
             message.as_deref(),
             None,
-            false,
+            &[],
             pat.as_deref(),
             *commit_only,
             json,

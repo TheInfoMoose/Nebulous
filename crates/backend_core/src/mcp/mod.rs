@@ -863,7 +863,7 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "git_pull".to_string(),
-                description: "Pulls (fast-forward or merge with automatic .tracker/ index conflict resolution) from the configured remote and reconciles .tracker/ indexes.".to_string(),
+                description: "Pulls the current HEAD branch (fast-forward or merge with automatic .tracker/ index conflict resolution) from the configured remote and reconciles .tracker/ indexes. Errors if HEAD is not on the configured [git] branch; aborts without writing when local uncommitted changes would be overwritten.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -873,7 +873,7 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "git_push".to_string(),
-                description: "Pushes the configured branch to the remote repository using SecureStorage PAT or SSH credentials.".to_string(),
+                description: "Pushes the current HEAD branch to the remote repository using SecureStorage PAT or SSH credentials. Errors if HEAD is not on the configured [git] branch.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -883,7 +883,7 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "git_commit_documented".to_string(),
-                description: "Stages workspace and/or .tracker/ changes, enforces [git.commit_policy], and atomically records the commit SHA and changed file list in item.toml and desc.md.".to_string(),
+                description: "Commits .tracker/ changes (default) or .tracker/ plus explicitly listed workspace paths, enforces [git.commit_policy], and atomically records the commit SHA and changed file list in item.toml and desc.md. Never stages unlisted or untracked workspace files and never modifies the user's other staged changes.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -891,8 +891,8 @@ impl McpServer {
                         "scope_id": { "type": "string", "description": "Optional domain scope ID override." },
                         "summary": { "type": "string", "description": "Commit summary message." },
                         "body": { "type": "string", "description": "Optional extended commit notes." },
-                        "tracker_only": { "type": "boolean", "description": "When true, stages only .tracker/ files." },
-                        "paths": { "type": "array", "items": { "type": "string" }, "description": "Optional explicit workspace-relative paths to stage." }
+                        "tracker_only": { "type": "boolean", "default": true, "description": "When true (default), stages only .tracker/ files. Set false together with `paths` to commit workspace files." },
+                        "paths": { "type": "array", "items": { "type": "string" }, "description": "Explicit project-relative files or directories to stage (required when tracker_only is false). Glob metacharacters, absolute paths, and '..' are rejected; untracked files are staged only when listed by exact path." }
                     },
                     "required": ["summary"]
                 }),
@@ -2143,10 +2143,13 @@ impl McpServer {
             summary: String,
             #[serde(default, alias = "notes")]
             body: Option<String>,
-            #[serde(default)]
+            #[serde(default = "default_tracker_only")]
             tracker_only: bool,
             #[serde(default)]
             paths: Vec<String>,
+        }
+        fn default_tracker_only() -> bool {
+            true
         }
 
         let parsed: Args = serde_json::from_value(args).map_err(|e| {

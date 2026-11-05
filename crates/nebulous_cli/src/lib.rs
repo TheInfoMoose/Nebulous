@@ -266,15 +266,17 @@ mod tests {
             "BUG-0001",
             "-m",
             "Fix deserialization",
-            "--all",
+            "--path",
+            "src/a.rs,src/b.rs",
         ])
         .unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Git {
-                action: GitCommand::Commit { all: true, .. }
-            })
+                action: GitCommand::Commit { ref paths, .. }
+            }) if paths.len() == 2
         ));
+        assert!(Cli::try_parse_from(["neb", "git", "commit", "-m", "x", "--all"]).is_err());
 
         // 21. mcp
         let cli = Cli::try_parse_from(["neb", "mcp"]).unwrap();

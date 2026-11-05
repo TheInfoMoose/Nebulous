@@ -976,7 +976,7 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
         .unwrap();
     assert_eq!(xanmod_dep.current_version, "6.12.4-1");
 
-    // 4. `neb git status` and `neb git commit -i <ITEM_ID> -m <SUMMARY> --all`
+    // 4. `neb git status` and `neb git commit -i <ITEM_ID> -m <SUMMARY> --path <FILES>`
     let git_status_before =
         run_neb_json_with_env(&["--root", alpha_str, "git", "status"], None, &cfg_dir);
     assert_eq!(git_status_before["workspace_dirty"], true);
@@ -991,7 +991,8 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
             "commit",
             "-m",
             "Undocumented workspace commit attempt",
-            "--all",
+            "--path",
+            "iso/build_iso.sh",
         ],
         None,
         &cfg_dir,
@@ -1001,7 +1002,15 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
         "undocumented workspace commit must be rejected by commit_policy"
     );
 
-    // Documented commit with `-i BUG-0001 -m <SUMMARY> --all` succeeds and updates item.toml + desc.md atomically
+    // `--all` was removed: whole-repo staging is no longer possible
+    let all_flag = run_neb_with_env(
+        &["--root", alpha_str, "git", "commit", "-m", "x", "--all"],
+        None,
+        &cfg_dir,
+    );
+    assert!(!all_flag.status.success());
+
+    // Documented commit with `-i BUG-0001 -m <SUMMARY> --path <FILES>` succeeds and updates item.toml + desc.md atomically
     let commit_json = run_neb_json_with_env(
         &[
             "--root",
@@ -1012,7 +1021,8 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
             "BUG-0001",
             "-m",
             "Restore XanMod 6.12.4-1 pin and stabilize ISO build script",
-            "--all",
+            "--path",
+            "crates/core_lib/Cargo.toml,crates/core_lib/src/lib.rs,crates/core_lib/nebulous.component.toml,iso/build_iso.sh,iso/nebulous.component.toml",
         ],
         None,
         &cfg_dir,

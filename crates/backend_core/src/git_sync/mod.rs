@@ -4,8 +4,9 @@ use std::sync::{Mutex, OnceLock};
 
 use chrono::Utc;
 use git2::{
-    build::CheckoutBuilder, BranchType, Cred, CredentialType, FetchOptions, IndexAddOption, Oid,
-    PushOptions, RemoteCallbacks, Repository, Signature, Status, StatusOptions,
+    build::CheckoutBuilder, BranchType, Cred, CredentialType, FetchOptions, Index, IndexAddOption,
+    IndexEntry, IndexTime, Oid, PushOptions, RemoteCallbacks, Repository, Signature, Status,
+    StatusOptions, Tree,
 };
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +41,11 @@ pub struct GitRepoStatus {
 }
 
 /// Input parameters for [`TrackerStorage::git_commit_documented`].
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Commits are `.tracker/`-only by default. Workspace files are committed only when
+/// `tracker_only == false` **and** each file or directory is listed explicitly in `paths`;
+/// untracked files are staged only when their exact path is listed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentedCommitInput {
     /// Linked work item ID (`BUG-XXXX` or `FEAT-XXXX`).
     /// Required for workspace code commits when `commit_policy.require_item_id` is `true`.
@@ -55,50 +60,57 @@ pub struct DocumentedCommitInput {
     /// Optional extended commit body or agent notes.
     #[serde(default)]
     pub body: Option<String>,
-    /// When `true`, stages only `.tracker/` files. When `false`, stages workspace code files + `.tracker/`.
-    #[serde(default)]
+    /// When `true` (the default), stages only `.tracker/` files. When `false`, stages `.tracker/`
+    /// plus the explicitly listed workspace `paths` (which must be non-empty).
+    #[serde(default = "default_tracker_only")]
     pub tracker_only: bool,
-    /// Optional explicit list of workspace-relative file paths to stage alongside `.tracker/`.
-    /// When empty and `tracker_only == false`, stages all dirty workspace files.
+    /// Explicit project-root-relative file or directory paths to stage alongside `.tracker/`.
+    /// Glob metacharacters (`* ? [ ] { }`), absolute paths, and `..` segments are rejected.
+    /// Directories stage only changes to already-tracked files.
     #[serde(default)]
     pub paths: Vec<String>,
 }
 
-impl DocumentedCommitInput {
-    /// Creates a new `DocumentedCommitInput` for a workspace + `.tracker/` commit with `summary`.
-    pub fn new(summary: impl Into<String>) -> Self {
+fn default_tracker_only() -> bool {
+    true
+}
+
+impl Default for DocumentedCommitInput {
+    fn default() -> Self {
         Self {
             item_id: None,
             scope_id: None,
-            summary: summary.into(),
+            summary: String::new(),
             body: None,
-            tracker_only: false,
+            tracker_only: true,
             paths: Vec::new(),
         }
     }
+}
 
-    /// Creates a new `DocumentedCommitInput` linked to `item_id` with `summary`.
+impl DocumentedCommitInput {
+    /// Creates a new `.tracker/`-only `DocumentedCommitInput` with `summary`.
+    /// Use [`Self::with_paths`] to include explicit workspace files.
+    pub fn new(summary: impl Into<String>) -> Self {
+        Self {
+            summary: summary.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Creates a new `.tracker/`-only `DocumentedCommitInput` linked to `item_id` with `summary`.
+    /// Use [`Self::with_paths`] to include explicit workspace files.
     pub fn for_item(item_id: impl Into<String>, summary: impl Into<String>) -> Self {
         Self {
             item_id: Some(item_id.into()),
-            scope_id: None,
             summary: summary.into(),
-            body: None,
-            tracker_only: false,
-            paths: Vec::new(),
+            ..Self::default()
         }
     }
 
     /// Creates a new `.tracker/`-only `DocumentedCommitInput`.
     pub fn tracker_only(summary: impl Into<String>) -> Self {
-        Self {
-            item_id: None,
-            scope_id: None,
-            summary: summary.into(),
-            body: None,
-            tracker_only: true,
-            paths: Vec::new(),
-        }
+        Self::new(summary)
     }
 
     pub fn with_item_id(mut self, item_id: impl Into<String>) -> Self {
@@ -126,12 +138,16 @@ impl DocumentedCommitInput {
         self
     }
 
+    /// Sets explicit workspace paths to stage; a non-empty list switches off `tracker_only`.
     pub fn with_paths<I, S>(mut self, paths: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
         self.paths = paths.into_iter().map(Into::into).collect();
+        if !self.paths.is_empty() {
+            self.tracker_only = false;
+        }
         self
     }
 }
@@ -499,7 +515,234 @@ fn is_derived_tracker_index_path(path: &str) -> bool {
             && (normalized.ends_with("/phase.toml") || normalized.ends_with("/scope.toml")))
 }
 
+const GLOB_METACHARS: [char; 6] = ['*', '?', '[', ']', '{', '}'];
+
+fn contains_glob_metachar(path: &str) -> bool {
+    path.contains(GLOB_METACHARS)
+}
+
+fn temp_atomic_filter(path: &Path, _matched_spec: &[u8]) -> i32 {
+    if path.to_string_lossy().contains(".tmp.") {
+        1
+    } else {
+        0
+    }
+}
+
+/// Returns the repository working directory, rejecting bare repositories.
+fn repo_workdir(repo: &Repository) -> Result<PathBuf> {
+    repo.workdir().map(Path::to_path_buf).ok_or_else(|| {
+        TrackerError::GitError("Repository has no working directory (bare repository)".to_string())
+    })
+}
+
+/// Computes the repo-workdir-relative prefix of `project_root` (`""` when the project root is the
+/// workdir itself), so pathspecs work for project roots nested inside a repository.
+fn project_prefix(repo: &Repository, project_root: &Path) -> Result<String> {
+    let workdir = repo_workdir(repo)?.canonicalize()?;
+    let root = project_root.canonicalize()?;
+    let rel = root.strip_prefix(&workdir).map_err(|_| {
+        TrackerError::GitError(format!(
+            "Project root '{}' is outside repository workdir '{}'",
+            root.display(),
+            workdir.display()
+        ))
+    })?;
+    let prefix = normalize_relative_path_str(&rel.to_string_lossy());
+    let prefix = if prefix == "." { String::new() } else { prefix };
+    if contains_glob_metachar(&prefix) {
+        return Err(TrackerError::GitError(format!(
+            "Project root path '{prefix}' contains glob metacharacters and cannot be used as a pathspec"
+        )));
+    }
+    Ok(prefix)
+}
+
+fn join_repo_path(prefix: &str, rel: &str) -> String {
+    if prefix.is_empty() {
+        rel.to_string()
+    } else {
+        format!("{prefix}/{rel}")
+    }
+}
+
+/// Strips the project prefix from a repo-relative path, returning a project-relative path.
+fn strip_repo_prefix<'a>(prefix: &str, repo_rel: &'a str) -> Option<&'a str> {
+    if prefix.is_empty() {
+        return Some(repo_rel);
+    }
+    repo_rel
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('/'))
+}
+
+/// Opens a dedicated repository handle whose index is a private in-memory [`Index`] seeded from
+/// `parent_tree`. The user's on-disk staging area (`.git/index`) is never read or written: the
+/// private index has no backing file, so it cannot be persisted by accident.
+fn open_private_staging(
+    workdir: &Path,
+    parent_tree: Option<&Tree<'_>>,
+) -> Result<(Repository, Index)> {
+    let stage_repo = Repository::open(workdir)?;
+    let mut index = Index::new()?;
+    if let Some(tree) = parent_tree {
+        index.read_tree(tree)?;
+    }
+    stage_repo.set_index(&mut index)?;
+    Ok((stage_repo, index))
+}
+
+/// Stages every add/modify/delete under `<prefix>/.tracker` into the private `index`.
+fn stage_tracker_dir(index: &mut Index, prefix: &str) -> Result<()> {
+    let spec = join_repo_path(prefix, ".tracker");
+    index.update_all([spec.as_str()], None)?;
+    let mut filter_cb = temp_atomic_filter;
+    index.add_all(
+        [spec.as_str()],
+        IndexAddOption::DEFAULT,
+        Some(&mut filter_cb),
+    )?;
+    Ok(())
+}
+
+/// Stages an explicit workspace path (repo-relative) into the private `index`.
+///
+/// Files are added (even if untracked, because they were listed explicitly) or removed when
+/// deleted. Directories only stage modifications/deletions of already-tracked files.
+fn stage_explicit_path(index: &mut Index, workdir: &Path, repo_rel: &str) -> Result<()> {
+    index.update_all([repo_rel], None)?;
+    let abs = workdir.join(repo_rel);
+    if let Ok(meta) = std::fs::symlink_metadata(&abs) {
+        if meta.is_file() || meta.file_type().is_symlink() {
+            index.add_path(Path::new(repo_rel))?;
+        }
+    }
+    Ok(())
+}
+
+/// Lists repo-relative paths with any change (index, worktree, or untracked) under `spec`.
+fn changed_paths_under(repo: &Repository, spec: &str) -> Result<Vec<String>> {
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false)
+        .pathspec(spec);
+    let statuses = repo.statuses(Some(&mut opts))?;
+    let mut out = Vec::new();
+    for entry in statuses.iter() {
+        if entry.status() == Status::CURRENT || entry.status().contains(Status::IGNORED) {
+            continue;
+        }
+        if let Ok(p) = entry.path() {
+            let norm = normalize_relative_path_str(p);
+            if !norm.is_empty() && !is_temp_atomic_path(&norm) {
+                out.push(norm);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn changed_files_between(
+    repo: &Repository,
+    old_tree: Option<&Tree<'_>>,
+    new_tree: &Tree<'_>,
+) -> Result<Vec<String>> {
+    let diff = repo.diff_tree_to_tree(old_tree, Some(new_tree), None)?;
+    let mut changed = Vec::new();
+    for delta in diff.deltas() {
+        for p in [delta.new_file().path(), delta.old_file().path()]
+            .into_iter()
+            .flatten()
+        {
+            let norm = normalize_relative_path_str(&p.to_string_lossy());
+            if !norm.is_empty() && !is_temp_atomic_path(&norm) {
+                changed.push(norm);
+            }
+        }
+    }
+    changed.sort();
+    changed.dedup();
+    Ok(changed)
+}
+
+/// After a commit built from a private index, updates only the committed `paths` in the user's
+/// on-disk index to match `tree` (`git commit --only` semantics). Every other index entry —
+/// including pre-staged hunks in unrelated files — is left byte-identical. Without this the
+/// user's index would still hold the pre-commit blobs and a later `git commit` would revert
+/// Nebulous' commit.
+fn sync_user_index_paths(repo: &Repository, tree: &Tree<'_>, paths: &[String]) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut index = repo.index()?;
+    index.read(true)?;
+    for p in paths {
+        let path = Path::new(p);
+        match tree.get_path(path) {
+            Ok(entry) => {
+                let blob_size = repo
+                    .find_blob(entry.id())
+                    .map(|b| b.size() as u32)
+                    .unwrap_or(0);
+                for stage in 1..=3 {
+                    let _ = index.remove(path, stage);
+                }
+                index.add(&IndexEntry {
+                    ctime: IndexTime::new(0, 0),
+                    mtime: IndexTime::new(0, 0),
+                    dev: 0,
+                    ino: 0,
+                    mode: entry.filemode() as u32,
+                    uid: 0,
+                    gid: 0,
+                    file_size: blob_size,
+                    id: entry.id(),
+                    flags: 0,
+                    flags_extended: 0,
+                    path: p.as_bytes().to_vec(),
+                })?;
+            }
+            Err(_) => {
+                for stage in 0..=3 {
+                    let _ = index.remove(path, stage);
+                }
+            }
+        }
+    }
+    index.write()?;
+    Ok(())
+}
+
+/// Resolves the branch `HEAD` points at and verifies it matches the configured `[git] branch`.
+///
+/// Errors when `HEAD` is detached or on a different branch, so pull/push never move or publish a
+/// branch the user is not on.
+fn checked_head_branch(repo: &Repository, configured_branch: &str) -> Result<String> {
+    let head = repo.find_reference("HEAD")?;
+    let target = head.symbolic_target()?.map(str::to_string).ok_or_else(|| {
+        TrackerError::GitError(
+            "HEAD is detached; check out the configured branch before pull/push".to_string(),
+        )
+    })?;
+    let branch = target
+        .strip_prefix("refs/heads/")
+        .ok_or_else(|| TrackerError::GitError(format!("HEAD points at non-branch ref '{target}'")))?
+        .to_string();
+    let configured = configured_branch.trim();
+    if !configured.is_empty() && configured != branch {
+        return Err(TrackerError::GitError(format!(
+            "HEAD is on branch '{branch}' but [git] branch is configured as '{configured}'; \
+             check out '{configured}' or update project.toml before pull/push"
+        )));
+    }
+    Ok(branch)
+}
+
 /// Stages all modified, added, and deleted files under `.tracker/` and creates a Git commit.
+///
+/// The commit tree is built from a private in-memory index; only the committed `.tracker/`
+/// paths are refreshed in the user's index afterwards.
 ///
 /// Returns `Ok(Some(short_sha))` if a new commit was created, or `Ok(None)` if `.tracker/` had
 /// no changes to commit.
@@ -513,28 +756,15 @@ pub fn stage_and_commit_tracker(
     }
 
     let repo = Repository::discover(repo_path.as_ref())?;
+    let workdir = repo_workdir(&repo)?;
+    let prefix = project_prefix(&repo, repo_path.as_ref())?;
     let parent_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
     let parent_tree = parent_commit.as_ref().and_then(|p| p.tree().ok());
 
-    let mut index = repo.index()?;
-    if let Some(ref pt) = parent_tree {
-        index.read_tree(pt)?;
-    } else {
-        index.clear()?;
-    }
+    let (_stage_repo, mut index) = open_private_staging(&workdir, parent_tree.as_ref())?;
+    stage_tracker_dir(&mut index, &prefix)?;
 
-    let mut filter_cb = |path: &Path, _matched_spec: &[u8]| -> i32 {
-        if path.to_string_lossy().contains(".tmp.") {
-            1
-        } else {
-            0
-        }
-    };
-    index.update_all([".tracker"], None)?;
-    index.add_all([".tracker"], IndexAddOption::DEFAULT, Some(&mut filter_cb))?;
-    index.write()?;
-
-    let tree_id = index.write_tree()?;
+    let tree_id = index.write_tree_to(&repo)?;
     let tree = repo.find_tree(tree_id)?;
 
     if let Some(ref parent) = parent_commit {
@@ -553,6 +783,9 @@ pub fn stage_and_commit_tracker(
         Some(ref parent) => repo.commit(Some("HEAD"), &sig, &sig, commit_msg, &tree, &[parent])?,
         None => repo.commit(Some("HEAD"), &sig, &sig, commit_msg, &tree, &[])?,
     };
+
+    let committed = changed_files_between(&repo, parent_tree.as_ref(), &tree)?;
+    sync_user_index_paths(&repo, &tree, &committed)?;
 
     Ok(Some(short_sha_for_oid(&repo, commit_oid)))
 }
@@ -810,7 +1043,9 @@ pub fn push_repo(
     push_repo_with_auth(repo_path, remote_name, branch, auth)
 }
 
-/// Pushes `branch` to `remote_name` using [`GitAuthMaterial`] (HTTPS PAT or SSH credentials).
+/// Pushes HEAD's branch to `remote_name` using [`GitAuthMaterial`] (HTTPS PAT or SSH credentials).
+///
+/// Errors (without pushing) when HEAD is detached or not on the configured `branch`.
 pub fn push_repo_with_auth(
     repo_path: impl AsRef<Path>,
     remote_name: &str,
@@ -818,37 +1053,24 @@ pub fn push_repo_with_auth(
     auth: GitAuthMaterial,
 ) -> Result<()> {
     let repo = Repository::discover(repo_path.as_ref())?;
-    let effective_branch = resolve_effective_branch(&repo, branch);
+    let head_branch = checked_head_branch(&repo, branch)?;
     let mut remote = repo.find_remote(remote_name)?;
     let mut push_opts = PushOptions::new();
     push_opts.remote_callbacks(build_auth_callbacks(auth));
 
-    let refspec = format!("refs/heads/{effective_branch}:refs/heads/{effective_branch}");
+    let refspec = format!("refs/heads/{head_branch}:refs/heads/{head_branch}");
     remote.push(&[&refspec], Some(&mut push_opts))?;
 
     // Update the local remote-tracking ref so ahead/behind counts immediately reflect the push
-    let local_branch_ref = format!("refs/heads/{effective_branch}");
-    if let Ok(local_ref) = repo
-        .find_reference(&local_branch_ref)
-        .or_else(|_| repo.head())
-    {
+    if let Ok(local_ref) = repo.find_reference(&format!("refs/heads/{head_branch}")) {
         if let Ok(commit) = local_ref.peel_to_commit() {
-            let remote_ref = format!("refs/remotes/{remote_name}/{effective_branch}");
+            let remote_ref = format!("refs/remotes/{remote_name}/{head_branch}");
             let _ = repo.reference(
                 &remote_ref,
                 commit.id(),
                 true,
                 "push update remote tracking ref",
             );
-            if branch.trim() != effective_branch && !branch.trim().is_empty() {
-                let configured_remote_ref = format!("refs/remotes/{remote_name}/{}", branch.trim());
-                let _ = repo.reference(
-                    &configured_remote_ref,
-                    commit.id(),
-                    true,
-                    "push update configured remote tracking ref",
-                );
-            }
         }
     }
 
@@ -881,7 +1103,10 @@ pub fn pull_repo(
 }
 
 /// Fetches and merges (fast-forward or clean merge with automatic `.tracker/` derived index
-/// conflict resolution) `branch` from `remote_name` using [`GitAuthMaterial`].
+/// conflict resolution) HEAD's branch from `remote_name` using [`GitAuthMaterial`].
+///
+/// Errors before fetching when HEAD is detached or not on the configured `branch`. Checkouts are
+/// safe (never forced): local modifications that would be overwritten abort the pull.
 pub fn pull_repo_with_auth(
     repo_path: impl AsRef<Path>,
     remote_name: &str,
@@ -889,34 +1114,27 @@ pub fn pull_repo_with_auth(
     auth: GitAuthMaterial,
 ) -> Result<bool> {
     let repo = Repository::discover(repo_path.as_ref())?;
-    let effective_branch = resolve_effective_branch(&repo, branch);
+    // Refuse before touching any ref when HEAD is not on the configured branch.
+    let head_branch = checked_head_branch(&repo, branch)?;
+    let prefix = project_prefix(&repo, repo_path.as_ref())?;
     let mut remote = repo.find_remote(remote_name)?;
     let mut fetch_opts = FetchOptions::new();
     fetch_opts.remote_callbacks(build_auth_callbacks(auth));
 
-    remote.fetch(&[&effective_branch], Some(&mut fetch_opts), None)?;
+    remote.fetch(&[&head_branch], Some(&mut fetch_opts), None)?;
 
     let fetch_head = match repo.find_reference("FETCH_HEAD") {
         Ok(r) => r,
         Err(_) => return Ok(false),
     };
     let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
-    let remote_tracking_ref = format!("refs/remotes/{remote_name}/{effective_branch}");
+    let remote_tracking_ref = format!("refs/remotes/{remote_name}/{head_branch}");
     let _ = repo.reference(
         &remote_tracking_ref,
         fetch_commit.id(),
         true,
         "pull update remote tracking ref",
     );
-    if branch.trim() != effective_branch && !branch.trim().is_empty() {
-        let configured_remote_ref = format!("refs/remotes/{remote_name}/{}", branch.trim());
-        let _ = repo.reference(
-            &configured_remote_ref,
-            fetch_commit.id(),
-            true,
-            "pull update configured remote tracking ref",
-        );
-    }
 
     let (analysis, _) = repo.merge_analysis(&[&fetch_commit])?;
 
@@ -924,47 +1142,49 @@ pub fn pull_repo_with_auth(
         return Ok(false);
     }
 
-    // Before modifying HEAD, ensure no dirty workspace files collide with files changed on remote
+    // Before modifying HEAD, ensure no dirty workspace or `.tracker/` files collide with files
+    // changed on the remote. Fail closed when the status check itself errors.
     let local_commit_opt = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
     let local_tree_opt = local_commit_opt.as_ref().and_then(|c| c.tree().ok());
     let remote_commit = repo.find_commit(fetch_commit.id())?;
     let remote_tree = remote_commit.tree()?;
-    if let Ok(status) = repo_status_with_hints(
-        repo_path.as_ref(),
-        Some(remote_name),
-        Some(&effective_branch),
-    ) {
-        if !status.dirty_workspace_files.is_empty() {
-            let remote_diff =
-                repo.diff_tree_to_tree(local_tree_opt.as_ref(), Some(&remote_tree), None)?;
-            for delta in remote_diff.deltas() {
-                if let Some(p) = delta.new_file().path().or_else(|| delta.old_file().path()) {
-                    let norm = normalize_relative_path_str(&p.to_string_lossy());
-                    if status.dirty_workspace_files.contains(&norm) {
-                        return Err(TrackerError::GitError(format!(
-                            "Uncommitted local workspace changes in '{norm}' would be overwritten by pull"
-                        )));
-                    }
-                }
+    let status = repo_status_with_hints(repo_path.as_ref(), Some(remote_name), Some(&head_branch))
+        .map_err(|e| {
+            TrackerError::GitError(format!(
+                "Refusing to pull: could not verify working tree is clean ({e})"
+            ))
+        })?;
+    let dirty: Vec<&String> = status
+        .dirty_workspace_files
+        .iter()
+        .chain(status.dirty_tracker_files.iter())
+        .collect();
+    if !dirty.is_empty() {
+        let remote_changed = changed_files_between(&repo, local_tree_opt.as_ref(), &remote_tree)?;
+        for norm in remote_changed {
+            if dirty.iter().any(|d| **d == norm) {
+                return Err(TrackerError::GitError(format!(
+                    "Uncommitted local changes in '{norm}' would be overwritten by pull"
+                )));
             }
         }
     }
 
-    let refname = format!("refs/heads/{effective_branch}");
+    let refname = format!("refs/heads/{head_branch}");
     if analysis.is_fast_forward() {
         repo.checkout_tree(
             remote_tree.as_object(),
             Some(CheckoutBuilder::default().safe()),
         )?;
+        // HEAD is symbolic to `refname` (verified above), so only that ref moves.
         match repo.find_reference(&refname) {
             Ok(mut r) => {
                 r.set_target(fetch_commit.id(), "Fast-Forward pull")?;
             }
             Err(_) => {
-                repo.reference(&refname, fetch_commit.id(), true, "Fast-Forward pull")?;
+                repo.reference(&refname, fetch_commit.id(), false, "Fast-Forward pull")?;
             }
         }
-        repo.set_head(&refname)?;
         return Ok(true);
     }
 
@@ -988,7 +1208,8 @@ pub fn pull_repo_with_auth(
                     .unwrap_or_default()
                     .to_string();
 
-                if is_derived_tracker_index_path(&path_str) {
+                if strip_repo_prefix(&prefix, &path_str).is_some_and(is_derived_tracker_index_path)
+                {
                     if let Some(mut chosen) = conflict.our.or(conflict.their) {
                         chosen.flags = 0;
                         chosen.flags_extended = 0;
@@ -1013,9 +1234,17 @@ pub fn pull_repo_with_auth(
 
         let tree_id = index.write_tree_to(&repo)?;
         let tree = repo.find_tree(tree_id)?;
-        repo.checkout_tree(tree.as_object(), Some(CheckoutBuilder::default().force()))?;
+        // Safe checkout: libgit2 detects conflicts with local modifications before writing any
+        // file, so on conflict nothing is written and HEAD is left untouched.
+        repo.checkout_tree(tree.as_object(), Some(CheckoutBuilder::default().safe()))
+            .map_err(|e| {
+                TrackerError::GitError(format!(
+                    "Pull aborted: merge result conflicts with local changes ({})",
+                    e.message()
+                ))
+            })?;
         let sig = resolve_signature(&repo)?;
-        let msg = format!("Merge remote-tracking branch '{remote_name}/{effective_branch}'");
+        let msg = format!("Merge remote-tracking branch '{remote_name}/{head_branch}'");
         let merge_commit_oid = repo.commit(
             Some("HEAD"),
             &sig,
@@ -1028,22 +1257,36 @@ pub fn pull_repo_with_auth(
         if resolved_derived_index_conflict {
             if let Ok(storage) = TrackerStorage::discover(repo_path.as_ref()) {
                 if storage.reconcile_indexes().is_ok() {
-                    let mut repo_idx = repo.index()?;
-                    let _ = repo_idx.read(true);
-                    repo_idx.add_all([".tracker"], IndexAddOption::DEFAULT, None)?;
-                    repo_idx.update_all([".tracker"], None)?;
-                    repo_idx.write()?;
-                    let reconciled_tree_id = repo_idx.write_tree()?;
-                    let reconciled_tree = repo.find_tree(reconciled_tree_id)?;
-                    let merge_commit = repo.find_commit(merge_commit_oid)?;
-                    let _ = merge_commit.amend(
-                        Some("HEAD"),
-                        None,
-                        None,
-                        None,
-                        None,
-                        Some(&reconciled_tree),
-                    );
+                    // Stage only the reconciled derived indexes into a private index seeded from
+                    // the merge tree; unrelated local `.tracker/` edits stay uncommitted.
+                    let workdir = repo_workdir(&repo)?;
+                    let tracker_spec = join_repo_path(&prefix, ".tracker");
+                    let derived: Vec<String> = changed_paths_under(&repo, &tracker_spec)?
+                        .into_iter()
+                        .filter(|p| {
+                            strip_repo_prefix(&prefix, p).is_some_and(is_derived_tracker_index_path)
+                        })
+                        .collect();
+                    let (_stage_repo, mut private_idx) =
+                        open_private_staging(&workdir, Some(&tree))?;
+                    for p in &derived {
+                        stage_explicit_path(&mut private_idx, &workdir, p)?;
+                    }
+                    let reconciled_tree_id = private_idx.write_tree_to(&repo)?;
+                    if reconciled_tree_id != tree_id {
+                        let reconciled_tree = repo.find_tree(reconciled_tree_id)?;
+                        let merge_commit = repo.find_commit(merge_commit_oid)?;
+                        merge_commit.amend(
+                            Some("HEAD"),
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(&reconciled_tree),
+                        )?;
+                        let amended = changed_files_between(&repo, Some(&tree), &reconciled_tree)?;
+                        sync_user_index_paths(&repo, &reconciled_tree, &amended)?;
+                    }
                 }
             }
         }
@@ -1090,6 +1333,20 @@ fn append_documented_fix_to_markdown(
     }
 
     out
+}
+
+/// Validated, ready-to-commit form of a [`DocumentedCommitInput`].
+struct PreparedCommit {
+    auto_append_to_desc: bool,
+    /// Repo-relative prefix of the project root (`""` when it is the workdir).
+    prefix: String,
+    /// Normalized project-relative workspace paths (never `.tracker/`).
+    workspace_paths: Vec<String>,
+    item_id: Option<String>,
+    loaded_item: Option<(crate::storage::ItemLocation, crate::models::ItemDetail)>,
+    resolved_scope: Option<String>,
+    effective_summary: String,
+    commit_message: String,
 }
 
 impl TrackerStorage {
@@ -1279,35 +1536,102 @@ impl TrackerStorage {
         Ok(updated)
     }
 
-    /// Stages `.tracker/` only OR `.tracker/` + workspace files, validates `[git.commit_policy]`,
-    /// formats a structured commit message, and (when an `item_id` is linked and `auto_append_to_desc`
-    /// is enabled) automatically records the commit SHA, date, changed file list, and summary in
-    /// `item.toml` (`history.previous_fixes`) and `desc.md` (`## Fix Log & Agent Notes`), re-staging
-    /// `.tracker/` so the documentation and code commit remain atomic.
-    pub fn git_commit_documented(
-        &self,
-        input: DocumentedCommitInput,
-    ) -> Result<DocumentedCommitOutcome> {
+    /// Validates `input` against path rules and `[git.commit_policy]` without staging or
+    /// committing anything. [`Self::git_commit_documented`] runs the same checks; callers that
+    /// mutate tracker state before committing (e.g. `neb done -c`) call this first.
+    pub fn validate_documented_commit(&self, input: &DocumentedCommitInput) -> Result<()> {
+        self.prepare_documented_commit(input).map(|_| ())
+    }
+
+    fn prepare_documented_commit(&self, input: &DocumentedCommitInput) -> Result<PreparedCommit> {
         let project = self.read_project()?;
         let policy = &project.git.commit_policy;
         let root = self.project_root();
-        let status =
-            repo_status_with_hints(&root, Some(&project.git.remote), Some(&project.git.branch))?;
+        let repo = Repository::discover(&root)?;
+        let workdir = repo_workdir(&repo)?;
+        let canonical_workdir = workdir.canonicalize()?;
+        let prefix = project_prefix(&repo, &root)?;
+        let head_tree = repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .and_then(|c| c.tree().ok());
 
-        let mut normalized_paths = Vec::with_capacity(input.paths.len());
+        let mut workspace_paths: Vec<String> = Vec::with_capacity(input.paths.len());
         for raw_p in &input.paths {
-            let norm = normalize_relative_path_str(raw_p);
+            let trimmed = raw_p.trim();
+            if trimmed.starts_with('/')
+                || trimmed.starts_with('\\')
+                || Path::new(trimmed).is_absolute()
+                || trimmed.chars().nth(1) == Some(':')
+            {
+                return Err(TrackerError::ValidationError(format!(
+                    "Unsafe path '{raw_p}' (absolute paths are not allowed; use project-relative paths)"
+                )));
+            }
+            if contains_glob_metachar(trimmed) {
+                return Err(TrackerError::ValidationError(format!(
+                    "Unsafe path '{raw_p}' (glob metacharacters * ? [ ] {{ }} are not allowed; list explicit paths)"
+                )));
+            }
+            let norm = normalize_relative_path_str(trimmed);
             if norm.is_empty() || norm == "." {
-                continue;
+                return Err(TrackerError::ValidationError(format!(
+                    "Unsafe path '{raw_p}' (the whole project root cannot be staged; list explicit paths)"
+                )));
             }
             if norm.split('/').any(|seg| seg == "..") {
                 return Err(TrackerError::ValidationError(format!(
                     "Unsafe relative path '{raw_p}' (parent traversal '..' is not allowed)"
                 )));
             }
-            if !normalized_paths.contains(&norm) {
-                normalized_paths.push(norm);
+            if norm.split('/').any(|seg| seg == ".git") {
+                return Err(TrackerError::ValidationError(format!(
+                    "Unsafe path '{raw_p}' (.git internals cannot be staged)"
+                )));
             }
+            if is_tracker_relative_path(&norm) {
+                // `.tracker/` is always staged; listing it is a no-op.
+                continue;
+            }
+
+            let on_disk = root.join(&norm);
+            let exists_on_disk = std::fs::symlink_metadata(&on_disk).is_ok();
+            if exists_on_disk {
+                let resolved_parent = on_disk
+                    .parent()
+                    .map(Path::canonicalize)
+                    .transpose()?
+                    .unwrap_or_else(|| canonical_workdir.clone());
+                if !resolved_parent.starts_with(&canonical_workdir) {
+                    return Err(TrackerError::ValidationError(format!(
+                        "Unsafe path '{raw_p}' resolves outside the repository workdir"
+                    )));
+                }
+            }
+            let repo_rel = join_repo_path(&prefix, &norm);
+            let exists_in_head = head_tree
+                .as_ref()
+                .is_some_and(|t| t.get_path(Path::new(&repo_rel)).is_ok());
+            if !exists_on_disk && !exists_in_head {
+                return Err(TrackerError::ValidationError(format!(
+                    "Path '{norm}' does not exist in workspace or HEAD"
+                )));
+            }
+            if !workspace_paths.contains(&norm) {
+                workspace_paths.push(norm);
+            }
+        }
+
+        if input.tracker_only && !workspace_paths.is_empty() {
+            return Err(TrackerError::ValidationError(
+                "Workspace paths were provided but tracker_only is true; set tracker_only=false to commit workspace files".to_string(),
+            ));
+        }
+        if !input.tracker_only && workspace_paths.is_empty() {
+            return Err(TrackerError::ValidationError(
+                "Workspace commits require explicit `paths` (files or directories relative to the project root); use tracker_only=true to commit only .tracker/".to_string(),
+            ));
         }
 
         let normalized_item_id = input
@@ -1324,17 +1648,7 @@ impl TrackerStorage {
             .map(str::to_string);
         let trimmed_summary = input.summary.trim().to_string();
 
-        let has_workspace_targets = !input.tracker_only
-            && (!status.dirty_workspace_files.is_empty()
-                || normalized_paths
-                    .iter()
-                    .any(|p| !is_tracker_relative_path(p)));
-
-        let is_pure_tracker_commit = normalized_item_id.is_none()
-            && (input.tracker_only
-                || (!has_workspace_targets
-                    && status.tracker_dirty
-                    && normalized_paths.iter().all(|p| is_tracker_relative_path(p))));
+        let is_pure_tracker_commit = normalized_item_id.is_none() && input.tracker_only;
 
         let loaded_item = if let Some(ref item_id) = normalized_item_id {
             Some(self.load_item_detail_by_id(item_id)?)
@@ -1345,7 +1659,7 @@ impl TrackerStorage {
         let resolved_scope = normalized_scope_override
             .or_else(|| loaded_item.as_ref().map(|(loc, _)| loc.scope_id.clone()));
 
-        if !is_pure_tracker_commit || normalized_item_id.is_some() {
+        if !is_pure_tracker_commit {
             if policy.require_item_id && normalized_item_id.is_none() {
                 return Err(TrackerError::ValidationError(
                     "Commit policy requires an item_id (e.g. BUG-0001 or FEAT-0001) when committing workspace code changes".to_string(),
@@ -1379,7 +1693,7 @@ impl TrackerStorage {
         let effective_summary = if trimmed_summary.is_empty() {
             "sync .tracker metadata state".to_string()
         } else {
-            trimmed_summary.clone()
+            trimmed_summary
         };
 
         let header = match (&normalized_item_id, &resolved_scope) {
@@ -1405,54 +1719,46 @@ impl TrackerStorage {
             None => header,
         };
 
+        Ok(PreparedCommit {
+            auto_append_to_desc: policy.auto_append_to_desc,
+            prefix,
+            workspace_paths,
+            item_id: normalized_item_id,
+            loaded_item,
+            resolved_scope,
+            effective_summary,
+            commit_message,
+        })
+    }
+
+    /// Stages `.tracker/` only (the default) OR `.tracker/` + explicitly listed workspace paths,
+    /// validates `[git.commit_policy]`, formats a structured commit message, and (when an `item_id`
+    /// is linked and `auto_append_to_desc` is enabled) automatically records the commit SHA, date,
+    /// changed file list, and summary in `item.toml` (`history.previous_fixes`) and `desc.md`
+    /// (`## Fix Log & Agent Notes`), re-staging `.tracker/` so the documentation and code commit
+    /// remain atomic.
+    ///
+    /// The commit is built from a private in-memory index seeded from `HEAD`; the user's staging
+    /// area is never used as a source, and afterwards only the committed paths are refreshed in it.
+    pub fn git_commit_documented(
+        &self,
+        input: DocumentedCommitInput,
+    ) -> Result<DocumentedCommitOutcome> {
+        let prepared = self.prepare_documented_commit(&input)?;
+        let root = self.project_root();
         let repo = Repository::discover(&root)?;
+        let workdir = repo_workdir(&repo)?;
+        let prefix = prepared.prefix.as_str();
         let parent_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
         let parent_tree = parent_commit.as_ref().and_then(|p| p.tree().ok());
 
-        for p in &normalized_paths {
-            let exists_on_disk = root.join(p).exists();
-            let exists_in_head = parent_tree
-                .as_ref()
-                .is_some_and(|pt| pt.get_path(Path::new(p)).is_ok());
-            if !exists_on_disk && !exists_in_head {
-                return Err(TrackerError::ValidationError(format!(
-                    "Path '{p}' does not exist in workspace or HEAD"
-                )));
-            }
+        let (_stage_repo, mut index) = open_private_staging(&workdir, parent_tree.as_ref())?;
+        stage_tracker_dir(&mut index, prefix)?;
+        for p in &prepared.workspace_paths {
+            stage_explicit_path(&mut index, &workdir, &join_repo_path(prefix, p))?;
         }
 
-        let mut index = repo.index()?;
-        if let Some(ref pt) = parent_tree {
-            index.read_tree(pt)?;
-        } else {
-            index.clear()?;
-        }
-
-        let mut filter_cb = |path: &Path, _matched_spec: &[u8]| -> i32 {
-            if path.to_string_lossy().contains(".tmp.") {
-                1
-            } else {
-                0
-            }
-        };
-
-        // Always stage `.tracker/` metadata changes
-        index.update_all([".tracker"], None)?;
-        index.add_all([".tracker"], IndexAddOption::DEFAULT, Some(&mut filter_cb))?;
-
-        if !input.tracker_only {
-            if !normalized_paths.is_empty() {
-                let specs: Vec<&str> = normalized_paths.iter().map(String::as_str).collect();
-                index.update_all(&specs, None)?;
-                index.add_all(&specs, IndexAddOption::DEFAULT, Some(&mut filter_cb))?;
-            } else {
-                index.update_all(["*"], None)?;
-                index.add_all(["*"], IndexAddOption::DEFAULT, Some(&mut filter_cb))?;
-            }
-        }
-
-        index.write()?;
-        let tree_id = index.write_tree()?;
+        let tree_id = index.write_tree_to(&repo)?;
         let tree = repo.find_tree(tree_id)?;
 
         if let Some(ref parent) = parent_commit {
@@ -1463,19 +1769,7 @@ impl TrackerStorage {
             }
         }
 
-        let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
-        let mut changed_files = Vec::new();
-        for delta in diff.deltas() {
-            if let Some(p) = delta.new_file().path().or_else(|| delta.old_file().path()) {
-                let norm = normalize_relative_path_str(&p.to_string_lossy());
-                if !norm.is_empty() && !is_temp_atomic_path(&norm) {
-                    changed_files.push(norm);
-                }
-            }
-        }
-        changed_files.sort();
-        changed_files.dedup();
-
+        let mut changed_files = changed_files_between(&repo, parent_tree.as_ref(), &tree)?;
         if changed_files.is_empty() {
             return Err(TrackerError::ValidationError(
                 "No changes to commit in workspace or .tracker/".to_string(),
@@ -1483,6 +1777,7 @@ impl TrackerStorage {
         }
 
         let sig = resolve_signature(&repo)?;
+        let commit_message = prepared.commit_message;
         let initial_commit_oid = match parent_commit {
             Some(ref parent) => {
                 repo.commit(Some("HEAD"), &sig, &sig, &commit_message, &tree, &[parent])?
@@ -1492,10 +1787,13 @@ impl TrackerStorage {
 
         let recorded_fix_sha = short_sha_for_oid(&repo, initial_commit_oid);
         let mut final_commit_sha = recorded_fix_sha.clone();
+        let mut final_tree = tree;
         let mut documentation_updated = false;
+        let effective_summary = prepared.effective_summary;
+        let resolved_scope = prepared.resolved_scope;
 
-        if let Some((loc, mut detail)) = loaded_item {
-            if policy.auto_append_to_desc {
+        if let Some((loc, mut detail)) = prepared.loaded_item {
+            if prepared.auto_append_to_desc {
                 let today = Utc::now().format("%Y-%m-%d").to_string();
                 let workspace_or_changed: Vec<String> = changed_files
                     .iter()
@@ -1531,12 +1829,10 @@ impl TrackerStorage {
                 self.write_item_detail(&loc.phase_id, &loc.scope_id, &detail)?;
                 self.sync_parent_indexes_for_item(&loc.phase_id, &loc.scope_id, &detail.manifest)?;
 
-                // Re-stage `.tracker/` and amend so documentation and code changes remain atomic in a single commit
-                let mut repo_idx = repo.index()?;
-                repo_idx.update_all([".tracker"], None)?;
-                repo_idx.add_all([".tracker"], IndexAddOption::DEFAULT, Some(&mut filter_cb))?;
-                repo_idx.write()?;
-                let amended_tree_id = repo_idx.write_tree()?;
+                // Re-stage `.tracker/` into the private index and amend so documentation and
+                // code changes remain atomic in a single commit.
+                stage_tracker_dir(&mut index, prefix)?;
+                let amended_tree_id = index.write_tree_to(&repo)?;
                 let amended_tree = repo.find_tree(amended_tree_id)?;
                 let initial_commit = repo.find_commit(initial_commit_oid)?;
                 let amended_oid = initial_commit.amend(
@@ -1550,40 +1846,19 @@ impl TrackerStorage {
                 final_commit_sha = short_sha_for_oid(&repo, amended_oid);
                 documentation_updated = true;
 
-                // Refresh changed_files to include the atomically staged `.tracker/` item documentation files
-                let final_diff =
-                    repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&amended_tree), None)?;
-                changed_files.clear();
-                for delta in final_diff.deltas() {
-                    if let Some(p) = delta.new_file().path().or_else(|| delta.old_file().path()) {
-                        let norm = normalize_relative_path_str(&p.to_string_lossy());
-                        if !norm.is_empty() && !is_temp_atomic_path(&norm) {
-                            changed_files.push(norm);
-                        }
-                    }
-                }
-                changed_files.sort();
-                changed_files.dedup();
+                changed_files = changed_files_between(&repo, parent_tree.as_ref(), &amended_tree)?;
+                final_tree = amended_tree;
             }
         }
 
-        // Restore any remaining unstaged/staged index state by reading the final committed tree into index
-        if let Ok(head_ref) = repo.head() {
-            if let Ok(head_commit) = head_ref.peel_to_commit() {
-                if let Ok(head_tree) = head_commit.tree() {
-                    if let Ok(mut idx) = repo.index() {
-                        let _ = idx.read_tree(&head_tree);
-                        let _ = idx.write();
-                    }
-                }
-            }
-        }
+        // `git commit --only` semantics: refresh just the committed paths in the user's index.
+        sync_user_index_paths(&repo, &final_tree, &changed_files)?;
 
         Ok(DocumentedCommitOutcome {
             commit_sha: final_commit_sha,
             recorded_fix_sha,
             message: commit_message,
-            item_id: normalized_item_id,
+            item_id: prepared.item_id,
             scope_id: resolved_scope,
             changed_files,
             documentation_updated,
