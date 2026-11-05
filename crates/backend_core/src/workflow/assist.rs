@@ -912,7 +912,7 @@ fn infer_scope_from_git_dirty_files(
         if st == Status::CURRENT || st.contains(Status::IGNORED) {
             continue;
         }
-        let Some(raw_path) = entry.path() else {
+        let Ok(raw_path) = entry.path() else {
             continue;
         };
         let norm = normalize_relative_path_str(raw_path);

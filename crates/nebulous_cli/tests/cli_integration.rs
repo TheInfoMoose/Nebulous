@@ -2014,7 +2014,7 @@ fn test_one_command_bootstrap_predictive_scope_and_zero_id_workflow() {
 
     let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
     assert_eq!(
-        head_commit.summary().unwrap(),
+        head_commit.summary().unwrap().unwrap(),
         "[BUG-0001](api_gateway) Implemented feature"
     );
 }

@@ -149,7 +149,7 @@ impl KeyPairManager {
                         .to_string(),
                 )
             })?;
-            russh::keys::decode_secret_key(trimmed, Some(pass)).map_err(|e| {
+            outer.decrypt(pass).map_err(|e| {
                 TrackerError::KeyringError(format!(
                     "Failed to decode or decrypt OpenSSH private key: {e}"
                 ))
@@ -315,11 +315,6 @@ impl KeyPairManager {
     ) -> Result<SshKeyPairRecord> {
         let openssh_priv = private_key.to_openssh(LineEnding::LF).map_err(|e| {
             TrackerError::KeyringError(format!("Failed to serialize OpenSSH private key: {e}"))
-        })?;
-
-        // Validate that russh can also decode the OpenSSH key cleanly
-        let _ = russh::keys::decode_secret_key(openssh_priv.as_str(), None).map_err(|e| {
-            TrackerError::KeyringError(format!("russh validation of OpenSSH key failed: {e}"))
         })?;
 
         let record = build_record_from_private_key(

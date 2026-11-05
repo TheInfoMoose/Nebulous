@@ -302,7 +302,7 @@ fn head_short_sha_from_repo(repo: &Repository) -> Result<String> {
 fn short_sha_for_oid(repo: &Repository, oid: Oid) -> String {
     if let Ok(commit) = repo.find_commit(oid) {
         if let Ok(buf) = commit.as_object().short_id() {
-            if let Some(s) = buf.as_str() {
+            if let Ok(s) = buf.as_str() {
                 return s.to_string();
             }
         }
@@ -337,7 +337,7 @@ fn repo_status_with_hints(
     let head_branch = repo
         .head()
         .ok()
-        .and_then(|h| h.shorthand().map(str::to_string));
+        .and_then(|h| h.shorthand().ok().map(str::to_string));
     let branch = head_branch
         .clone()
         .or_else(|| branch_hint.map(str::to_string));
@@ -351,7 +351,7 @@ fn repo_status_with_hints(
         .find_remote(remote_name)
         .or_else(|_| repo.find_remote("origin"))
         .ok()
-        .and_then(|r| r.url().map(str::to_string));
+        .and_then(|r| r.url().ok().map(str::to_string));
 
     let (ahead_count, behind_count) =
         compute_ahead_behind(&repo, remote_name, branch_hint, head_branch.as_deref());
@@ -370,7 +370,7 @@ fn repo_status_with_hints(
         if st == Status::CURRENT || st.contains(Status::IGNORED) {
             continue;
         }
-        let Some(raw_path) = entry.path() else {
+        let Ok(raw_path) = entry.path() else {
             continue;
         };
         let normalized = normalize_relative_path_str(raw_path);
@@ -578,7 +578,7 @@ fn resolve_effective_branch(repo: &Repository, configured_branch: &str) -> Strin
         return trimmed.to_string();
     }
     if let Ok(head) = repo.head() {
-        if let Some(shorthand) = head.shorthand() {
+        if let Ok(shorthand) = head.shorthand() {
             if !shorthand.is_empty() && shorthand != "HEAD" {
                 return shorthand.to_string();
             }

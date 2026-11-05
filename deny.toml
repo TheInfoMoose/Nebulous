@@ -1,0 +1,42 @@
+# cargo-deny configuration. CI gate: `cargo deny check advisories bans`.
+# Permanent constraint: zero open RustSec/GHSA advisories against locked crates.
+
+[graph]
+all-features = false
+no-default-features = false
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Vulnerabilities always fail. Unmaintained crates fail when reachable from the workspace.
+unmaintained = "workspace"
+yanked = "deny"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[licenses]
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "WTFPL",
+    "Zlib",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

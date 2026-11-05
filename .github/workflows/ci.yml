@@ -36,6 +36,11 @@ jobs:
       - name: Cache Cargo registry and target directory
         uses: Swatinem/rust-cache@v2
 
+      - name: Supply-chain advisory gate (cargo deny)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans
+
       - name: Check formatting (cargo fmt)
         run: cargo fmt --all -- --check
 
