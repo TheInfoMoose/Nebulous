@@ -46,7 +46,8 @@ impl TrackerStorage {
             });
         }
 
-        let loc = self.locate_item(item_id)?;
+        let normalized_id = item_id.trim().to_ascii_uppercase();
+        let loc = self.locate_item(&normalized_id)?;
         let started_str = started_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
         let mut timer = ActiveTimer::new(
             loc.stub.id,
@@ -58,6 +59,46 @@ impl TrackerStorage {
 
         self.write_active_timer(&timer)?;
         Ok(timer)
+    }
+
+    /// Starts a timer for `item_id`, or switches the active timer to `item_id` by automatically
+    /// stopping and logging elapsed minutes on any previous item's running timer.
+    ///
+    /// If a timer is already running for `item_id`, keeps the existing `started_at` timestamp
+    /// (updating `note` if a new non-empty note is provided).
+    pub fn switch_or_start_timer(
+        &self,
+        item_id: &str,
+        note: Option<String>,
+    ) -> Result<ActiveTimer> {
+        let normalized_id = item_id.trim().to_ascii_uppercase();
+        let loc = self.locate_item(&normalized_id)?;
+        let clean_note = note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+
+        if let Some(mut existing) = self.read_active_timer()? {
+            if existing.item_id == loc.stub.id {
+                let mut changed = false;
+                if existing.phase_id.as_deref() != Some(loc.phase_id.as_str()) {
+                    existing.phase_id = Some(loc.phase_id);
+                    changed = true;
+                }
+                if existing.scope_id.as_deref() != Some(loc.scope_id.as_str()) {
+                    existing.scope_id = Some(loc.scope_id);
+                    changed = true;
+                }
+                if clean_note.is_some() && existing.note != clean_note {
+                    existing.note = clean_note;
+                    changed = true;
+                }
+                if changed {
+                    self.write_active_timer(&existing)?;
+                }
+                return Ok(existing);
+            }
+            let _ = self.stop_timer()?;
+        }
+
+        self.start_timer(&loc.stub.id, clean_note)
     }
 
     /// Stops the currently running timer in `.tracker/.timer.toml`, adds the elapsed minutes to

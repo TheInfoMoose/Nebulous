@@ -15,7 +15,8 @@ pub use item::{
     PreviousFix, Severity,
 };
 pub use phase::{
-    PhaseManifest, PhaseMetadata, PhaseStatus, PhaseSummary, ScopeRegistry, ScopeRegistryEntry,
+    canonical_phase_title, resolve_phase_alias, PhaseManifest, PhaseMetadata, PhaseStatus,
+    PhaseSummary, ScopeRegistry, ScopeRegistryEntry, CANONICAL_PHASES,
 };
 pub use project::{
     GitConfig, GitSyncMode, MetricsConfig, PhaseRegistry, PhaseRegistryEntry, ProjectCounters,

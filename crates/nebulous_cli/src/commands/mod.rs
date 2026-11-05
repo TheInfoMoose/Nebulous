@@ -17,11 +17,22 @@ use crate::args::{
     TimerCommand,
 };
 
-/// Executes a parsed [`Cli`] command and prints the resulting output to `stdout`.
+/// Executes a parsed [`Cli`] command and prints the resulting output to `stdout`
+/// (or launches the interactive Amber-on-Black TUI when invoked in an interactive terminal).
 pub fn execute(cli: &Cli) -> Result<()> {
-    if matches!(cli.command, Commands::Mcp) {
+    if matches!(cli.command, Some(Commands::Mcp)) {
         let mut server = McpServer::discover(cli.root.as_deref());
         return server.serve_stdio();
+    }
+
+    if matches!(cli.command, None | Some(Commands::Tui))
+        && !cli.json
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout())
+    {
+        let storage = resolve_storage(cli.root.as_deref())?;
+        let cwd = resolve_context_cwd(&storage, cli.root.as_deref());
+        return crate::tui::run_tui(storage, cwd);
     }
 
     let output = execute_to_string(cli)?;
@@ -36,25 +47,35 @@ pub fn execute(cli: &Cli) -> Result<()> {
 /// Executes a parsed [`Cli`] command and returns the formatted output string (human or JSON).
 pub fn execute_to_string(cli: &Cli) -> Result<String> {
     match &cli.command {
-        Commands::Init {
+        None | Some(Commands::Tui) => {
+            let storage = resolve_storage(cli.root.as_deref())?;
+            let cwd = resolve_context_cwd(&storage, cli.root.as_deref());
+            handle_next(&storage, cwd.as_deref(), cli.json)
+        }
+        Some(Commands::Init {
             name,
             phase_id,
             phase_title,
-        } => handle_init(
+            no_ingest,
+            no_register,
+        }) => handle_init(
             cli.root.as_deref(),
             name.as_deref(),
             phase_id,
             phase_title,
+            *no_ingest,
+            *no_register,
             cli.json,
         ),
-        Commands::Bug {
+        Some(Commands::Bug {
             title,
             scope,
             phase,
             severity,
             desc,
-        } => {
+        }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
+            let cwd = resolve_context_cwd(&storage, cli.root.as_deref());
             handle_create_item(
                 &storage,
                 ItemType::Bug,
@@ -63,17 +84,19 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
                 scope.as_deref(),
                 *severity,
                 desc.as_deref(),
+                cwd.as_deref(),
                 cli.json,
             )
         }
-        Commands::Feat {
+        Some(Commands::Feat {
             title,
             scope,
             phase,
             severity,
             desc,
-        } => {
+        }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
+            let cwd = resolve_context_cwd(&storage, cli.root.as_deref());
             handle_create_item(
                 &storage,
                 ItemType::Feature,
@@ -82,17 +105,18 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
                 scope.as_deref(),
                 *severity,
                 desc.as_deref(),
+                cwd.as_deref(),
                 cli.json,
             )
         }
-        Commands::List {
+        Some(Commands::List {
             scope,
             phase,
             status,
             item_type,
             stagnant,
             recurring,
-        } => {
+        }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_list(
                 &storage,
@@ -105,37 +129,72 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
                 cli.json,
             )
         }
-        Commands::Show { id } => {
+        Some(Commands::Show { id }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
-            handle_show(&storage, id, cli.json)
+            handle_show(&storage, id.as_deref(), cli.json)
         }
-        Commands::Status { id, status } => {
+        Some(Commands::Start { id, note, copy }) => {
+            let storage = resolve_storage(cli.root.as_deref())?;
+            handle_start(&storage, id.as_deref(), note.clone(), *copy, cli.json)
+        }
+        Some(Commands::Next) => {
+            let storage = resolve_storage(cli.root.as_deref())?;
+            let cwd = resolve_context_cwd(&storage, cli.root.as_deref());
+            handle_next(&storage, cwd.as_deref(), cli.json)
+        }
+        Some(Commands::Move { id, stage, to }) => {
+            let storage = resolve_storage(cli.root.as_deref())?;
+            handle_move(&storage, id.as_deref(), stage, to.as_deref(), cli.json)
+        }
+        Some(Commands::Stage { stage }) => {
+            let storage = resolve_storage(cli.root.as_deref())?;
+            match stage.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(target_stage) => handle_phase(
+                    &storage,
+                    &PhaseCommand::Use {
+                        id: target_stage.to_string(),
+                    },
+                    cli.json,
+                ),
+                None => handle_phase(&storage, &PhaseCommand::List, cli.json),
+            }
+        }
+        Some(Commands::Status { id, status }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_status(&storage, id, *status, cli.json)
         }
-        Commands::Close {
+        Some(Commands::Close {
             id,
             summary,
             commit,
             merged,
-        } => {
+            commit_changes,
+        }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
-            handle_close(&storage, id, summary, commit.as_deref(), *merged, cli.json)
+            handle_close(
+                &storage,
+                id.as_deref(),
+                summary,
+                commit.as_deref(),
+                *merged,
+                *commit_changes,
+                cli.json,
+            )
         }
-        Commands::Reopen { id, reason } => {
+        Some(Commands::Reopen { id, reason }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_reopen(&storage, id, reason.as_deref(), cli.json)
         }
-        Commands::Timer { action } => {
+        Some(Commands::Timer { action }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             let resolved_action = action.clone().unwrap_or(TimerCommand::Status { id: None });
             handle_timer(&storage, &resolved_action, cli.json)
         }
-        Commands::Log {
+        Some(Commands::Log {
             id,
             minutes,
             positional_minutes,
-        } => {
+        }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             let mins = minutes.or(*positional_minutes).ok_or_else(|| {
                 TrackerError::ValidationError(
@@ -145,25 +204,25 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
             })?;
             handle_log(&storage, id, mins, cli.json)
         }
-        Commands::Context {
+        Some(Commands::Context {
             id,
             refs_only,
             copy,
-        } => {
+        }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
-            handle_context(&storage, id, *refs_only, *copy, cli.json)
+            handle_context(&storage, id.as_deref(), *refs_only, *copy, cli.json)
         }
-        Commands::Metrics => {
+        Some(Commands::Metrics) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_metrics(&storage, cli.json)
         }
-        Commands::Sync {
+        Some(Commands::Sync {
             message,
             item,
             all,
             pat,
             commit_only,
-        } => {
+        }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_sync(
                 &storage,
@@ -175,26 +234,26 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
                 cli.json,
             )
         }
-        Commands::SyncIndex => {
+        Some(Commands::SyncIndex) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_sync_index(&storage, cli.json)
         }
-        Commands::Phase { action } => {
+        Some(Commands::Phase { action }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_phase(&storage, action, cli.json)
         }
-        Commands::Scope { action } => {
+        Some(Commands::Scope { action }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_scope(&storage, action, cli.json)
         }
-        Commands::Project { action } => handle_project(action, cli.json),
-        Commands::Ingest {
+        Some(Commands::Project { action }) => handle_project(action, cli.json),
+        Some(Commands::Ingest {
             path,
             positional_path,
             write_manifests,
             promote_all,
             phase,
-        } => {
+        }) => {
             let declared_dir = path.as_deref().or(positional_path.as_deref());
             let (storage, subpath) = resolve_ingest_target(cli.root.as_deref(), declared_dir)?;
             handle_ingest(
@@ -206,15 +265,15 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
                 cli.json,
             )
         }
-        Commands::Component { action } => {
+        Some(Commands::Component { action }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_component(&storage, action, cli.json)
         }
-        Commands::Git { action } => {
+        Some(Commands::Git { action }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_git(&storage, action, cli.json)
         }
-        Commands::Mcp => {
+        Some(Commands::Mcp) => {
             let mut server = McpServer::discover(cli.root.as_deref());
             server.serve_stdio()?;
             Ok(String::new())
@@ -235,6 +294,31 @@ pub fn resolve_storage(root: Option<&Path>) -> Result<TrackerStorage> {
             TrackerStorage::discover(&cwd)
         }
     }
+}
+
+fn resolve_context_cwd(storage: &TrackerStorage, root: Option<&Path>) -> Option<PathBuf> {
+    let project_root = storage
+        .project_root()
+        .canonicalize()
+        .unwrap_or_else(|_| storage.project_root().to_path_buf());
+    if let Some(explicit_root) = root {
+        let explicit_canon = explicit_root
+            .canonicalize()
+            .unwrap_or_else(|_| explicit_root.to_path_buf());
+        if explicit_canon.starts_with(&project_root) && explicit_canon != project_root {
+            return Some(explicit_root.to_path_buf());
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
+        if cwd_canon.starts_with(&project_root) {
+            return Some(cwd);
+        }
+    }
+    if let Some(explicit_root) = root {
+        return Some(explicit_root.to_path_buf());
+    }
+    std::env::current_dir().ok()
 }
 
 fn compute_subpath_within_project(
@@ -395,6 +479,10 @@ struct InitOutputJson {
     tracker_dir: String,
     active_phase: String,
     default_scope: String,
+    phases: Vec<String>,
+    components_ingested: usize,
+    promoted_scopes: Vec<String>,
+    registered_in_global_registry: bool,
 }
 
 fn handle_init(
@@ -402,6 +490,8 @@ fn handle_init(
     name: Option<&str>,
     phase_id: &str,
     phase_title: &str,
+    no_ingest: bool,
+    no_register: bool,
     json: bool,
 ) -> Result<String> {
     let target_root = match root {
@@ -419,13 +509,34 @@ fn handle_init(
         .unwrap_or_else(|| infer_project_name(&target_root));
 
     let storage = TrackerStorage::init(&target_root, &project_name, phase_id, phase_title)?;
-    let _ = register_project(
-        storage.project_root(),
-        Some(&project_name),
-        Vec::new(),
-        true,
-    );
+    let (components_ingested, promoted_scopes) = if !no_ingest {
+        match storage.ingest_project_directory(IngestionOptions::new().with_promote_all(true)) {
+            Ok(report) => (report.components.len(), report.promoted_scopes),
+            Err(_) => (0, Vec::new()),
+        }
+    } else {
+        (0, Vec::new())
+    };
+
+    let registered_in_global_registry = if !no_register {
+        register_project(
+            storage.project_root(),
+            Some(&project_name),
+            Vec::new(),
+            true,
+        )
+        .is_ok()
+    } else {
+        false
+    };
+
     let project = storage.read_project()?;
+    let phases: Vec<String> = project
+        .phases
+        .registry
+        .iter()
+        .map(|p| p.id.clone())
+        .collect();
     let tracker_dir_str = storage.tracker_dir().to_string_lossy().to_string();
 
     if json {
@@ -435,15 +546,21 @@ fn handle_init(
             tracker_dir: tracker_dir_str,
             active_phase: project.project.active_phase,
             default_scope: project.project.default_scope,
+            phases,
+            components_ingested,
+            promoted_scopes,
+            registered_in_global_registry,
         });
     }
 
     Ok(format!(
-        "Initialized Nebulous tracker '{}' at {} (active phase: {}, default scope: {})",
+        "Initialized Nebulous tracker '{}' at {} (active phase: {}, default scope: {}, stages: [{}], components ingested: {})\nNext Suggested Action: Run `neb feat \"<title>\"` or `neb bug \"<title>\"` to capture work, or `neb next` to inspect the queue.",
         project.project.name,
         tracker_dir_str,
         project.project.active_phase,
-        project.project.default_scope
+        project.project.default_scope,
+        phases.join(", "),
+        components_ingested
     ))
 }
 
@@ -470,13 +587,31 @@ fn handle_create_item(
     scope: Option<&str>,
     severity: Severity,
     desc: Option<&str>,
+    cwd: Option<&Path>,
     json: bool,
 ) -> Result<String> {
+    let resolved_scope = match scope.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(explicit) => Some(explicit.to_string()),
+        None => {
+            let inferred = storage.infer_scope_from_context(cwd)?;
+            if let Some(explicit_phase) = phase.map(str::trim).filter(|s| !s.is_empty()) {
+                let target_phase = backend_core::resolve_phase_alias(explicit_phase);
+                if storage.read_scope(target_phase, &inferred).is_ok() {
+                    Some(inferred)
+                } else {
+                    None
+                }
+            } else {
+                Some(inferred)
+            }
+        }
+    };
+
     let input = CreateItemInput {
         item_type,
         title: title.to_string(),
         phase_id: phase.map(str::to_string),
-        scope_id: scope.map(str::to_string),
+        scope_id: resolved_scope,
         severity,
         description: desc.map(str::to_string),
     };
@@ -506,13 +641,14 @@ fn handle_create_item(
     }
 
     Ok(format!(
-        "Created {} {} [{}] in {}/{}: {}",
+        "Created {} {} [{}] in {}/{}: {}\nNext Suggested Action: Run `neb start {}` to begin work and copy the bounded agent prompt.",
         detail.manifest.item.item_type,
         detail.manifest.item.id,
         detail.manifest.item.severity,
         loc.phase_id,
         loc.scope_id,
-        detail.manifest.item.title
+        detail.manifest.item.title,
+        detail.manifest.item.id
     ))
 }
 
@@ -578,7 +714,8 @@ fn handle_list(
     let mut entries = Vec::new();
     for loc in index.all_items() {
         if let Some(p) = phase_filter {
-            if loc.phase_id != p {
+            let resolved_filter = backend_core::resolve_phase_alias(p);
+            if loc.phase_id != p && loc.phase_id != resolved_filter {
                 continue;
             }
         }
@@ -627,7 +764,7 @@ fn handle_list(
     }
 
     if entries.is_empty() {
-        return Ok("No matching items found.".to_string());
+        return Ok("No matching items found.\nNext Suggested Action: Run `neb feat \"<title>\"` or `neb bug \"<title>\"` to capture a work item.".to_string());
     }
 
     let mut out = String::new();
@@ -659,7 +796,11 @@ fn handle_list(
             badge_suffix
         );
     }
-    let _ = write!(out, "\nTotal: {} item(s)", entries.len());
+    let _ = writeln!(out, "\nTotal: {} item(s)", entries.len());
+    let _ = write!(
+        out,
+        "Next Suggested Action: Run `neb start` to begin the top item, or `neb next` for ranked recommendations."
+    );
     Ok(out)
 }
 
@@ -673,8 +814,9 @@ struct ShowOutputJson {
     description_markdown: String,
 }
 
-fn handle_show(storage: &TrackerStorage, id: &str, json: bool) -> Result<String> {
-    let (loc, detail) = storage.load_item_detail_by_id(id)?;
+fn handle_show(storage: &TrackerStorage, id: Option<&str>, json: bool) -> Result<String> {
+    let resolved_id = storage.resolve_active_or_inferred_item_id(id)?;
+    let (loc, detail) = storage.load_item_detail_by_id(&resolved_id)?;
 
     if json {
         return to_json_pretty(&ShowOutputJson {
@@ -732,6 +874,211 @@ fn handle_show(storage: &TrackerStorage, id: &str, json: bool) -> Result<String>
 }
 
 #[derive(Debug, Serialize)]
+struct StartOutputJson {
+    id: String,
+    #[serde(rename = "type")]
+    item_type: ItemType,
+    title: String,
+    status: ItemStatus,
+    severity: Severity,
+    phase_id: String,
+    scope_id: String,
+    timer_active: bool,
+    started_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    copied_to_clipboard: bool,
+    agent_context: AgentContextBundle,
+}
+
+fn handle_start(
+    storage: &TrackerStorage,
+    id: Option<&str>,
+    note: Option<String>,
+    copy: bool,
+    json: bool,
+) -> Result<String> {
+    let (loc, detail, timer, context_bundle) = storage.start_work_item(id, note)?;
+    let copied_to_clipboard = if copy {
+        try_copy_to_clipboard(&context_bundle.bounded_prompt)
+    } else {
+        false
+    };
+
+    if json {
+        return to_json_pretty(&StartOutputJson {
+            id: detail.manifest.item.id,
+            item_type: detail.manifest.item.item_type,
+            title: detail.manifest.item.title,
+            status: detail.manifest.item.status,
+            severity: detail.manifest.item.severity,
+            phase_id: loc.phase_id,
+            scope_id: loc.scope_id,
+            timer_active: true,
+            started_at: timer.started_at,
+            note: timer.note,
+            copied_to_clipboard,
+            agent_context: context_bundle,
+        });
+    }
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "Started {} [{}] ({}/{}) — {}",
+        detail.manifest.item.id,
+        detail.manifest.item.status,
+        loc.phase_id,
+        loc.scope_id,
+        detail.manifest.item.title
+    );
+    let _ = writeln!(
+        out,
+        "Timer active since {} (clipboard copied: {})",
+        timer.started_at, copied_to_clipboard
+    );
+    let _ = writeln!(out, "Agent Context Refs: {}", context_bundle.file_refs);
+    let _ = write!(
+        out,
+        "Next Suggested Action: Implement the fix/feature, then run `neb done -m \"<summary>\"` (or `neb move prod` to advance stage)."
+    );
+    Ok(out)
+}
+
+fn handle_next(storage: &TrackerStorage, cwd: Option<&Path>, json: bool) -> Result<String> {
+    let report = storage.compute_whats_next(cwd)?;
+    if json {
+        return to_json_pretty(&report);
+    }
+
+    let mut out = String::new();
+    let _ = writeln!(out, "=== Nebulous What's Next & Active Status ===");
+    let _ = writeln!(out, "Active Stage:   {}", report.active_phase);
+    let _ = writeln!(out, "Inferred Scope: {}", report.inferred_scope);
+    match &report.active_timer {
+        Some(timer) => {
+            let _ = writeln!(
+                out,
+                "Active Timer:   {} ({}m / {}s elapsed since {})",
+                timer.timer.item_id,
+                timer.elapsed_minutes,
+                timer.elapsed_seconds,
+                timer.timer.started_at
+            );
+        }
+        None => {
+            let _ = writeln!(out, "Active Timer:   none");
+        }
+    }
+
+    if let Some(ref stage_hint) = report.stage_advancement_hint {
+        let _ = writeln!(out, "Stage Hint:     {stage_hint}");
+    }
+    if !report.missing_fields.is_empty() {
+        let _ = writeln!(out, "Missing Spec:   {}", report.missing_fields.join(", "));
+    }
+
+    let _ = writeln!(
+        out,
+        "\n--- Ranked Recommendations ({}) ---",
+        report.recommendations.len()
+    );
+    if report.recommendations.is_empty() {
+        let _ = writeln!(
+            out,
+            "  No open items or actions queued. Run `neb feat \"<title>\"` or `neb bug \"<title>\"` to capture work."
+        );
+    } else {
+        for rec in &report.recommendations {
+            let item_label = rec.item_id.as_deref().unwrap_or("-");
+            let _ = writeln!(
+                out,
+                "  {}. [{}] {} — {}\n     -> Run: `{}`",
+                rec.rank, rec.kind, item_label, rec.summary, rec.suggested_command
+            );
+        }
+    }
+
+    let top_cmd = report
+        .recommendations
+        .first()
+        .map(|r| r.suggested_command.as_str())
+        .unwrap_or("neb feat \"<title>\"");
+    let _ = write!(out, "\nNext Suggested Action: Run `{top_cmd}`");
+    Ok(out)
+}
+
+#[derive(Debug, Serialize)]
+struct MoveOutputJson {
+    id: String,
+    from_phase: String,
+    to_phase: String,
+    scope_id: String,
+    status: ItemStatus,
+    updated_at: String,
+}
+
+fn handle_move(
+    storage: &TrackerStorage,
+    id: Option<&str>,
+    stage: &str,
+    to: Option<&str>,
+    json: bool,
+) -> Result<String> {
+    let explicit_to = to.map(str::trim).filter(|s| !s.is_empty());
+    let pos_id = id.map(str::trim).filter(|s| !s.is_empty());
+    let pos_stage = {
+        let trimmed = stage.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    };
+
+    let (resolved_id, target_stage) = match (explicit_to, pos_id, pos_stage) {
+        (Some(target), maybe_id, _) => (
+            storage.resolve_active_or_inferred_item_id(maybe_id)?,
+            target.to_string(),
+        ),
+        (None, Some(explicit_id), Some(target)) => (explicit_id.to_string(), target.to_string()),
+        (None, Some(only_arg), None) => (
+            storage.resolve_active_or_inferred_item_id(None)?,
+            only_arg.to_string(),
+        ),
+        (None, None, Some(target)) => (
+            storage.resolve_active_or_inferred_item_id(None)?,
+            target.to_string(),
+        ),
+        (None, None, None) => {
+            return Err(TrackerError::ValidationError(
+                "Target stage is required (e.g. `neb move prod` or `neb move <ID> prod`)"
+                    .to_string(),
+            ));
+        }
+    };
+
+    let prev_loc = storage.locate_item(&resolved_id)?;
+    let (new_loc, detail) = storage.move_item_to_phase(&resolved_id, &target_stage)?;
+
+    if json {
+        return to_json_pretty(&MoveOutputJson {
+            id: detail.manifest.item.id,
+            from_phase: prev_loc.phase_id,
+            to_phase: new_loc.phase_id,
+            scope_id: new_loc.scope_id,
+            status: detail.manifest.item.status,
+            updated_at: detail.manifest.item.updated_at,
+        });
+    }
+
+    Ok(format!(
+        "Moved {} from '{}' -> '{}' (scope: {})",
+        detail.manifest.item.id, prev_loc.phase_id, new_loc.phase_id, new_loc.scope_id
+    ))
+}
+
+#[derive(Debug, Serialize)]
 struct StatusUpdateOutputJson {
     id: String,
     status: ItemStatus,
@@ -778,18 +1125,51 @@ struct CloseOutputJson {
     status: ItemStatus,
     fix: Option<PreviousFix>,
     previous_fixes_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    committed_sha: Option<String>,
     updated_at: String,
 }
 
 fn handle_close(
     storage: &TrackerStorage,
-    id: &str,
+    id: Option<&str>,
     summary: &str,
     commit: Option<&str>,
     merged: bool,
+    commit_changes: bool,
     json: bool,
 ) -> Result<String> {
-    let detail = storage.close_item(id, summary, commit, merged)?;
+    let resolved_id = storage.resolve_active_or_inferred_item_id(id)?;
+    let loc = storage.locate_item(&resolved_id)?;
+    let mut detail = storage.close_item(&resolved_id, summary, commit, merged)?;
+    let mut committed_sha = None;
+
+    if commit_changes {
+        let auto_append = storage
+            .read_project()
+            .map(|p| p.git.commit_policy.auto_append_to_desc)
+            .unwrap_or(false);
+        if auto_append && !detail.manifest.history.previous_fixes.is_empty() {
+            detail.manifest.history.previous_fixes.pop();
+            storage.write_item_manifest(
+                &loc.phase_id,
+                &loc.scope_id,
+                &detail.manifest.item.id,
+                &detail.manifest,
+            )?;
+        }
+        let outcome = storage.git_commit_documented(DocumentedCommitInput {
+            item_id: Some(detail.manifest.item.id.clone()),
+            scope_id: Some(loc.scope_id.clone()),
+            summary: summary.to_string(),
+            body: None,
+            tracker_only: false,
+            paths: Vec::new(),
+        })?;
+        committed_sha = Some(outcome.commit_sha);
+        detail = storage.load_item_detail_by_id(&detail.manifest.item.id)?.1;
+    }
+
     let latest_fix = detail.manifest.history.previous_fixes.last().cloned();
     let fixes_count = detail.manifest.history.previous_fixes.len();
 
@@ -799,13 +1179,14 @@ fn handle_close(
             status: detail.manifest.item.status,
             fix: latest_fix,
             previous_fixes_count: fixes_count,
+            committed_sha,
             updated_at: detail.manifest.item.updated_at,
         });
     }
 
-    let commit_str = latest_fix
-        .as_ref()
-        .map(|f| f.commit.as_str())
+    let commit_str = committed_sha
+        .as_deref()
+        .or_else(|| latest_fix.as_ref().map(|f| f.commit.as_str()))
         .unwrap_or("uncommitted");
     let summary_str = latest_fix
         .as_ref()
@@ -813,7 +1194,7 @@ fn handle_close(
         .unwrap_or(summary);
 
     Ok(format!(
-        "Closed {} as {} (commit: {}, summary: \"{}\")",
+        "Closed {} as {} (commit: {}, summary: \"{}\")\nNext Suggested Action: Run `neb next` or `neb start` to pick up the next work item.",
         detail.manifest.item.id, detail.manifest.item.status, commit_str, summary_str
     ))
 }
@@ -1027,12 +1408,13 @@ struct ContextOutputJson {
 
 fn handle_context(
     storage: &TrackerStorage,
-    id: &str,
+    id: Option<&str>,
     refs_only: bool,
     copy: bool,
     json: bool,
 ) -> Result<String> {
-    let bundle = storage.export_agent_context(id)?;
+    let resolved_id = storage.resolve_active_or_inferred_item_id(id)?;
+    let bundle = storage.export_agent_context(&resolved_id)?;
     let selected_output = if refs_only {
         bundle.file_refs.clone()
     } else {
@@ -1359,7 +1741,7 @@ fn handle_phase(storage: &TrackerStorage, action: &PhaseCommand, json: bool) -> 
         }
         PhaseCommand::Use { id } => {
             let project = storage.set_active_phase(id)?;
-            let phase = storage.read_phase(id)?;
+            let phase = storage.read_phase(&project.project.active_phase)?;
 
             if json {
                 return to_json_pretty(&PhaseMutationOutputJson {

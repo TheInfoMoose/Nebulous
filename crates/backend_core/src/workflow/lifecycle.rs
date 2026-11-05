@@ -3,12 +3,13 @@ use std::fs;
 
 use chrono::Utc;
 
+use crate::agent_context::AgentContextBundle;
 use crate::error::{Result, TrackerError};
 use crate::models::{
-    ItemDetail, ItemEffort, ItemHistory, ItemManifest, ItemMetadata, ItemStatus, ItemStub,
-    ItemType, PhaseManifest, PhaseMetadata, PhaseRegistryEntry, PhaseStatus, PhaseSummary,
-    PreviousFix, ProjectManifest, ScopeItems, ScopeManifest, ScopeMetadata, ScopeRegistry,
-    ScopeRegistryEntry, Severity,
+    canonical_phase_title, resolve_phase_alias, ActiveTimer, ItemDetail, ItemEffort, ItemHistory,
+    ItemManifest, ItemMetadata, ItemStatus, ItemStub, ItemType, PhaseManifest, PhaseMetadata,
+    PhaseRegistryEntry, PhaseStatus, PhaseSummary, PreviousFix, ProjectManifest, ScopeItems,
+    ScopeManifest, ScopeMetadata, ScopeRegistry, ScopeRegistryEntry, Severity,
 };
 use crate::storage::id::parse_item_id_number;
 use crate::storage::reconcile::infer_default_scope_type;
@@ -195,14 +196,85 @@ impl TrackerStorage {
         })
     }
 
+    /// Starts work on `item_id` (or the top recommended `open` / active item when `item_id` is `None`):
+    ///
+    /// 1. Resolves `item_id` (if `None`, picks the top recommended `open` item from [`Self::compute_whats_next`] or the active item).
+    /// 2. If another timer is currently running for a *different* item, automatically stops that previous timer and logs its elapsed minutes (`stop_timer()`) instead of failing with `TimerAlreadyRunning`.
+    /// 3. Transitions the target item's status to [`ItemStatus::InProgress`] (`update_item_status`).
+    /// 4. Starts (or keeps) the active timer for the target item (`.timer.toml`).
+    /// 5. Builds and returns the [`AgentContextBundle`] so the caller can immediately display/copy the prompt.
+    pub fn start_work_item(
+        &self,
+        item_id: Option<&str>,
+        note: Option<String>,
+    ) -> Result<(ItemLocation, ItemDetail, ActiveTimer, AgentContextBundle)> {
+        let resolved_id = match item_id.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(explicit) => explicit.to_ascii_uppercase(),
+            None => {
+                let whats_next = self.compute_whats_next(None)?;
+                if let Some(open_id) = whats_next.top_open_item_id() {
+                    open_id.to_string()
+                } else if let Some(any_id) = whats_next.top_item_id() {
+                    any_id.to_string()
+                } else {
+                    self.resolve_active_or_inferred_item_id(None)?
+                }
+            }
+        };
+
+        let target_loc = self.locate_item(&resolved_id)?;
+        let canonical_id = target_loc.stub.id;
+
+        if let Some(active) = self.read_active_timer()? {
+            if active.item_id != canonical_id {
+                let _ = self.stop_timer()?;
+            }
+        }
+
+        let detail = self.update_item_status(&canonical_id, ItemStatus::InProgress)?;
+        let timer = self.switch_or_start_timer(&canonical_id, note)?;
+        let loc = self.locate_item(&canonical_id)?;
+        let context_bundle = self.export_agent_context(&canonical_id)?;
+
+        Ok((loc, detail, timer, context_bundle))
+    }
+
     /// Updates an item's status and atomically updates `item.toml`, `scope.toml`, and `phase.toml`.
     ///
-    /// If transitioning from a completed status (`closed` or `merged`) to an active status
-    /// (`open`, `in_progress`, or `pending`), this automatically increments both
-    /// `history.recurrence_count` and `effort.iteration_count`.
+    /// - If transitioning from a completed status (`closed` or `merged`) to an active status
+    ///   (`open`, `in_progress`, or `pending`), this automatically increments both
+    ///   `history.recurrence_count` and `effort.iteration_count`.
+    /// - If transitioning to [`ItemStatus::InProgress`] and no timer is running (or a different
+    ///   item's timer is running), this automatically starts/switches the session timer onto the item.
+    /// - If transitioning to [`ItemStatus::Closed`] or [`ItemStatus::Merged`] while `.timer.toml`
+    ///   is timing the item, this automatically stops the timer and adds the elapsed minutes to
+    ///   `effort.logged_time_minutes` before writing the closed manifest.
     pub fn update_item_status(&self, item_id: &str, new_status: ItemStatus) -> Result<ItemDetail> {
-        let (loc, mut detail) = self.load_item_detail_by_id(item_id)?;
+        let normalized_id = item_id.trim().to_ascii_uppercase();
+        if new_status == ItemStatus::InProgress {
+            if let Some(active) = self.read_active_timer()? {
+                if active.item_id != normalized_id {
+                    let _ = self.stop_timer()?;
+                }
+            }
+        }
+
+        let (loc, mut detail) = self.load_item_detail_by_id(&normalized_id)?;
         let old_status = detail.manifest.item.status;
+
+        if new_status.is_completed() {
+            if let Some(active) = self.read_active_timer()? {
+                if active.item_id == detail.manifest.item.id {
+                    let elapsed_minutes = active.elapsed_minutes_at(Utc::now())?;
+                    detail.manifest.effort.logged_time_minutes = detail
+                        .manifest
+                        .effort
+                        .logged_time_minutes
+                        .saturating_add(elapsed_minutes);
+                    self.clear_active_timer()?;
+                }
+            }
+        }
 
         if old_status.is_completed() && !new_status.is_completed() {
             detail.manifest.history.recurrence_count =
@@ -229,6 +301,10 @@ impl TrackerStorage {
             &detail.manifest,
         )?;
         self.sync_parent_indexes_for_item(&loc.phase_id, &loc.scope_id, &detail.manifest)?;
+
+        if new_status == ItemStatus::InProgress {
+            let _ = self.switch_or_start_timer(&detail.manifest.item.id, None)?;
+        }
 
         Ok(detail)
     }
@@ -332,9 +408,10 @@ impl TrackerStorage {
         Ok(detail)
     }
 
-    /// Closes (or merges when `merged == true`) an item, appending a [`PreviousFix`] entry
-    /// containing today's date, the Git `HEAD` short SHA (or `commit_override`, falling back to
-    /// `"uncommitted"`), and `summary`, then atomically updating `scope.toml` and `phase.toml`.
+    /// Closes (or merges when `merged == true`) an item, automatically stopping and logging any
+    /// active timer running for `item_id`, appending a [`PreviousFix`] entry containing today's date,
+    /// the Git `HEAD` short SHA (or `commit_override`, falling back to `"uncommitted"`), and `summary`,
+    /// then atomically updating `scope.toml` and `phase.toml`.
     pub fn close_item(
         &self,
         item_id: &str,
@@ -349,7 +426,21 @@ impl TrackerStorage {
             ));
         }
 
-        let (loc, mut detail) = self.load_item_detail_by_id(item_id)?;
+        let normalized_id = item_id.trim().to_ascii_uppercase();
+        let (loc, mut detail) = self.load_item_detail_by_id(&normalized_id)?;
+
+        if let Some(active) = self.read_active_timer()? {
+            if active.item_id == detail.manifest.item.id {
+                let elapsed_minutes = active.elapsed_minutes_at(Utc::now())?;
+                detail.manifest.effort.logged_time_minutes = detail
+                    .manifest
+                    .effort
+                    .logged_time_minutes
+                    .saturating_add(elapsed_minutes);
+                self.clear_active_timer()?;
+            }
+        }
+
         let commit = commit_override
             .map(str::trim)
             .filter(|c| !c.is_empty())
@@ -439,13 +530,20 @@ impl TrackerStorage {
         title: impl Into<String>,
         set_active: bool,
     ) -> Result<PhaseManifest> {
+        let phase_id = resolve_phase_alias(phase_id);
         validate_identifier("Phase", phase_id)?;
-        let title_trimmed = title.into().trim().to_string();
-        if title_trimmed.is_empty() {
-            return Err(TrackerError::ValidationError(
-                "Phase title must not be empty".to_string(),
-            ));
-        }
+        let raw_title = title.into().trim().to_string();
+        let title_trimmed = if raw_title.is_empty() {
+            if let Some(canon_title) = canonical_phase_title(phase_id) {
+                canon_title.to_string()
+            } else {
+                return Err(TrackerError::ValidationError(
+                    "Phase title must not be empty".to_string(),
+                ));
+            }
+        } else {
+            raw_title
+        };
 
         let mut project = self.read_project()?;
         if project.phases.registry.iter().any(|p| p.id == phase_id)
@@ -523,18 +621,24 @@ impl TrackerStorage {
         Ok(phase_manifest)
     }
 
-    /// Sets `project.active_phase` in `project.toml` after verifying the target phase exists.
+    /// Sets `project.active_phase` in `project.toml` after verifying the target phase exists
+    /// (resolving canonical aliases such as `pre`, `prod`, `post`).
     pub fn set_active_phase(&self, phase_id: &str) -> Result<ProjectManifest> {
-        validate_identifier("Phase", phase_id)?;
-        let _ = self.read_phase(phase_id)?;
+        let resolved = self.ensure_canonical_phase_if_missing(phase_id)?;
+        let mut phase_manifest = self.read_phase(&resolved)?;
+        if phase_manifest.phase.status == PhaseStatus::Planned {
+            phase_manifest.phase.status = PhaseStatus::InProgress;
+            self.write_phase(&resolved, &phase_manifest)?;
+        }
         let mut project = self.read_project()?;
-        project.project.active_phase = phase_id.to_string();
+        project.project.active_phase = resolved;
         self.write_project(&project)?;
         Ok(project)
     }
 
     /// Creates a new domain scope (`scope.toml` + `items/` directory) inside `phase_id` (defaulting
-    /// to `project.active_phase`) and registers it in `phase.toml`.
+    /// to `project.active_phase`), registers it in `phase.toml`, and automatically mirrors the
+    /// scope across all other registered phases in `project.toml`.
     pub fn create_scope(
         &self,
         phase_id: Option<&str>,
@@ -553,11 +657,8 @@ impl TrackerStorage {
 
         let project = self.read_project()?;
         let resolved_phase = match phase_id.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(p) => {
-                validate_identifier("Phase", p)?;
-                p.to_string()
-            }
-            None => project.project.active_phase.clone(),
+            Some(p) => self.ensure_canonical_phase_if_missing(p)?,
+            None => resolve_phase_alias(&project.project.active_phase).to_string(),
         };
 
         let mut phase_manifest = self.read_phase(&resolved_phase)?;
@@ -588,6 +689,7 @@ impl TrackerStorage {
             }
         })?;
 
+        let scope_type = infer_default_scope_type(scope_id);
         if !phase_manifest
             .scopes
             .manifest
@@ -596,13 +698,251 @@ impl TrackerStorage {
         {
             phase_manifest.scopes.manifest.push(ScopeRegistryEntry {
                 id: scope_id.to_string(),
-                scope_type: infer_default_scope_type(scope_id),
+                scope_type: scope_type.clone(),
                 path: format!("domains/{scope_id}"),
             });
             self.write_phase(&resolved_phase, &phase_manifest)?;
         }
 
+        self.ensure_scope_across_phases(&scope_manifest.scope, Some(&scope_type))?;
+
         Ok(scope_manifest)
+    }
+
+    /// Mirrors a domain scope (`scope.toml` with identical [`ScopeMetadata`] and empty `items/`
+    /// directory) across all registered phases in `project.toml` where that scope does not yet exist.
+    pub fn ensure_scope_across_phases(
+        &self,
+        scope_metadata: &ScopeMetadata,
+        scope_type_hint: Option<&str>,
+    ) -> Result<()> {
+        validate_identifier("Scope", &scope_metadata.id)?;
+        let project = self.read_project()?;
+        let scope_id = &scope_metadata.id;
+        let resolved_type = scope_type_hint
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| infer_default_scope_type(scope_id));
+
+        for phase_entry in &project.phases.registry {
+            let phase_id = &phase_entry.id;
+            let phase_toml = self.phase_toml_path(phase_id)?;
+            if !phase_toml.is_file() {
+                continue;
+            }
+            let mut phase_manifest = self.read_phase(phase_id)?;
+            let scope_toml = self.scope_toml_path(phase_id, scope_id)?;
+
+            if !scope_toml.is_file() {
+                let mirrored_manifest = ScopeManifest {
+                    scope: scope_metadata.clone(),
+                    items: ScopeItems::default(),
+                };
+                self.write_scope(phase_id, scope_id, &mirrored_manifest)?;
+                fs::create_dir_all(self.items_dir(phase_id, scope_id)?).map_err(|source| {
+                    TrackerError::Io {
+                        path: self.tracker_dir().to_path_buf(),
+                        source,
+                    }
+                })?;
+            } else if scope_metadata.bound_component.is_some() {
+                let mut existing = self.read_scope(phase_id, scope_id)?;
+                existing.scope.target = scope_metadata.target.clone();
+                existing.scope.tech_stack = scope_metadata.tech_stack.clone();
+                existing.scope.bound_component = scope_metadata.bound_component.clone();
+                existing.scope.tracked_files = scope_metadata.tracked_files.clone();
+                if existing.scope.description.is_none() {
+                    existing.scope.description = scope_metadata.description.clone();
+                }
+                self.write_scope(phase_id, scope_id, &existing)?;
+            }
+
+            if let Some(entry) = phase_manifest
+                .scopes
+                .manifest
+                .iter_mut()
+                .find(|s| s.id == *scope_id)
+            {
+                if scope_type_hint.is_some() {
+                    entry.scope_type = resolved_type.clone();
+                }
+            } else {
+                phase_manifest.scopes.manifest.push(ScopeRegistryEntry {
+                    id: scope_id.clone(),
+                    scope_type: resolved_type.clone(),
+                    path: format!("domains/{scope_id}"),
+                });
+            }
+            self.write_phase(phase_id, &phase_manifest)?;
+        }
+
+        Ok(())
+    }
+
+    /// Moves a tracked item (`item.toml` and `desc.md`) from its current phase into `target_phase_id`
+    /// (resolving canonical aliases such as `pre`, `prod`, `post`), ensuring the item's scope exists
+    /// in the target phase, removing the old item directory, updating `updated_at`, and atomically
+    /// reconciling both the source and target phase/scope indexes.
+    pub fn move_item_to_phase(
+        &self,
+        item_id: &str,
+        target_phase_id: &str,
+    ) -> Result<(ItemLocation, ItemDetail)> {
+        let resolved_target_phase = self.ensure_canonical_phase_if_missing(target_phase_id)?;
+        let mut target_phase_manifest = self.read_phase(&resolved_target_phase)?;
+
+        let (loc, mut detail) = self.load_item_detail_by_id(item_id.trim())?;
+        let canonical_item_id = detail.manifest.item.id.clone();
+
+        if loc.phase_id == resolved_target_phase {
+            detail.manifest.item.updated_at = now_rfc3339();
+            self.write_item_detail(&loc.phase_id, &loc.scope_id, &detail)?;
+            self.sync_parent_indexes_for_item(&loc.phase_id, &loc.scope_id, &detail.manifest)?;
+            let updated_loc = ItemLocation {
+                phase_id: loc.phase_id,
+                scope_id: loc.scope_id,
+                item_type: detail.manifest.item.item_type,
+                stub: detail.manifest.to_stub(),
+            };
+            return Ok((updated_loc, detail));
+        }
+
+        let source_scope_manifest = self.read_scope(&loc.phase_id, &loc.scope_id)?;
+        let source_phase_manifest = self.read_phase(&loc.phase_id)?;
+        let source_scope_type = source_phase_manifest
+            .scopes
+            .manifest
+            .iter()
+            .find(|s| s.id == loc.scope_id)
+            .map(|s| s.scope_type.clone())
+            .unwrap_or_else(|| infer_default_scope_type(&loc.scope_id));
+
+        let target_scope_toml = self.scope_toml_path(&resolved_target_phase, &loc.scope_id)?;
+        if !target_scope_toml.is_file() {
+            let copied_scope = ScopeManifest {
+                scope: source_scope_manifest.scope.clone(),
+                items: ScopeItems::default(),
+            };
+            self.write_scope(&resolved_target_phase, &loc.scope_id, &copied_scope)?;
+            fs::create_dir_all(self.items_dir(&resolved_target_phase, &loc.scope_id)?).map_err(
+                |source| TrackerError::Io {
+                    path: self.tracker_dir().to_path_buf(),
+                    source,
+                },
+            )?;
+        }
+
+        if !target_phase_manifest
+            .scopes
+            .manifest
+            .iter()
+            .any(|s| s.id == loc.scope_id)
+        {
+            target_phase_manifest
+                .scopes
+                .manifest
+                .push(ScopeRegistryEntry {
+                    id: loc.scope_id.clone(),
+                    scope_type: source_scope_type,
+                    path: format!("domains/{}", loc.scope_id),
+                });
+            self.write_phase(&resolved_target_phase, &target_phase_manifest)?;
+        }
+
+        detail.manifest.item.updated_at = now_rfc3339();
+        self.write_item_detail(&resolved_target_phase, &loc.scope_id, &detail)?;
+
+        let old_item_dir = self.item_dir(&loc.phase_id, &loc.scope_id, &canonical_item_id)?;
+        if old_item_dir.exists() {
+            fs::remove_dir_all(&old_item_dir).map_err(|source| TrackerError::Io {
+                path: old_item_dir,
+                source,
+            })?;
+        }
+
+        if let Ok(Some(mut active_timer)) = self.read_active_timer() {
+            if active_timer.item_id == canonical_item_id {
+                active_timer.phase_id = Some(resolved_target_phase.clone());
+                let _ = self.write_active_timer(&active_timer);
+            }
+        }
+
+        self.remove_item_from_parent_indexes(&loc.phase_id, &loc.scope_id, &canonical_item_id)?;
+        self.sync_parent_indexes_for_item(&resolved_target_phase, &loc.scope_id, &detail.manifest)?;
+
+        let new_loc = ItemLocation {
+            phase_id: resolved_target_phase,
+            scope_id: loc.scope_id,
+            item_type: detail.manifest.item.item_type,
+            stub: detail.manifest.to_stub(),
+        };
+
+        Ok((new_loc, detail))
+    }
+
+    pub(crate) fn remove_item_from_parent_indexes(
+        &self,
+        phase_id: &str,
+        scope_id: &str,
+        item_id: &str,
+    ) -> Result<()> {
+        let mut scope_manifest = self.read_scope(phase_id, scope_id)?;
+        scope_manifest
+            .items
+            .bugs
+            .retain(|existing| existing.id != item_id);
+        scope_manifest
+            .items
+            .features
+            .retain(|existing| existing.id != item_id);
+        self.write_scope(phase_id, scope_id, &scope_manifest)?;
+        self.recompute_phase_summary_with_scope(phase_id, scope_id, &scope_manifest)
+    }
+
+    pub(crate) fn recompute_phase_summary_with_scope(
+        &self,
+        phase_id: &str,
+        updated_scope_id: &str,
+        updated_scope_manifest: &ScopeManifest,
+    ) -> Result<()> {
+        let mut phase_manifest = self.read_phase(phase_id)?;
+        let phase_dir = self.phase_dir(phase_id)?;
+        let mut total_items: u32 = 0;
+        let mut completed_items: u32 = 0;
+
+        for scope_entry in &phase_manifest.scopes.manifest {
+            let s_manifest = if scope_entry.id == updated_scope_id {
+                updated_scope_manifest.clone()
+            } else {
+                let s_dir =
+                    self.resolve_scope_path(&phase_dir, &scope_entry.id, Some(&scope_entry.path))?;
+                let s_toml = s_dir.join("scope.toml");
+                if !s_toml.is_file() {
+                    continue;
+                }
+                self.read_scope_from_path(&s_toml)?
+            };
+
+            for bug in &s_manifest.items.bugs {
+                total_items += 1;
+                if bug.status.is_completed() {
+                    completed_items += 1;
+                }
+            }
+            for feat in &s_manifest.items.features {
+                total_items += 1;
+                if feat.status.is_completed() {
+                    completed_items += 1;
+                }
+            }
+        }
+
+        phase_manifest.summary.total_items = total_items;
+        phase_manifest.summary.completed_items = completed_items;
+        self.write_phase(phase_id, &phase_manifest)?;
+
+        Ok(())
     }
 
     /// Atomically updates `scope.toml` `[items]` and `phase.toml` `[summary]` after an item
@@ -637,45 +977,7 @@ impl TrackerStorage {
         }
 
         self.write_scope(phase_id, scope_id, &scope_manifest)?;
-
-        // Recompute `phase.toml` `[summary]` (`total_items` and `completed_items`) across all scopes in `phase_id`
-        let mut phase_manifest = self.read_phase(phase_id)?;
-        let phase_dir = self.phase_dir(phase_id)?;
-        let mut total_items: u32 = 0;
-        let mut completed_items: u32 = 0;
-
-        for scope_entry in &phase_manifest.scopes.manifest {
-            let s_manifest = if scope_entry.id == scope_id {
-                scope_manifest.clone()
-            } else {
-                let s_dir =
-                    self.resolve_scope_path(&phase_dir, &scope_entry.id, Some(&scope_entry.path))?;
-                let s_toml = s_dir.join("scope.toml");
-                if !s_toml.is_file() {
-                    continue;
-                }
-                self.read_scope_from_path(&s_toml)?
-            };
-
-            for bug in &s_manifest.items.bugs {
-                total_items += 1;
-                if bug.status.is_completed() {
-                    completed_items += 1;
-                }
-            }
-            for feat in &s_manifest.items.features {
-                total_items += 1;
-                if feat.status.is_completed() {
-                    completed_items += 1;
-                }
-            }
-        }
-
-        phase_manifest.summary.total_items = total_items;
-        phase_manifest.summary.completed_items = completed_items;
-        self.write_phase(phase_id, &phase_manifest)?;
-
-        Ok(())
+        self.recompute_phase_summary_with_scope(phase_id, scope_id, &scope_manifest)
     }
 }
 

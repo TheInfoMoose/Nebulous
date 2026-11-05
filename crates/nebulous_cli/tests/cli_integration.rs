@@ -262,8 +262,18 @@ fn test_temp_dir_full_cli_lifecycle_and_json_mode() {
     assert_eq!(bug1_json["severity"], "high");
     assert_eq!(bug1_json["scope_id"], "backend_core");
 
-    // Bug without `-s` falls back to `inbox`
-    let bug2_json = run_neb_json(&["--root", root_str, "bug", "Unscoped triage issue"], None);
+    // Bug with explicit `-s inbox` goes to `inbox`
+    let bug2_json = run_neb_json(
+        &[
+            "--root",
+            root_str,
+            "bug",
+            "Unscoped triage issue",
+            "-s",
+            "inbox",
+        ],
+        None,
+    );
     assert_eq!(bug2_json["id"], "BUG-0002");
     assert_eq!(bug2_json["scope_id"], "inbox");
     assert_eq!(bug2_json["severity"], "medium");
@@ -1767,5 +1777,540 @@ fn test_cli_active_directory_and_declared_directory_isolation() {
                 }),
             )
             .is_err());
+    }
+}
+
+fn run_neb_ok_with_env(args: &[&str], current_dir: Option<&Path>, config_dir: &Path) -> String {
+    let output = run_neb_with_env(args, current_dir, config_dir);
+    if !output.status.success() {
+        panic!(
+            "neb {:?} failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+            args,
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    String::from_utf8(output.stdout).expect("stdout should be valid UTF-8")
+}
+
+#[test]
+fn test_one_command_bootstrap_predictive_scope_and_zero_id_workflow() {
+    let temp = TempDir::new().expect("should create temp dir");
+    let cfg_dir = temp.path().join("neb_config");
+    let repo_dir = temp.path().join("ergonomic_repo");
+    fs::create_dir_all(&repo_dir).unwrap();
+
+    // Initialize Git repo
+    let repo = Repository::init(&repo_dir).expect("should init git repo");
+    {
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Flow Dev").unwrap();
+        cfg.set_str("user.email", "flow@neb.dev").unwrap();
+        let sig = Signature::now("Flow Dev", "flow@neb.dev").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
+            .unwrap();
+    }
+
+    // Create two workspace crates before `neb init`
+    let auth_dir = repo_dir.join("crates/auth_engine");
+    fs::create_dir_all(auth_dir.join("src")).unwrap();
+    fs::write(
+        auth_dir.join("Cargo.toml"),
+        "[package]\nname = \"auth_engine\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        auth_dir.join("src/lib.rs"),
+        "pub fn verify_token() -> bool { true }\n",
+    )
+    .unwrap();
+
+    let api_dir = repo_dir.join("crates/api_gateway");
+    fs::create_dir_all(api_dir.join("src")).unwrap();
+    fs::write(
+        api_dir.join("Cargo.toml"),
+        "[package]\nname = \"api_gateway\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        api_dir.join("src/lib.rs"),
+        "pub fn route() -> &'static str { \"ok\" }\n",
+    )
+    .unwrap();
+
+    // Commit initial workspace files so git status starts clean
+    {
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let sig = Signature::now("Flow Dev", "flow@neb.dev").unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "Add initial crates",
+            &tree,
+            &[&head],
+        )
+        .unwrap();
+    }
+
+    // 1. One-command `neb init` (scaffolds pre_production, production, post_production,
+    // auto-ingests workspace crates into scopes across all 3 stages, and registers project)
+    let init_human = run_neb_ok_with_env(&["init"], Some(&repo_dir), &cfg_dir);
+    assert!(init_human.contains("active phase: pre_production"));
+    assert!(init_human.contains("pre_production, production, post_production"));
+    assert!(init_human.contains("components ingested: 2"));
+    assert!(init_human.contains("Next Suggested Action:"));
+
+    let phases_json = run_neb_json_with_env(&["stage"], Some(&repo_dir), &cfg_dir);
+    assert_eq!(phases_json["active_phase"], "pre_production");
+    let phase_ids: Vec<&str> = phases_json["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        phase_ids,
+        vec!["pre_production", "production", "post_production"]
+    );
+
+    for stage_id in &phase_ids {
+        let scopes_in_stage = run_neb_json_with_env(
+            &["scope", "list", "-p", stage_id],
+            Some(&repo_dir),
+            &cfg_dir,
+        );
+        let scope_ids: Vec<&str> = scopes_in_stage["scopes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+        assert!(scope_ids.contains(&"inbox"));
+        assert!(scope_ids.contains(&"auth_engine"));
+        assert!(scope_ids.contains(&"api_gateway"));
+    }
+
+    let proj_list = run_neb_json_with_env(&["project", "list"], Some(&repo_dir), &cfg_dir);
+    assert_eq!(proj_list["total"], 1);
+
+    // 2. Predictive scope inference on `neb feat` / `neb bug` when `--scope` is omitted:
+    // (a) Running inside `crates/auth_engine` infers `auth_engine`
+    let feat_human = run_neb_ok_with_env(
+        &[
+            "feat",
+            "Support Ed25519 session tokens",
+            "--severity",
+            "high",
+        ],
+        Some(&auth_dir),
+        &cfg_dir,
+    );
+    assert!(feat_human.contains("FEAT-0001"));
+    assert!(feat_human.contains("pre_production/auth_engine"));
+    assert!(feat_human.contains("Next Suggested Action:"));
+
+    // (b) Modifying a file in `crates/api_gateway` and running `neb bug` from repo root infers `api_gateway`
+    fs::write(
+        api_dir.join("src/lib.rs"),
+        "pub fn route() -> &'static str { \"v2\" }\n",
+    )
+    .unwrap();
+    let bug_json = run_neb_json_with_env(
+        &[
+            "bug",
+            "Header timeout on slow upstream",
+            "--severity",
+            "critical",
+        ],
+        Some(&repo_dir),
+        &cfg_dir,
+    );
+    assert_eq!(bug_json["id"], "BUG-0001");
+    assert_eq!(bug_json["scope_id"], "api_gateway");
+    assert_eq!(bug_json["phase_id"], "pre_production");
+
+    // Verify `neb list` human output includes Next Suggested Action
+    let list_human = run_neb_ok_with_env(&["list"], Some(&repo_dir), &cfg_dir);
+    assert!(list_human.contains("FEAT-0001"));
+    assert!(list_human.contains("BUG-0001"));
+    assert!(list_human.contains("Next Suggested Action:"));
+
+    // 3. `neb next` JSON and human output (and bare `neb`)
+    let next_json = run_neb_json_with_env(&["next"], Some(&repo_dir), &cfg_dir);
+    assert_eq!(next_json["active_phase"], "pre_production");
+    assert_eq!(next_json["inferred_scope"], "api_gateway");
+    let recs = next_json["recommendations"].as_array().unwrap();
+    assert!(!recs.is_empty());
+    assert_eq!(recs[0]["item_id"], "BUG-0001");
+
+    let next_human = run_neb_ok_with_env(&["next"], Some(&repo_dir), &cfg_dir);
+    assert!(next_human.contains("Nebulous What's Next & Active Status"));
+    assert!(next_human.contains("BUG-0001"));
+    assert!(next_human.contains("Next Suggested Action:"));
+
+    let bare_neb_human = run_neb_ok_with_env(&[], Some(&repo_dir), &cfg_dir);
+    assert!(bare_neb_human.contains("Nebulous What's Next & Active Status"));
+
+    // 4. Zero-ID workflow: `neb start` -> `neb context` -> `neb show` -> `neb move prod` -> `neb done -m "..." -c`
+    let start_human = run_neb_ok_with_env(&["start", "--copy=false"], Some(&repo_dir), &cfg_dir);
+    assert!(start_human.contains("Started BUG-0001 [in_progress]"));
+    assert!(start_human.contains("Next Suggested Action:"));
+
+    // Zero-ID `neb context` resolves to active BUG-0001
+    let ctx_json = run_neb_json_with_env(&["context", "--refs-only"], Some(&repo_dir), &cfg_dir);
+    assert_eq!(ctx_json["item_id"], "BUG-0001");
+    assert!(ctx_json["output"]
+        .as_str()
+        .unwrap()
+        .contains("items/BUG-0001/item.toml"));
+
+    // Zero-ID `neb show` resolves to active BUG-0001
+    let show_json = run_neb_json_with_env(&["show"], Some(&repo_dir), &cfg_dir);
+    assert_eq!(show_json["item"]["id"], "BUG-0001");
+    assert_eq!(show_json["item"]["status"], "in_progress");
+
+    // Zero-ID `neb move prod` moves active BUG-0001 from `pre_production` to `production`
+    let move_json = run_neb_json_with_env(&["move", "prod"], Some(&repo_dir), &cfg_dir);
+    assert_eq!(move_json["id"], "BUG-0001");
+    assert_eq!(move_json["from_phase"], "pre_production");
+    assert_eq!(move_json["to_phase"], "production");
+    assert_eq!(move_json["scope_id"], "api_gateway");
+
+    // Switch stage to `prod` via `neb stage prod`
+    let stage_use = run_neb_json_with_env(&["stage", "prod"], Some(&repo_dir), &cfg_dir);
+    assert_eq!(stage_use["active_phase"], "production");
+
+    // Zero-ID `neb done -m "Implemented feature" -c` closes BUG-0001 and creates a documented Git commit
+    let done_human = run_neb_ok_with_env(
+        &["done", "-m", "Implemented feature", "-c"],
+        Some(&repo_dir),
+        &cfg_dir,
+    );
+    assert!(done_human.contains("Closed BUG-0001 as closed"));
+    assert!(done_human.contains("Implemented feature"));
+    assert!(done_human.contains("Next Suggested Action:"));
+
+    let bug_after_done = run_neb_json_with_env(&["show", "BUG-0001"], Some(&repo_dir), &cfg_dir);
+    assert_eq!(bug_after_done["item"]["status"], "closed");
+    assert_eq!(bug_after_done["phase_id"], "production");
+    assert_eq!(
+        bug_after_done["history"]["previous_fixes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+    assert_eq!(
+        head_commit.summary().unwrap(),
+        "[BUG-0001](api_gateway) Implemented feature"
+    );
+}
+
+#[test]
+fn test_tui_amber_on_black_palette_nebula_header_and_responsive_scaling_locks() {
+    use crossterm::event::KeyCode;
+    use nebulous_cli::tui::{
+        render_to_buffer, render_to_string, select_nebula_banner, BannerTier, CreateField,
+        PaneFocus, TuiApp, AMBER_ALERT, AMBER_BRIGHT, AMBER_DIM, AMBER_PRIMARY, BG_BLACK,
+        MIN_TERM_HEIGHT, MIN_TERM_WIDTH, PANEL_BG,
+    };
+    use ratatui::style::Color;
+
+    let temp = TempDir::new().expect("should create temp dir for TUI test");
+    let root = temp.path();
+
+    let storage = TrackerStorage::init_standard(root, "NebulousTuiTest").unwrap();
+    let crate_dir = root.join("crates/core_engine");
+    fs::create_dir_all(&crate_dir).unwrap();
+    storage
+        .create_scope(
+            Some("pre_production"),
+            "core_engine",
+            "crates/core_engine",
+            vec!["rust".to_string()],
+            Some("Core engine scope".to_string()),
+        )
+        .unwrap();
+
+    storage
+        .create_bug(
+            "CRT amber contrast validation",
+            Some("pre_production"),
+            Some("core_engine"),
+            Severity::High,
+            Some("Ensure pure #000000 background and #FFB000/#FFD866 foregrounds."),
+        )
+        .unwrap();
+
+    let mut app = TuiApp::new(storage.clone(), Some(crate_dir.clone())).unwrap();
+    assert_eq!(app.active_stage, "pre_production");
+    assert_eq!(app.inferred_scope, "core_engine");
+
+    // 1. Verify Amber-on-Black color cells across the rendered Buffer at wide (120x36) dimensions
+    let wide_buf = render_to_buffer(&mut app, 120, 36);
+    let mut found_amber_primary = false;
+    let mut found_amber_bright = false;
+    let mut found_amber_dim = false;
+
+    for y in 0..36 {
+        for x in 0..120 {
+            let cell = wide_buf.cell((x, y)).unwrap();
+            assert!(
+                cell.bg == BG_BLACK || cell.bg == PANEL_BG,
+                "Every cell background in main workspace must be pure CRT black (0,0,0) or PANEL_BG (12,8,0), found {:?} at ({x},{y})",
+                cell.bg
+            );
+            if cell.fg == Color::Rgb(255, 176, 0) {
+                found_amber_primary = true;
+            }
+            if cell.fg == Color::Rgb(255, 216, 102) {
+                found_amber_bright = true;
+            }
+            if cell.fg == Color::Rgb(153, 99, 0) {
+                found_amber_dim = true;
+            }
+        }
+    }
+    assert_eq!(BG_BLACK, Color::Rgb(0, 0, 0));
+    assert_eq!(AMBER_PRIMARY, Color::Rgb(255, 176, 0));
+    assert_eq!(AMBER_BRIGHT, Color::Rgb(255, 216, 102));
+    assert_eq!(AMBER_DIM, Color::Rgb(153, 99, 0));
+    assert_eq!(AMBER_ALERT, Color::Rgb(255, 85, 0));
+    assert!(
+        found_amber_primary,
+        "Buffer must contain #FFB000 primary amber cells"
+    );
+    assert!(
+        found_amber_bright,
+        "Buffer must contain #FFD866 bright gold cells"
+    );
+    assert!(
+        found_amber_dim,
+        "Buffer must contain #996300 dim amber cells"
+    );
+
+    // 2. Verify ASCII Nebula header and centered NEBULOUS art render completely unclipped
+    // across both wide (120x36) and compact (80x24) terminal dimensions
+    let full_banner = select_nebula_banner(120, 36);
+    assert_eq!(full_banner.tier, BannerTier::Full);
+    assert_eq!(full_banner.height, 5);
+    assert_eq!(full_banner.cols, 76);
+
+    let wide_str = render_to_string(&mut app, 120, 36);
+    assert!(wide_str.contains("░▒▓ ( ✦"));
+    assert!(wide_str.contains("✦ ) ▓▒░"));
+    assert!(wide_str.contains("N E B U L O U S"));
+    assert!(wide_str.contains("███╗  ████╗"));
+    assert!(wide_str.contains("NEBULOUS COMMAND TRACKER"));
+    assert!(wide_str.contains("[1] Pre-Production"));
+    assert!(wide_str.contains("[2] Production"));
+    assert!(wide_str.contains("[3] Post-Production"));
+    assert!(wide_str.contains("WHAT'S NEXT:"));
+    assert!(wide_str.contains("BUG-0001"));
+
+    let compact_banner = select_nebula_banner(80, 24);
+    assert_eq!(compact_banner.tier, BannerTier::Compact);
+    assert_eq!(compact_banner.height, 3);
+    assert_eq!(compact_banner.cols, 60);
+
+    let compact_str = render_to_string(&mut app, 80, 24);
+    assert!(compact_str.contains("╔═╗ N E B U L O U S ╔═╗"));
+    assert!(compact_str.contains("╚══════════ ✦ NEBULOUS ✦ ══════════╝"));
+    assert!(compact_str.contains("░▒▓( ✦"));
+    assert!(compact_str.contains("✦ )▓▒░"));
+    assert!(compact_str.contains("WHAT'S NEXT:"));
+    assert!(compact_str.contains("BUG-0001"));
+
+    // 3. Verify all required modal fields (Title, Scope, Stage, Severity) remain visible
+    // and functional at compact dimensions (80x24), and empty-title submission triggers [REQUIRED FIELD LOCK]
+    app.press_char('b').unwrap();
+    let modal_compact_str = render_to_string(&mut app, 80, 24);
+    assert!(modal_compact_str.contains("NEW BUG CAPTURE"));
+    assert!(modal_compact_str.contains("[1] Title *REQUIRED*"));
+    assert!(modal_compact_str.contains("[2] Scope *REQUIRED*"));
+    assert!(modal_compact_str.contains("core_engine"));
+    assert!(modal_compact_str.contains("[3] Stage *REQUIRED*"));
+    assert!(modal_compact_str.contains("pre_production"));
+    assert!(modal_compact_str.contains("[4] Severity *REQUIRED*"));
+    assert!(modal_compact_str.contains("medium"));
+    assert!(modal_compact_str.contains("[5] Description"));
+
+    // Attempting to submit with empty Title engages [REQUIRED FIELD LOCK] in AMBER_ALERT and keeps focus locked on Title
+    app.press_key(KeyCode::Enter).unwrap();
+    assert!(
+        app.modal.is_some(),
+        "Modal must stay open when Title is empty"
+    );
+    let lock_buf = render_to_buffer(&mut app, 80, 24);
+    let lock_str = render_to_string(&mut app, 80, 24);
+    assert!(lock_str.contains("[REQUIRED FIELD LOCK]"));
+    let mut found_alert_color = false;
+    for y in 0..24 {
+        for x in 0..80 {
+            if lock_buf.cell((x, y)).unwrap().fg == AMBER_ALERT {
+                found_alert_color = true;
+            }
+        }
+    }
+    assert!(
+        found_alert_color,
+        "Empty required field submission must render AMBER_ALERT (#FF5500) indicator"
+    );
+
+    // Type a very long title to verify horizontal cursor-window scrolling never clips the modal or panics, then submit
+    let long_title = "Prevent field clipping in compact 80x24 modals with horizontal scroll window";
+    app.type_text(long_title).unwrap();
+    let scrolled_modal_str = render_to_string(&mut app, 80, 24);
+    assert!(
+        scrolled_modal_str.contains("horizontal scroll window█"),
+        "Long text input must scroll horizontally to keep cursor visible"
+    );
+
+    // Tab through Scope, Stage, Severity (bump to High), Description, and press Enter to create BUG-0002
+    app.press_key(KeyCode::Tab).unwrap(); // Scope
+    app.press_key(KeyCode::Tab).unwrap(); // Stage
+    app.press_key(KeyCode::Tab).unwrap(); // Severity
+    app.press_key(KeyCode::Right).unwrap(); // Medium -> High
+    app.press_key(KeyCode::Tab).unwrap(); // Description
+    app.type_text("Verified via TestBackend at 80x24").unwrap();
+    app.press_key(KeyCode::Enter).unwrap();
+    assert!(
+        app.modal.is_none(),
+        "Modal should close after valid submission"
+    );
+    assert!(app.items.iter().any(|i| i.id == "BUG-0002"));
+
+    // Test interactive hotkeys: 's' (Start Work), 'm' (Move Stage to Production via '2'), 'd' (Close with empty summary guard then valid summary)
+    app.press_char('s').unwrap();
+    assert!(app.active_timer.is_some());
+
+    app.press_char('m').unwrap();
+    let move_modal_str = render_to_string(&mut app, 80, 24);
+    assert!(move_modal_str.contains("MOVE"));
+    assert!(move_modal_str.contains("[2] Production"));
+    app.press_char('2').unwrap();
+    assert_eq!(app.active_stage, "production");
+
+    // Open close modal ('d'), clear summary to trigger [REQUIRED FIELD LOCK], then enter summary and close
+    app.press_char('d').unwrap();
+    let close_modal_str = render_to_string(&mut app, 80, 24);
+    assert!(close_modal_str.contains("COMPLETE / CLOSE"));
+    assert!(close_modal_str.contains("Resolved "));
+
+    // Clear pre-filled summary and test required field lock on Close modal
+    if let Some(nebulous_cli::tui::ActiveModal::Close(ref mut c)) = app.modal {
+        c.summary.clear();
+    }
+    app.press_key(KeyCode::Enter).unwrap();
+    let close_lock_str = render_to_string(&mut app, 80, 24);
+    assert!(close_lock_str.contains("[REQUIRED FIELD LOCK]"));
+
+    app.type_text("Completed TUI modal verification").unwrap();
+    app.press_key(KeyCode::Enter).unwrap();
+    assert!(app.modal.is_none());
+
+    // Verify pane focus cycling (Tab / BackTab) and Bounded Agent Context scrolling in Details pane
+    assert_eq!(app.focus, PaneFocus::Items);
+    app.press_key(KeyCode::Tab).unwrap();
+    assert_eq!(app.focus, PaneFocus::Details);
+    app.press_char('J').unwrap();
+    app.press_char('J').unwrap();
+    app.press_char('J').unwrap();
+    let scrolled_details_str = render_to_string(&mut app, 120, 36);
+    assert!(
+        scrolled_details_str.contains("Bounded Agent Context")
+            || scrolled_details_str.contains("Bounded Agent Task"),
+        "Details pane must render Bounded Agent Context section when scrolled"
+    );
+    app.press_key(KeyCode::Tab).unwrap();
+    assert_eq!(app.focus, PaneFocus::Scopes);
+    app.press_key(KeyCode::BackTab).unwrap();
+    assert_eq!(app.focus, PaneFocus::Details);
+
+    // Verify Scope/Stage [REQUIRED FIELD LOCK] clears when cycled via Left/Right arrows,
+    // custom typed scope auto-creates cleanly, and wide UTF-8 / CJK characters scroll without overflow at 64x20
+    app.open_create_modal(backend_core::ItemType::Feature);
+    let cjk_title = "✦ 琥珀色终端宽字符边界ロック検証 — Wide UTF-8 CJK Nebula Test ✦";
+    app.type_text(cjk_title).unwrap();
+    let cjk_modal_str = render_to_string(&mut app, MIN_TERM_WIDTH, MIN_TERM_HEIGHT);
+    assert!(
+        cjk_modal_str.contains("Wide UTF-8 CJK Nebula Test ✦█"),
+        "Multi-byte and double-width CJK characters must scroll cleanly inside 64x20 modal field"
+    );
+
+    // Clear Scope, trigger [REQUIRED FIELD LOCK] on Scope, then clear lock via Right arrow key
+    if let Some(nebulous_cli::tui::ActiveModal::Create(ref mut c)) = app.modal {
+        c.scope.clear();
+    }
+    app.press_key(KeyCode::Enter).unwrap();
+    if let Some(nebulous_cli::tui::ActiveModal::Create(ref c)) = app.modal {
+        assert_eq!(c.required_lock_field, Some(CreateField::Scope));
+        assert_eq!(c.focused_field, CreateField::Scope);
+    } else {
+        panic!("Expected Create modal to stay open on empty Scope");
+    }
+    app.press_key(KeyCode::Right).unwrap();
+    if let Some(nebulous_cli::tui::ActiveModal::Create(ref c)) = app.modal {
+        assert_eq!(
+            c.required_lock_field, None,
+            "Cycling Scope via Right arrow must clear required_lock_field"
+        );
+    }
+
+    // Type a custom new scope name ("custom_tui_scope") and submit
+    if let Some(nebulous_cli::tui::ActiveModal::Create(ref mut c)) = app.modal {
+        c.scope = "custom_tui_scope".to_string();
+        c.focused_field = CreateField::Description;
+    }
+    let min_locked_modal = render_to_string(&mut app, MIN_TERM_WIDTH, MIN_TERM_HEIGHT);
+    assert!(min_locked_modal.contains("[5] Description"));
+    app.press_key(KeyCode::Enter).unwrap();
+    assert!(
+        app.modal.is_none(),
+        "Submitting Create modal with a new custom scope name should auto-create scope and succeed"
+    );
+    assert!(app
+        .items
+        .iter()
+        .any(|i| i.id == "FEAT-0001" && i.scope_id == "custom_tui_scope"));
+
+    // Switch to empty stage 3 (post_production) and verify pressing 's' with 0 items does not error
+    app.press_char('3').unwrap();
+    assert_eq!(app.active_stage, "post_production");
+    assert!(app.items.is_empty());
+    app.press_char('s').unwrap();
+
+    // 4. Resizing below 64x20 engages the non-deforming minimum-size scaling lock view cleanly without panicking
+    for (tiny_w, tiny_h) in [(63, 20), (64, 19), (50, 14), (20, 6), (5, 2)] {
+        let guard_str = render_to_string(&mut app, tiny_w, tiny_h);
+        if tiny_w >= 50 && tiny_h >= 12 {
+            assert!(
+                guard_str.contains("SCALING LOCK"),
+                "Viewport {tiny_w}x{tiny_h} must render SCALING LOCK guard"
+            );
+            assert!(
+                guard_str.contains(&format!(
+                    "Current: {tiny_w}x{tiny_h} | Minimum Locked: 64x20"
+                )),
+                "Viewport {tiny_w}x{tiny_h} must display current vs minimum locked dimensions"
+            );
+            assert!(
+                guard_str.contains("NEBULOUS"),
+                "Viewport {tiny_w}x{tiny_h} must keep compact NEBULOUS logo visible"
+            );
+        }
     }
 }

@@ -2057,3 +2057,138 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn test_canonical_phase_aliases_and_three_stage_scaffolding() {
+    use backend_core::{
+        canonical_phase_title, resolve_phase_alias, ComponentManifest, CANONICAL_PHASES,
+    };
+
+    // 1. Verify canonical phase constants and alias resolution (`pre`/`prod`/`post`/`1`/`2`/`3`/custom)
+    assert_eq!(CANONICAL_PHASES.len(), 3);
+    for alias in [
+        "pre",
+        "PRE",
+        "pre-prod",
+        "pre_prod",
+        "pre-production",
+        "pre_production",
+        "1",
+    ] {
+        assert_eq!(resolve_phase_alias(alias), "pre_production");
+        assert_eq!(canonical_phase_title(alias), Some("Pre-Production"));
+    }
+    for alias in ["prod", "PROD", "production", "active", "2"] {
+        assert_eq!(resolve_phase_alias(alias), "production");
+        assert_eq!(canonical_phase_title(alias), Some("Production"));
+    }
+    for alias in [
+        "post",
+        "POST",
+        "post-prod",
+        "post_prod",
+        "post-production",
+        "post_production",
+        "3",
+    ] {
+        assert_eq!(resolve_phase_alias(alias), "post_production");
+        assert_eq!(canonical_phase_title(alias), Some("Post-Production"));
+    }
+    assert_eq!(resolve_phase_alias("01_custom_stage"), "01_custom_stage");
+    assert_eq!(canonical_phase_title("01_custom_stage"), None);
+
+    // 2. Verify `TrackerStorage::init_standard` scaffolds all 3 canonical stages and `inbox` scopes
+    let temp = TempTrackerDir::new("three_stage_init_standard");
+    let storage = TrackerStorage::init_standard(temp.path(), "CanonicalProject")
+        .expect("init_standard should scaffold 3 canonical stages");
+
+    let index = storage.load_index().expect("should load 3-stage index");
+    assert_eq!(index.project.project.active_phase, "pre_production");
+    assert_eq!(index.phases.len(), 3);
+    assert_eq!(index.phases[0].phase_id, "pre_production");
+    assert_eq!(
+        index.phases[0].manifest.phase.status,
+        PhaseStatus::InProgress
+    );
+    assert_eq!(index.phases[1].phase_id, "production");
+    assert_eq!(index.phases[1].manifest.phase.status, PhaseStatus::Planned);
+    assert_eq!(index.phases[2].phase_id, "post_production");
+    assert_eq!(index.phases[2].manifest.phase.status, PhaseStatus::Planned);
+
+    // Alias lookups on `TrackerIndex` and `TrackerStorage`
+    assert!(index.phase("pre").is_some());
+    assert!(index.phase("prod").is_some());
+    assert!(index.phase("post").is_some());
+    assert!(index.scope("1", "inbox").is_some());
+    assert!(index.scope("2", "inbox").is_some());
+    assert!(index.scope("3", "inbox").is_some());
+    assert_eq!(
+        storage.read_phase("pre").unwrap().phase.id,
+        "pre_production"
+    );
+    assert_eq!(storage.read_phase("prod").unwrap().phase.id, "production");
+    assert_eq!(
+        storage.read_phase("post").unwrap().phase.id,
+        "post_production"
+    );
+
+    // 3. Verify `promote_component_to_scope` automatically mirrors the promoted scope across all 3 stages
+    let comp_dir = temp.path().join("crates/engine_core/src");
+    fs::create_dir_all(&comp_dir).unwrap();
+    fs::write(
+        temp.path().join("crates/engine_core/Cargo.toml"),
+        "[package]\nname = \"engine_core\"\n",
+    )
+    .unwrap();
+    fs::write(comp_dir.join("lib.rs"), "pub fn run() {}\n").unwrap();
+
+    let comp = ComponentManifest::new(
+        "engine_core",
+        "Engine Core",
+        "crates/engine_core",
+        "rust_crate",
+    );
+    storage.write_component_manifest(&comp).unwrap();
+    let promoted = storage
+        .promote_component_to_scope(Some("pre"), "engine_core", None, None)
+        .expect("should promote engine_core and mirror across all 3 canonical stages");
+    assert_eq!(promoted.scope.id, "engine_core");
+
+    for stage_alias in ["pre", "prod", "post"] {
+        let mirrored_scope = storage
+            .read_scope(stage_alias, "engine_core")
+            .expect("promoted scope must exist in every canonical stage");
+        assert_eq!(mirrored_scope.scope.target, "crates/engine_core");
+        assert_eq!(
+            mirrored_scope.scope.bound_component.as_deref(),
+            Some("engine_core")
+        );
+        assert_eq!(
+            mirrored_scope.scope.tracked_files,
+            vec![
+                "crates/engine_core/Cargo.toml".to_string(),
+                "crates/engine_core/src/lib.rs".to_string(),
+            ]
+        );
+        assert!(storage
+            .items_dir(stage_alias, "engine_core")
+            .unwrap()
+            .is_dir());
+    }
+
+    // 4. Verify `TrackerStorage::init` with shorthand alias `"prod"` scaffolds all 3 stages with `production` active
+    let temp_prod = TempTrackerDir::new("three_stage_init_alias");
+    let prod_storage =
+        TrackerStorage::init(temp_prod.path(), "ProdInitProject", "prod", "Production").unwrap();
+    let prod_idx = prod_storage.load_index().unwrap();
+    assert_eq!(prod_idx.project.project.active_phase, "production");
+    assert_eq!(prod_idx.phases.len(), 3);
+    assert_eq!(
+        prod_storage.read_phase("prod").unwrap().phase.status,
+        PhaseStatus::InProgress
+    );
+    assert_eq!(
+        prod_storage.read_phase("pre").unwrap().phase.status,
+        PhaseStatus::Planned
+    );
+}

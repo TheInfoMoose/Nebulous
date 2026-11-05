@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Nebulous Turnkey Installer (`nebulous` COSMIC GUI + `neb` CLI + Desktop Integration)
+# Nebulous CLI Installer (`neb`)
 # Supports:
 #   ./scripts/install.sh [--user] [--system] [--prefix <DIR>] [--skip-build] [--uninstall]
 
@@ -9,7 +9,6 @@ CALLER_PWD="$(pwd)"
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-APP_ID="com.nebulous.Tracker"
 
 abs_path() {
   local target="$1"
@@ -31,14 +30,14 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Install or uninstall Nebulous (nebulous GUI, neb CLI, icon, and .desktop launcher).
+Install or uninstall the Nebulous CLI (neb).
 
 Options:
   --user            Install to user prefix (\${HOME}/.local) [default]
   --system          Install to system prefix (/usr/local)
   --prefix <PATH>   Install to an explicit custom prefix path
-  --skip-build      Use existing target/release/{nebulous,neb} binaries without running cargo build
-  --uninstall       Remove installed binaries, icon, metainfo, and .desktop entry from target prefix
+  --skip-build      Use existing target/release/neb binary without running cargo build
+  --uninstall       Remove installed neb binary from target prefix
   -h, --help        Show this help message
 EOF
 }
@@ -98,29 +97,11 @@ else
 fi
 
 BINDIR="${PREFIX}/bin"
-DATADIR="${PREFIX}/share"
-APPDIR="${DATADIR}/applications"
-ICONDIR="${DATADIR}/icons/hicolor/scalable/apps"
-METAICODIR="${DATADIR}/metainfo"
-
-refresh_desktop_caches() {
-  if command -v update-desktop-database >/dev/null 2>&1 && [[ -d "${APPDIR}" ]]; then
-    update-desktop-database "${APPDIR}" >/dev/null 2>&1 || true
-  fi
-  if command -v gtk-update-icon-cache >/dev/null 2>&1 && [[ -d "${DATADIR}/icons/hicolor" ]]; then
-    gtk-update-icon-cache -f -t "${DATADIR}/icons/hicolor" >/dev/null 2>&1 || true
-  fi
-}
 
 if [[ "${ACTION}" == "uninstall" ]]; then
-  echo "Uninstalling Nebulous from ${PREFIX}..."
-  rm -f "${BINDIR}/nebulous"
+  echo "Uninstalling Nebulous CLI from ${PREFIX}..."
   rm -f "${BINDIR}/neb"
-  rm -f "${APPDIR}/${APP_ID}.desktop"
-  rm -f "${ICONDIR}/${APP_ID}.svg"
-  rm -f "${METAICODIR}/${APP_ID}.metainfo.xml"
-  refresh_desktop_caches
-  echo "Uninstalled Nebulous from ${PREFIX}."
+  echo "Uninstalled Nebulous CLI from ${PREFIX}."
   exit 0
 fi
 
@@ -133,38 +114,23 @@ fi
 cd "${REPO_ROOT}"
 
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
-  echo "Building Nebulous release binaries (nebulous + neb)..."
-  cargo build --workspace --release
+  echo "Building Nebulous CLI release binary (neb)..."
+  cargo build --release -p nebulous_cli
 fi
 
-NEBULOUS_BIN="${BIN_SOURCE_DIR}/nebulous"
 NEB_BIN="${BIN_SOURCE_DIR}/neb"
 
-if [[ ! -x "${NEBULOUS_BIN}" ]]; then
-  echo "Error: Release binary not found at ${NEBULOUS_BIN}. Run without --skip-build first." >&2
-  exit 1
-fi
 if [[ ! -x "${NEB_BIN}" ]]; then
   echo "Error: Release binary not found at ${NEB_BIN}. Run without --skip-build first." >&2
   exit 1
 fi
 
-echo "Installing Nebulous to ${PREFIX}..."
-install -d "${BINDIR}" "${APPDIR}" "${ICONDIR}" "${METAICODIR}"
-install -m 0755 "${NEBULOUS_BIN}" "${BINDIR}/nebulous"
+echo "Installing Nebulous CLI to ${PREFIX}..."
+install -d "${BINDIR}"
 install -m 0755 "${NEB_BIN}" "${BINDIR}/neb"
-install -m 0644 "${REPO_ROOT}/packaging/${APP_ID}.desktop" "${APPDIR}/${APP_ID}.desktop"
-install -m 0644 "${REPO_ROOT}/packaging/icons/${APP_ID}.svg" "${ICONDIR}/${APP_ID}.svg"
-install -m 0644 "${REPO_ROOT}/packaging/${APP_ID}.metainfo.xml" "${METAICODIR}/${APP_ID}.metainfo.xml"
-
-refresh_desktop_caches
 
 echo "Successfully installed:"
-echo "  GUI Binary : ${BINDIR}/nebulous"
 echo "  CLI Binary : ${BINDIR}/neb"
-echo "  Desktop    : ${APPDIR}/${APP_ID}.desktop"
-echo "  Icon       : ${ICONDIR}/${APP_ID}.svg"
-echo "  Metainfo   : ${METAICODIR}/${APP_ID}.metainfo.xml"
 
 if [[ ":${PATH}:" != *":${BINDIR}:"* ]]; then
   echo ""

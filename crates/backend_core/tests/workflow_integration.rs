@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use backend_core::{
     build_auth_callbacks, build_pat_callbacks, CommitPolicyConfig, CreateItemInput,
     DocumentedCommitInput, ItemDetail, ItemEffort, ItemHistory, ItemManifest, ItemMetadata,
-    ItemStatus, ItemType, PreviousFix, Severity, TrackerError, TrackerStorage,
+    ItemStatus, ItemType, NextActionKind, PreviousFix, Severity, TrackerError, TrackerStorage,
 };
 
 fn init_temp_tracker() -> (TempDir, TrackerStorage) {
@@ -1382,4 +1382,575 @@ fn test_git_auth_resolution_ssh_keypair_and_pat() {
     let _ = manager.delete_ssh_keypair("nebulous/ssh-deploy");
     let _ = storage.delete_pat();
     std::env::remove_var("NEBULOUS_CONFIG_DIR");
+}
+
+#[test]
+fn test_cross_stage_scope_mirroring_and_move_item_to_phase() {
+    let dir = TempDir::new().expect("should create tempdir");
+    let storage = TrackerStorage::init_standard(dir.path(), "StageFlowProject")
+        .expect("should init_standard 3-stage project");
+
+    // 1. Create `backend_core` scope in `pre` (`pre_production`) and verify automatic mirroring
+    // across `pre_production`, `production`, and `post_production`.
+    let created_scope = storage
+        .create_scope(
+            Some("pre"),
+            "backend_core",
+            "crates/backend_core",
+            vec!["rust".to_string(), "serde".to_string()],
+            Some("Core Rust backend".to_string()),
+        )
+        .expect("should create and mirror backend_core scope");
+    assert_eq!(created_scope.scope.id, "backend_core");
+
+    for stage in ["pre_production", "production", "post_production"] {
+        let scope_in_stage = storage
+            .read_scope(stage, "backend_core")
+            .expect("backend_core must be mirrored in all 3 canonical stages");
+        assert_eq!(scope_in_stage.scope.target, "crates/backend_core");
+        assert_eq!(
+            scope_in_stage.scope.tech_stack,
+            vec!["rust".to_string(), "serde".to_string()]
+        );
+        assert_eq!(
+            scope_in_stage.scope.description.as_deref(),
+            Some("Core Rust backend")
+        );
+        assert!(storage.items_dir(stage, "backend_core").unwrap().is_dir());
+    }
+
+    // 2. Create `FEAT-0001` in `pre_production` (`pre`) under `backend_core`
+    let (loc_pre, detail_pre) = storage
+        .create_feature(
+            "3-Stage Canonical Phasing & Item Movement",
+            Some("pre"),
+            Some("backend_core"),
+            Severity::High,
+            Some("Verify item movement across pre_production -> production -> post_production."),
+        )
+        .expect("should create FEAT-0001 in pre_production");
+    assert_eq!(loc_pre.phase_id, "pre_production");
+    assert_eq!(loc_pre.scope_id, "backend_core");
+    assert_eq!(detail_pre.manifest.item.id, "FEAT-0001");
+
+    // Start an active timer on FEAT-0001 so we also verify timer phase_id updates on move
+    let t0 = Utc.with_ymd_and_hms(2026, 11, 4, 18, 0, 0).unwrap();
+    storage
+        .start_timer_at(
+            "FEAT-0001",
+            t0,
+            Some("Implementing stage movement".to_string()),
+        )
+        .expect("should start timer on FEAT-0001");
+
+    // 3. Move `FEAT-0001` from `pre_production` -> `production` using shorthand `"prod"`
+    let (loc_prod, detail_prod) = storage
+        .move_item_to_phase("FEAT-0001", "prod")
+        .expect("should move FEAT-0001 to production");
+    assert_eq!(loc_prod.phase_id, "production");
+    assert_eq!(loc_prod.scope_id, "backend_core");
+    assert_eq!(detail_prod.manifest.item.id, "FEAT-0001");
+    assert!(detail_prod
+        .description_markdown
+        .contains("Verify item movement across pre_production"));
+
+    // Old item directory in `pre_production` must be removed, and `production` item directory must exist
+    assert!(!storage
+        .item_dir("pre_production", "backend_core", "FEAT-0001")
+        .unwrap()
+        .exists());
+    assert!(storage
+        .item_toml_path("production", "backend_core", "FEAT-0001")
+        .unwrap()
+        .is_file());
+    assert!(storage
+        .item_desc_path("production", "backend_core", "FEAT-0001")
+        .unwrap()
+        .is_file());
+
+    // Source and target `scope.toml` and `phase.toml` summaries must be atomically updated
+    assert!(storage
+        .read_scope("pre_production", "backend_core")
+        .unwrap()
+        .items
+        .features
+        .is_empty());
+    assert_eq!(
+        storage
+            .read_phase("pre_production")
+            .unwrap()
+            .summary
+            .total_items,
+        0
+    );
+    assert_eq!(
+        storage
+            .read_scope("production", "backend_core")
+            .unwrap()
+            .items
+            .features
+            .len(),
+        1
+    );
+    assert_eq!(
+        storage
+            .read_phase("production")
+            .unwrap()
+            .summary
+            .total_items,
+        1
+    );
+
+    // Active timer `.timer.toml` must point to `"production"`
+    assert_eq!(
+        storage
+            .read_active_timer()
+            .unwrap()
+            .unwrap()
+            .phase_id
+            .as_deref(),
+        Some("production")
+    );
+
+    // 4. Move `FEAT-0001` from `production` -> `post_production` using numeric alias `"3"`
+    let (loc_post, _) = storage
+        .move_item_to_phase("FEAT-0001", "3")
+        .expect("should move FEAT-0001 to post_production");
+    assert_eq!(loc_post.phase_id, "post_production");
+    assert_eq!(
+        storage
+            .read_phase("production")
+            .unwrap()
+            .summary
+            .total_items,
+        0
+    );
+    assert_eq!(
+        storage
+            .read_phase("post_production")
+            .unwrap()
+            .summary
+            .total_items,
+        1
+    );
+
+    // Switch active phase using shorthand alias `"post"`
+    let proj_after = storage
+        .set_active_phase("post")
+        .expect("should switch active phase via alias");
+    assert_eq!(proj_after.project.active_phase, "post_production");
+    assert_eq!(
+        storage.read_phase("post").unwrap().phase.status,
+        backend_core::PhaseStatus::InProgress
+    );
+}
+
+#[test]
+fn test_infer_scope_from_context_all_priority_levels() {
+    let dir = TempDir::new().expect("should create tempdir");
+    let storage = TrackerStorage::init_standard(dir.path(), "ScopeInferenceProject")
+        .expect("should init_standard");
+
+    // Priority 5: Only `inbox` exists -> falls back to `default_scope` ("inbox")
+    assert_eq!(
+        storage.infer_scope_from_context(None).unwrap(),
+        "inbox",
+        "when only inbox exists, must fall back to inbox"
+    );
+
+    // Priority 4: Exactly one non-inbox scope (`backend_core`) exists -> returns `backend_core`
+    storage
+        .create_scope(
+            Some("pre"),
+            "backend_core",
+            "crates/backend_core",
+            vec!["rust".to_string()],
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        storage.infer_scope_from_context(None).unwrap(),
+        "backend_core",
+        "when exactly one non-inbox scope exists, must return that scope"
+    );
+
+    // Add a second and third scope (`nebulous_cli` and nested `backend_core_sub`) so multiple non-inbox scopes exist
+    storage
+        .create_scope(
+            Some("pre"),
+            "nebulous_cli",
+            "crates/nebulous_cli",
+            vec!["rust".to_string()],
+            None,
+        )
+        .unwrap();
+    storage
+        .create_scope(
+            Some("pre"),
+            "backend_workflow",
+            "crates/backend_core/src/workflow",
+            vec!["rust".to_string()],
+            None,
+        )
+        .unwrap();
+
+    // With >1 non-inbox scopes, no cwd match, no git dirty files, and no timer -> falls back to `inbox`
+    assert_eq!(
+        storage.infer_scope_from_context(Some(dir.path())).unwrap(),
+        "inbox"
+    );
+
+    // Priority 3: Active timer with a `scope_id` -> returns timer's `scope_id`
+    storage
+        .create_bug(
+            "CLI arg parser bug",
+            Some("pre"),
+            Some("nebulous_cli"),
+            Severity::Medium,
+            None,
+        )
+        .unwrap();
+    storage.start_timer("BUG-0001", None).unwrap();
+    assert_eq!(
+        storage.infer_scope_from_context(None).unwrap(),
+        "nebulous_cli",
+        "active timer scope must be inferred when cwd and git dirty files do not match"
+    );
+
+    // Priority 2: Dirty/modified files in Git (`most modified files wins`) overrides active timer
+    let _repo = Repository::init(dir.path()).expect("should init git repo");
+    let backend_src = dir.path().join("crates/backend_core/src");
+    let cli_src = dir.path().join("crates/nebulous_cli/src");
+    fs::create_dir_all(&backend_src).unwrap();
+    fs::create_dir_all(&cli_src).unwrap();
+    fs::write(backend_src.join("a.rs"), "pub fn a() {}\n").unwrap();
+    fs::write(backend_src.join("b.rs"), "pub fn b() {}\n").unwrap();
+    fs::write(cli_src.join("main.rs"), "fn main() {}\n").unwrap();
+
+    assert_eq!(
+        storage.infer_scope_from_context(None).unwrap(),
+        "backend_core",
+        "scope with most modified files in Git (2 vs 1) must win over timer"
+    );
+
+    // Priority 1: `cwd` inside a scope's `target` directory (longest prefix match) overrides Git dirty files
+    let cli_cwd = dir.path().join("crates/nebulous_cli/src");
+    assert_eq!(
+        storage.infer_scope_from_context(Some(&cli_cwd)).unwrap(),
+        "nebulous_cli",
+        "cwd inside crates/nebulous_cli/src must infer nebulous_cli"
+    );
+
+    let nested_workflow_cwd = dir.path().join("crates/backend_core/src/workflow");
+    assert_eq!(
+        storage
+            .infer_scope_from_context(Some(&nested_workflow_cwd))
+            .unwrap(),
+        "backend_workflow",
+        "longest target prefix match (crates/backend_core/src/workflow vs crates/backend_core) must win"
+    );
+}
+
+#[test]
+fn test_resolve_active_or_inferred_item_id_and_whats_next_ranking() {
+    let dir = TempDir::new().expect("should create tempdir");
+    let storage = TrackerStorage::init_standard(dir.path(), "WhatsNextProject")
+        .expect("should init_standard");
+
+    // Create a Cargo.toml on disk while only `inbox` scope exists -> triggers UnscopedWorkspace warning
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let initial_report = storage.compute_whats_next(None).unwrap();
+    assert_eq!(initial_report.active_phase, "pre_production");
+    assert_eq!(initial_report.inferred_scope, "inbox");
+    assert!(initial_report
+        .recommendations
+        .iter()
+        .any(|r| r.kind == NextActionKind::UnscopedWorkspace));
+
+    // Promote scopes `backend_core` and `nebulous_cli`
+    storage
+        .create_scope(
+            Some("pre"),
+            "backend_core",
+            "crates/backend_core",
+            vec!["rust".to_string()],
+            None,
+        )
+        .unwrap();
+    storage
+        .create_scope(
+            Some("pre"),
+            "nebulous_cli",
+            "crates/nebulous_cli",
+            vec!["rust".to_string()],
+            None,
+        )
+        .unwrap();
+
+    // Create items to test ranking:
+    // - BUG-0001: Open in `nebulous_cli`, Medium severity, default placeholder description (missing spec)
+    storage
+        .create_bug(
+            "CLI table alignment glitch",
+            Some("pre"),
+            Some("nebulous_cli"),
+            Severity::Medium,
+            None,
+        )
+        .unwrap();
+
+    // - FEAT-0001: Open in `backend_core`, High severity
+    storage
+        .create_feature(
+            "Assistive engine ranking",
+            Some("pre"),
+            Some("backend_core"),
+            Severity::High,
+            Some("Complete specification provided."),
+        )
+        .unwrap();
+
+    // - BUG-0002: Open in `backend_core`, High severity (should beat FEAT-0001 on `item_type == Bug`)
+    storage
+        .create_bug(
+            "Lockfile contention in backend_core",
+            Some("pre"),
+            Some("backend_core"),
+            Severity::High,
+            None, // leaves default placeholder in desc.md!
+        )
+        .unwrap();
+
+    // - BUG-0003: Recurring bug (`recurrence_count = 1`), Medium severity in `nebulous_cli`
+    storage
+        .create_bug(
+            "Recurring regression in CLI",
+            Some("pre"),
+            Some("nebulous_cli"),
+            Severity::Medium,
+            Some("Detailed regression notes."),
+        )
+        .unwrap();
+    storage
+        .record_regression("BUG-0003", Some("Re-triggered on empty args"))
+        .unwrap();
+
+    // - FEAT-0002: Stagnant item in `nebulous_cli` (updated 10 days before `eval_now`)
+    let (_, mut stagnant_feat) = storage
+        .create_feature(
+            "Stagnant CLI subcommand",
+            Some("pre"),
+            Some("nebulous_cli"),
+            Severity::Low,
+            Some("Detailed spec."),
+        )
+        .unwrap();
+    let eval_now = Utc::now();
+    stagnant_feat.manifest.item.updated_at =
+        (eval_now - chrono::Duration::days(10)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    storage
+        .write_item_detail("pre_production", "nebulous_cli", &stagnant_feat)
+        .unwrap();
+    storage.reconcile_indexes().unwrap();
+
+    let backend_cwd = dir.path().join("crates/backend_core");
+    let report = storage
+        .compute_whats_next_at(Some(&backend_cwd), eval_now)
+        .expect("should compute whats_next");
+
+    assert_eq!(report.inferred_scope, "backend_core");
+    // Expected order when no item is active:
+    // #1: BUG-0003 (RecurringBug, recurrence_count = 1)
+    // #2: FEAT-0002 (StagnantItem, 9 days since update >= threshold 4)
+    // #3: BUG-0002 (PrioritizedOpenItem in inferred_scope `backend_core`, High, Bug)
+    // #4: FEAT-0001 (PrioritizedOpenItem in inferred_scope `backend_core`, High, Feature)
+    // #5: BUG-0001 (PrioritizedOpenItem in other scope `nebulous_cli`, Medium, Bug)
+    let ranked_ids: Vec<&str> = report
+        .recommendations
+        .iter()
+        .filter_map(|r| r.item_id.as_deref())
+        .collect();
+    assert_eq!(
+        ranked_ids,
+        vec!["BUG-0003", "FEAT-0002", "BUG-0002", "FEAT-0001", "BUG-0001"]
+    );
+    assert_eq!(report.recommendations[0].kind, NextActionKind::RecurringBug);
+    assert_eq!(report.recommendations[1].kind, NextActionKind::StagnantItem);
+    assert_eq!(
+        report.recommendations[2].kind,
+        NextActionKind::PrioritizedOpenItem
+    );
+
+    // Verify `resolve_active_or_inferred_item_id`:
+    // 1. Explicit ID normalizes case
+    assert_eq!(
+        storage
+            .resolve_active_or_inferred_item_id(Some("  bug-0002 "))
+            .unwrap(),
+        "BUG-0002"
+    );
+    // 2. When no timer or in_progress item exists, returns ValidationError suggesting top recommended ID ("BUG-0003")
+    let err = storage
+        .resolve_active_or_inferred_item_id(None)
+        .expect_err("should fail when no timer or in_progress item exists");
+    assert!(matches!(
+        err,
+        TrackerError::ValidationError(ref msg) if msg.contains("BUG-0003")
+    ));
+
+    // Close BUG-0003 and FEAT-0002 so BUG-0002 (which has default placeholder `desc.md`) is the top recommended item
+    storage
+        .close_item("BUG-0003", "Fixed recurring bug", None, false)
+        .unwrap();
+    storage
+        .close_item("FEAT-0002", "Completed stagnant feature", None, false)
+        .unwrap();
+
+    let report_missing_spec = storage
+        .compute_whats_next_at(Some(&backend_cwd), eval_now)
+        .unwrap();
+    assert_eq!(report_missing_spec.top_item_id(), Some("BUG-0002"));
+    assert!(
+        !report_missing_spec.missing_fields.is_empty(),
+        "top recommended item with default desc.md placeholder must report missing_fields"
+    );
+    assert!(report_missing_spec
+        .missing_fields
+        .contains(&"problem_description".to_string()));
+    assert!(!report_missing_spec.recommendations[0]
+        .missing_fields
+        .is_empty());
+}
+
+#[test]
+fn test_start_work_item_auto_timer_switch_close_stop_and_stage_advancement_hint() {
+    let dir = TempDir::new().expect("should create tempdir");
+    let storage =
+        TrackerStorage::init_standard(dir.path(), "AutoFlowProject").expect("should init_standard");
+
+    storage
+        .create_scope(
+            Some("pre"),
+            "backend_core",
+            "crates/backend_core",
+            vec!["rust".to_string()],
+            None,
+        )
+        .unwrap();
+
+    storage
+        .create_bug(
+            "Critical startup bug",
+            Some("pre"),
+            Some("backend_core"),
+            Severity::Critical,
+            Some("Fix startup crash."),
+        )
+        .unwrap();
+    storage
+        .create_feature(
+            "Secondary feature",
+            Some("pre"),
+            Some("backend_core"),
+            Severity::Medium,
+            Some("Implement secondary feature."),
+        )
+        .unwrap();
+
+    // 1. Call `start_work_item(None, ...)` -> automatically picks top recommended open item (`BUG-0001`),
+    // transitions status to `InProgress`, starts `.timer.toml`, and returns `AgentContextBundle`.
+    let (loc1, detail1, timer1, bundle1) = storage
+        .start_work_item(None, Some("Starting critical bug fix".to_string()))
+        .expect("start_work_item(None) should pick BUG-0001");
+    assert_eq!(loc1.stub.id, "BUG-0001");
+    assert_eq!(detail1.manifest.item.status, ItemStatus::InProgress);
+    assert_eq!(timer1.item_id, "BUG-0001");
+    assert_eq!(timer1.note.as_deref(), Some("Starting critical bug fix"));
+    assert!(bundle1.bounded_prompt.contains("BUG-0001"));
+
+    // `resolve_active_or_inferred_item_id(None)` now resolves `BUG-0001` via active timer
+    assert_eq!(
+        storage.resolve_active_or_inferred_item_id(None).unwrap(),
+        "BUG-0001"
+    );
+
+    // Simulate 30 minutes elapsed on `BUG-0001`'s timer by backdating `started_at` in `.timer.toml`
+    let mut backdated_timer = storage.read_active_timer().unwrap().unwrap();
+    let thirty_mins_ago = Utc::now() - chrono::Duration::minutes(30);
+    backdated_timer.started_at = thirty_mins_ago.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    storage.write_active_timer(&backdated_timer).unwrap();
+
+    // 2. Call `start_work_item(Some("FEAT-0001"), ...)` while `BUG-0001` timer is running:
+    // Must automatically stop `BUG-0001`'s timer, log ~30 minutes onto `BUG-0001`, transition
+    // `FEAT-0001` to `InProgress`, and start `.timer.toml` on `FEAT-0001`!
+    let (loc2, detail2, timer2, bundle2) = storage
+        .start_work_item(Some("feat-0001"), Some("Switching to feature".to_string()))
+        .expect("start_work_item on FEAT-0001 should auto-switch timer without error");
+    assert_eq!(loc2.stub.id, "FEAT-0001");
+    assert_eq!(detail2.manifest.item.status, ItemStatus::InProgress);
+    assert_eq!(timer2.item_id, "FEAT-0001");
+    assert_eq!(timer2.note.as_deref(), Some("Switching to feature"));
+    assert!(bundle2.bounded_prompt.contains("FEAT-0001"));
+
+    let (_, bug1_after_switch) = storage.load_item_detail_by_id("BUG-0001").unwrap();
+    assert!(
+        bug1_after_switch.manifest.effort.logged_time_minutes >= 29,
+        "previous item BUG-0001 must have elapsed minutes logged when timer switches"
+    );
+
+    // Simulate 15 minutes elapsed on `FEAT-0001`'s timer
+    let mut feat_timer = storage.read_active_timer().unwrap().unwrap();
+    assert_eq!(feat_timer.item_id, "FEAT-0001");
+    let fifteen_mins_ago = Utc::now() - chrono::Duration::minutes(15);
+    feat_timer.started_at = fifteen_mins_ago.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    storage.write_active_timer(&feat_timer).unwrap();
+
+    // 3. Closing `FEAT-0001` while `.timer.toml` is timing it must automatically stop the timer
+    // and add the 15 elapsed minutes to `effort.logged_time_minutes` before writing the closed manifest!
+    let closed_feat = storage
+        .close_item("FEAT-0001", "Completed secondary feature", None, true)
+        .expect("close_item should auto-stop active timer and log elapsed minutes");
+    assert_eq!(closed_feat.manifest.item.status, ItemStatus::Merged);
+    assert!(
+        closed_feat.manifest.effort.logged_time_minutes >= 14,
+        "closing timed item must accumulate elapsed timer minutes"
+    );
+    assert!(
+        storage.read_active_timer().unwrap().is_none(),
+        ".timer.toml must be cleared when timed item is closed"
+    );
+
+    // Now only `BUG-0001` remains `InProgress` (with no active timer):
+    // `resolve_active_or_inferred_item_id(None)` must resolve `BUG-0001` via single `in_progress` item!
+    assert_eq!(
+        storage.resolve_active_or_inferred_item_id(None).unwrap(),
+        "BUG-0001"
+    );
+
+    // Close `BUG-0001` as well so all items in `pre_production` (2/2) are completed
+    storage
+        .close_item("BUG-0001", "Resolved critical startup bug", None, false)
+        .unwrap();
+
+    // 4. Verify `compute_whats_next` emits Stage Advancement Hint (`pre_production` -> `production`)
+    let completed_stage_report = storage.compute_whats_next(None).unwrap();
+    assert!(
+        completed_stage_report.stage_advancement_hint.is_some(),
+        "when all items in active_phase are completed, stage_advancement_hint must be present"
+    );
+    assert!(completed_stage_report
+        .stage_advancement_hint
+        .as_deref()
+        .unwrap()
+        .contains("production"));
+    assert!(completed_stage_report
+        .recommendations
+        .iter()
+        .any(|r| r.kind == NextActionKind::AdvanceStage
+            && r.phase_id.as_deref() == Some("production")));
 }

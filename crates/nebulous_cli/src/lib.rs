@@ -1,11 +1,13 @@
 pub mod args;
 pub mod commands;
+pub mod tui;
 
 pub use args::{
     Cli, Commands, ComponentCommand, GitCommand, PhaseCommand, ProjectCommand, ScopeCommand,
     TimerCommand,
 };
 pub use commands::{execute, execute_to_string, resolve_storage};
+pub use tui::{render_to_buffer, render_to_string, TuiApp};
 
 #[cfg(test)]
 mod tests {
@@ -21,9 +23,26 @@ mod tests {
 
     #[test]
     fn test_parse_all_sixteen_subcommands() {
+        // 0. bare `neb` and `neb tui` / `neb ui`
+        let cli = Cli::try_parse_from(["neb"]).unwrap();
+        assert!(cli.command.is_none());
+
+        let cli = Cli::try_parse_from(["neb", "tui"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Tui)));
+
+        let cli = Cli::try_parse_from(["neb", "ui"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Tui)));
+
         // 1. init
         let cli = Cli::try_parse_from(["neb", "init", "--name", "Demo"]).unwrap();
-        assert!(matches!(cli.command, Commands::Init { .. }));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Init {
+                no_ingest: false,
+                no_register: false,
+                ..
+            })
+        ));
 
         // 2. bug
         let cli = Cli::try_parse_from([
@@ -44,15 +63,15 @@ mod tests {
         assert!(cli.json);
         assert!(matches!(
             cli.command,
-            Commands::Bug {
+            Some(Commands::Bug {
                 severity: Severity::High,
                 ..
-            }
+            })
         ));
 
         // 3. feat
         let cli = Cli::try_parse_from(["neb", "feat", "New Kanban filter"]).unwrap();
-        assert!(matches!(cli.command, Commands::Feat { .. }));
+        assert!(matches!(cli.command, Some(Commands::Feat { .. })));
 
         // 4. list
         let cli = Cli::try_parse_from([
@@ -70,30 +89,32 @@ mod tests {
         .unwrap();
         assert!(matches!(
             cli.command,
-            Commands::List {
+            Some(Commands::List {
                 status: Some(ItemStatus::Open),
                 item_type: Some(ItemType::Bug),
                 stagnant: true,
                 recurring: true,
                 ..
-            }
+            })
         ));
 
-        // 5. show
+        // 5. show (explicit and zero-ID)
         let cli = Cli::try_parse_from(["neb", "show", "BUG-0001"]).unwrap();
-        assert!(matches!(cli.command, Commands::Show { .. }));
+        assert!(matches!(cli.command, Some(Commands::Show { id: Some(_) })));
+        let cli = Cli::try_parse_from(["neb", "show"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Show { id: None })));
 
         // 6. status
         let cli = Cli::try_parse_from(["neb", "status", "BUG-0001", "in_progress"]).unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Status {
+            Some(Commands::Status {
                 status: ItemStatus::InProgress,
                 ..
-            }
+            })
         ));
 
-        // 7. close
+        // 7. close & done (explicit and zero-ID, with -c)
         let cli = Cli::try_parse_from([
             "neb",
             "close",
@@ -105,63 +126,80 @@ mod tests {
             "--merged",
         ])
         .unwrap();
-        assert!(matches!(cli.command, Commands::Close { merged: true, .. }));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Close { merged: true, .. })
+        ));
+        let cli = Cli::try_parse_from(["neb", "done", "-m", "Implemented feature", "-c"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Close {
+                id: None,
+                commit_changes: true,
+                ..
+            })
+        ));
 
         // 8. reopen
         let cli = Cli::try_parse_from(["neb", "reopen", "BUG-0001", "-r", "Regression detected"])
             .unwrap();
-        assert!(matches!(cli.command, Commands::Reopen { .. }));
+        assert!(matches!(cli.command, Some(Commands::Reopen { .. })));
 
         // 9. timer
         let cli = Cli::try_parse_from(["neb", "timer", "start", "BUG-0001"]).unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Timer {
+            Some(Commands::Timer {
                 action: Some(TimerCommand::Start { .. })
-            }
+            })
         ));
 
         // 10. log
         let cli = Cli::try_parse_from(["neb", "log", "BUG-0001", "-m", "30"]).unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Log {
+            Some(Commands::Log {
                 minutes: Some(30),
                 ..
-            }
+            })
         ));
 
-        // 11. context
+        // 11. context (explicit and zero-ID)
         let cli =
             Cli::try_parse_from(["neb", "context", "BUG-0001", "--refs-only", "--copy"]).unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Context {
+            Some(Commands::Context {
                 refs_only: true,
                 copy: true,
                 ..
-            }
+            })
+        ));
+        let cli = Cli::try_parse_from(["neb", "context"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Context { id: None, .. })
         ));
 
         // 12. metrics
         let cli = Cli::try_parse_from(["neb", "metrics"]).unwrap();
-        assert!(matches!(cli.command, Commands::Metrics));
+        assert!(matches!(cli.command, Some(Commands::Metrics)));
 
         // 13. sync
         let cli = Cli::try_parse_from(["neb", "sync", "--message", "Sync tracker"]).unwrap();
-        assert!(matches!(cli.command, Commands::Sync { .. }));
+        assert!(matches!(cli.command, Some(Commands::Sync { .. })));
 
         // 14. sync-index
         let cli = Cli::try_parse_from(["neb", "sync-index"]).unwrap();
-        assert!(matches!(cli.command, Commands::SyncIndex));
+        assert!(matches!(cli.command, Some(Commands::SyncIndex)));
 
         // 15. phase
         let cli = Cli::try_parse_from(["neb", "phase", "use", "01_core_engine"]).unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Phase {
+            Some(Commands::Phase {
                 action: PhaseCommand::Use { .. }
-            }
+            })
         ));
 
         // 16. scope
@@ -176,9 +214,9 @@ mod tests {
         .unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Scope {
+            Some(Commands::Scope {
                 action: ScopeCommand::Add { .. }
-            }
+            })
         ));
 
         // 17. project
@@ -186,9 +224,9 @@ mod tests {
             .unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Project {
+            Some(Commands::Project {
                 action: ProjectCommand::Add { .. }
-            }
+            })
         ));
 
         // 18. ingest
@@ -203,20 +241,20 @@ mod tests {
         .unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Ingest {
+            Some(Commands::Ingest {
                 write_manifests: true,
                 promote_all: true,
                 ..
-            }
+            })
         ));
 
         // 19. component
         let cli = Cli::try_parse_from(["neb", "component", "pin", "novos_iso"]).unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Component {
+            Some(Commands::Component {
                 action: ComponentCommand::Pin { .. }
-            }
+            })
         ));
 
         // 20. git
@@ -233,13 +271,39 @@ mod tests {
         .unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Git {
+            Some(Commands::Git {
                 action: GitCommand::Commit { all: true, .. }
-            }
+            })
         ));
 
         // 21. mcp
         let cli = Cli::try_parse_from(["neb", "mcp"]).unwrap();
-        assert!(matches!(cli.command, Commands::Mcp));
+        assert!(matches!(cli.command, Some(Commands::Mcp)));
+
+        // 22. start, next, move, stage
+        let cli = Cli::try_parse_from(["neb", "start"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Start {
+                id: None,
+                copy: true,
+                ..
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["neb", "next"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Next)));
+
+        let cli = Cli::try_parse_from(["neb", "move", "prod"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Move { .. })));
+
+        let cli = Cli::try_parse_from(["neb", "move", "FEAT-0001", "prod"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Move { .. })));
+
+        let cli = Cli::try_parse_from(["neb", "stage", "prod"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Stage { stage: Some(_) })
+        ));
     }
 }

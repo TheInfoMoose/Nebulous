@@ -21,24 +21,36 @@ pub struct Cli {
     pub json: bool,
 
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Commands {
-    /// Initialize a new `.tracker/` hierarchy in the target directory.
+    /// Launch the interactive terminal dashboard (or display the active status + "What's Next" summary).
+    #[command(visible_alias = "ui")]
+    Tui,
+
+    /// Initialize a new `.tracker/` hierarchy in the target directory (scaffolds all 3 canonical stages, ingests components, and registers project by default).
     Init {
         /// Project name (defaults to directory name or "Nebulous").
         #[arg(short, long)]
         name: Option<String>,
 
         /// Initial phase identifier.
-        #[arg(long, default_value = "01_core_engine")]
+        #[arg(long, default_value = "pre_production")]
         phase_id: String,
 
         /// Initial phase human-readable title.
-        #[arg(long, default_value = "Core Engine & Initial Scope")]
+        #[arg(long, default_value = "Pre-Production")]
         phase_title: String,
+
+        /// Skip automatic component discovery and scope promotion across stages.
+        #[arg(long)]
+        no_ingest: bool,
+
+        /// Skip automatic registration in the global `projects.toml` registry.
+        #[arg(long)]
+        no_register: bool,
     },
 
     /// Quick-capture a bug item (`BUG-XXXX`).
@@ -113,10 +125,54 @@ pub enum Commands {
         recurring: bool,
     },
 
-    /// Display full item metadata, effort, fix history ledger, and `desc.md`.
+    /// Display full item metadata, effort, fix history ledger, and `desc.md` (defaults to active or top "What's Next" item if `<ID>` is omitted).
     Show {
-        /// Item ID (e.g. `BUG-0001` or `FEAT-0001`).
-        id: String,
+        /// Optional item ID (e.g. `BUG-0001` or `FEAT-0001`).
+        id: Option<String>,
+    },
+
+    /// Start working on `<ID>` (or the top-ranked "What's Next" item), transition to `in_progress`, start the timer, and export bounded agent context.
+    Start {
+        /// Optional item ID (e.g. `BUG-0001`); resolves to top "What's Next" item if omitted.
+        id: Option<String>,
+
+        /// Optional note attached to the timer session.
+        #[arg(short, long)]
+        note: Option<String>,
+
+        /// Copy the bounded agent context to the system clipboard (defaults to `true`).
+        #[arg(
+            long,
+            default_value_t = true,
+            default_missing_value = "true",
+            num_args = 0..=1,
+            require_equals = true,
+            action = clap::ArgAction::Set
+        )]
+        copy: bool,
+    },
+
+    /// Compute and display the ranked "What's Next" queue, active timer, inferred scope, missing spec hints, and stage advancement recommendation.
+    Next,
+
+    /// Move an item across canonical stages (`pre` / `prod` / `post`). If `<ID>` is omitted, moves the active or top inferred item.
+    Move {
+        /// Item ID (or target stage when only one positional argument is supplied, e.g. `neb move prod`).
+        id: Option<String>,
+
+        /// Target stage (`pre`, `prod`, `post`, or explicit phase ID) when `<ID>` is also provided.
+        #[arg(default_value = "")]
+        stage: String,
+
+        /// Explicit target stage override (`--to prod`).
+        #[arg(short = 't', long = "to", value_name = "STAGE")]
+        to: Option<String>,
+    },
+
+    /// Quick alias to switch the active stage (`neb stage prod`) or list stages (`neb stage`).
+    Stage {
+        /// Optional stage alias (`pre`, `prod`, `post`) or phase ID to switch to.
+        stage: Option<String>,
     },
 
     /// Update an item's status (`open`, `in_progress`, `pending`, `closed`, `merged`).
@@ -128,10 +184,11 @@ pub enum Commands {
         status: ItemStatus,
     },
 
-    /// Close or merge an item and record the fix in `previous_fixes`.
+    /// Close or merge an item (defaults to active or top inferred item if `<ID>` is omitted) and record the fix in `previous_fixes`.
+    #[command(visible_alias = "done")]
     Close {
-        /// Item ID (e.g. `BUG-0001`).
-        id: String,
+        /// Optional item ID (e.g. `BUG-0001`); resolves via active timer or `in_progress` item when omitted.
+        id: Option<String>,
 
         /// Summary of the fix recorded in `previous_fixes`.
         #[arg(
@@ -149,6 +206,10 @@ pub enum Commands {
         /// Mark the item as `merged` instead of `closed`.
         #[arg(long)]
         merged: bool,
+
+        /// Automatically create a documented Git commit (`[<ID>](<scope>) <summary>`) in the same step.
+        #[arg(short = 'c', long = "commit-changes")]
+        commit_changes: bool,
     },
 
     /// Reopen a `closed` or `merged` item, incrementing `recurrence_count` and `iteration_count`.
@@ -181,10 +242,10 @@ pub enum Commands {
         positional_minutes: Option<u32>,
     },
 
-    /// Output (and optionally copy to clipboard) `@file` references or a Bounded Agent Prompt.
+    /// Output (and optionally copy to clipboard) `@file` references or a Bounded Agent Prompt (defaults to active item when `<ID>` is omitted).
     Context {
-        /// Item ID (e.g. `BUG-0001`).
-        id: String,
+        /// Optional item ID (e.g. `BUG-0001`); resolves via active timer or `in_progress` item when omitted.
+        id: Option<String>,
 
         /// Output only compact `@file` reference tags (`@.tracker/.../scope.toml ...`).
         #[arg(long)]

@@ -1,9 +1,9 @@
-# Nebulous Usage Guide (`neb` CLI, `neb mcp` Server & `nebulous` COSMIC GUI)
+# Nebulous Usage Guide (`neb` CLI, Retro Amber TUI & `neb mcp` Server)
 
-Nebulous provides three synchronized interfaces that operate on the same `.tracker/` directory and global project registry:
-- **`neb`**: Fast companion CLI for terminal workflows, release scripts, and CI pipelines.
+Nebulous provides three synchronized terminal and agent interfaces operating on the same `.tracker/` directory and global project registry:
+- **`neb` CLI**: Ergonomic zero-ID command-line interface with predictive scope/item inference, 3-stage lifecycle management, and `--json` output mode.
+- **`neb` / `neb tui` (`neb ui`)**: Interactive retro Amber-on-Black CRT phosphor terminal dashboard (`ratatui` + `crossterm`) with an aspect-locked ASCII Nebula + `NEBULOUS` header and responsive scaling locks.
 - **`neb mcp`**: Built-in JSON-RPC 2.0 `stdio` Model Context Protocol server for Cursor, Claude Code, Codex, Ollama, and automated self-healing CI/CD pipelines.
-- **`nebulous`**: Native `libcosmic` desktop GUI for multi-project switching, visual Kanban management, directory ingestion, component pinning, and documented Git commits.
 
 ---
 
@@ -12,14 +12,70 @@ Nebulous provides three synchronized interfaces that operate on the same `.track
 ### Global Flags
 
 Every `neb` command accepts these global options:
-- `--root <PATH>`: Path to the workspace root or `.tracker/` directory. If omitted, `neb` walks up ancestor directories from the current working directory to discover `.tracker/project.toml`, or falls back to the active project in `projects.toml`.
+- `--root <PATH>`: Path to the workspace root or `.tracker/` directory. If omitted, `neb` walks up ancestor directories from the current working directory to discover `.tracker/project.toml`.
 - `--json`: Emit machine-readable JSON output instead of human-formatted tables/text.
 
 ---
 
-### 1. Global Multi-Project Registry (`neb project`)
+### 1. One-Command Bootstrap & 3-Stage Lifecycle (`neb init`, `neb stage`, `neb move`)
 
- Nebulous tracks registered workspaces in `<config_dir>/nebulous/projects.toml` (`~/.config/nebulous/projects.toml` on Linux, `~/Library/Application Support/nebulous/projects.toml` on macOS, `%APPDATA%\nebulous\projects.toml` on Windows; overridable via `NEBULOUS_CONFIG_DIR`).
+By default, `neb init` scaffolds all 3 canonical stages (`pre_production`, `production`, `post_production`), scans and promotes discovered workspace components into domain scopes across all 3 stages, and registers the project in `projects.toml`:
+
+```bash
+# One-command initialization (scaffolds 3 canonical stages, ingests components, and registers project)
+neb init
+
+# Optional flags to skip component ingestion or global registry registration
+neb init --name "Nebulous" --no-ingest --no-register
+
+# List all stages and completion counts
+neb stage
+
+# Switch the active stage using canonical aliases (pre | prod | post | 1 | 2 | 3)
+neb stage prod
+
+# Move the active item (or an explicit item ID) to another stage
+neb move prod
+neb move FEAT-0001 post
+```
+
+---
+
+### 2. Predictive Capture & Zero-ID Daily Flow (`neb bug`, `neb feat`, `neb next`, `neb start`, `neb done`)
+
+When `--scope` is omitted, `neb bug` and `neb feat` automatically infer the target domain scope from:
+1. Your current working directory (`cwd` inside a scope's `target` directory),
+2. Modified/dirty files in Git (`git status`),
+3. The currently running `.timer.toml` session, or
+4. A single non-`inbox` scope in the active stage (falling back to `inbox`).
+
+```bash
+# Capture a bug or feature (scope is inferred automatically when -s/--scope is omitted)
+neb bug "TOML parser panics on unquoted local datetime" --severity high
+neb feat "Add horizontal scroll window for compact modal fields" --severity medium
+
+# Compute and display the ranked "What's Next" queue, inferred scope, active timer, and stage advancement hints
+neb next
+
+# Start working on the top recommended item (or an explicit <ID>):
+# automatically stops any prior timer, marks in_progress, starts timer, and copies bounded agent context
+neb start
+neb start BUG-0001
+
+# Inspect full item details or export Bounded Agent Context for the active item without typing its ID
+neb show
+neb context
+neb context --refs-only --copy
+
+# Close the active item (automatically stops its timer and logs elapsed minutes) and create a documented Git commit
+neb done -m "Added custom serde deserializer for unquoted TOML datetimes" -c
+```
+
+---
+
+### 3. Global Multi-Project Registry (`neb project`)
+
+Nebulous tracks registered workspaces in `<config_dir>/nebulous/projects.toml` (`~/.config/nebulous/projects.toml` on Linux, `~/Library/Application Support/nebulous/projects.toml` on macOS, `%APPDATA%\nebulous\projects.toml` on Windows; overridable via `NEBULOUS_CONFIG_DIR`).
 
 ```bash
 # List all registered projects and see which project is active (*)
@@ -37,22 +93,20 @@ neb project remove "NovOS"
 
 ---
 
-### 2. Two-Stage Directory Ingestion & Component Pinning (`neb ingest` & `neb component`)
+### 4. Two-Stage Directory Ingestion & Component Pinning (`neb ingest` & `neb component`)
 
 #### Stage 1: Scan & Ingest Project Directory (`neb ingest`)
-Walks the project directory respecting `.gitignore` (skipping `target/`, `node_modules/`, `.git/`, `.tracker/`, `dist/`, `build/`, `__pycache__/`, `.venv/`), detects ecosystem manifests (`Cargo.toml`, `package.json`, `pyproject.toml`, `CMakeLists.txt`, `Makefile`, `Dockerfile`, `nebulous.component.toml`), and records relative file lists (`files = [...]`) into `.tracker/project.toml` `[components]`.
+Walks the active working directory (or declared `<SUBDIR>`) respecting `.gitignore` (skipping `target/`, `node_modules/`, `.git/`, `.tracker/`, `dist/`, `build/`, `__pycache__/`, `.venv/`), detects ecosystem manifests (`Cargo.toml`, `package.json`, `pyproject.toml`, `CMakeLists.txt`, `Makefile`, `Dockerfile`, `nebulous.component.toml`), and records relative file lists (`files = [...]`) into `.tracker/project.toml` `[components]`.
 
 ```bash
-# Scan the repository and register discovered components in .tracker/project.toml
+# Scan the current working directory and register discovered components
 neb ingest
 
-# Scan a specific subdirectory, write nebulous.component.toml files, and promote all to scopes
+# Scan a specific subdirectory, write nebulous.component.toml files, and promote all to scopes across stages
 neb ingest --path crates --write-manifests --promote-all
 ```
 
 #### Stage 2: Manage `nebulous.component.toml` & Rolling-Release Pins (`neb component`)
-
-Ideal for both multi-crate repositories and rolling-release OS builds (such as **NovOS** tracking Debian Sid packages and XanMod kernels):
 
 ```bash
 # List all ingested components in the current project
@@ -81,80 +135,13 @@ neb component rollback novos_iso \
   --item BUG-0001 \
   --reason "Kernel 6.12-rc1 broke initramfs ZFS module compile in QEMU check"
 
-# Promote an ingested component into a Tier 3 Phase Domain Scope (scope.toml)
-neb component promote novos_iso --phase 01_core_engine --scope novos_iso
+# Promote an ingested component into a Tier 3 Domain Scope (automatically mirrored across stages)
+neb component promote novos_iso --scope novos_iso
 ```
 
 ---
 
-### 3. Workspace Initialization, Phases & Scopes
-
-```bash
-# Initialize .tracker/ in a directory
-neb init --name "Nebulous" --phase-id 01_core_engine --phase-title "Core Engine & Initial Scope"
-
-# Reconcile derived Tier 1-3 indexes from authoritative Tier 4 item.toml files
-neb sync-index
-
-# Manage phases
-neb phase list
-neb phase add 02_git_and_polish --title "Git Sync & Polish" --use
-neb phase use 02_git_and_polish
-
-# Manage domain scopes
-neb scope list
-neb scope add backend_core --target crates/backend_core --stack rust,serde,toml --desc "Core engine"
-```
-
----
-
-### 4. Capturing, Inspecting & Transitioning Items
-
-```bash
-# Capture a bug or feature
-neb bug "TOML parser panics on unquoted local datetime" --scope backend_core --severity high
-neb feat "Add keyboard shortcut for Quick-Add bar" --scope cosmic_interface --severity medium
-
-# Fast index-backed listing with filters
-neb list
-neb list --scope backend_core --status open
-neb list --stagnant
-neb list --recurring
-
-# Inspect full item.toml + desc.md details
-neb show BUG-0001
-
-# Transition status, close with fix summary, or reopen (incrementing recurrence_count)
-neb status BUG-0001 in_progress
-neb close BUG-0001 -m "Added custom serde deserializer for unquoted TOML datetimes"
-neb reopen BUG-0001 --reason "Edge case still triggers when time offset is negative"
-```
-
----
-
-### 5. Effort Tracking & AI Agent Context Export
-
-```bash
-# Session timer (.tracker/.timer.toml)
-neb timer start BUG-0001 --note "Debugging datetime parser"
-neb timer status
-neb timer stop
-
-# Manual minute logging
-neb log BUG-0001 -m 30
-
-# Export Bounded Agent Prompt or compact @file references
-neb context BUG-0001
-neb context BUG-0001 --refs-only
-neb context BUG-0001 --copy
-
-# Compute project effort valuation, stagnant items, and recurring bug hotspots
-neb metrics
-```
-
----
-
-### 6. Git Operations & Enforced Commit Documentation Policy (`neb git` & `neb sync`)
+### 5.Git Operations & Enforced Commit Documentation Policy (`neb git` & `neb sync`)
 
 Nebulous enforces `[git.commit_policy]` on workspace commits, formatting commit messages as `[<ITEM_ID>](<scope>) <summary>` and automatically appending the commit SHA, date, changed files, and summary to the item's `item.toml` (`history.previous_fixes`) and `desc.md` (`## Fix Log & Agent Notes`).
 
@@ -170,46 +157,62 @@ neb git push
 # Create a policy-validated, self-documenting commit linked to BUG-0001
 neb git commit -i BUG-0001 -m "Fix unquoted TOML datetime deserialization" --all
 
-# Commit specific workspace paths alongside .tracker/
-neb git commit -i FEAT-0001 -m "Add MCP stdio server loop" --paths crates/backend_core/src/mcp/mod.rs
-
-# Commit only .tracker/ metadata changes (auto-generates [TRACKER](sync) summary if -m is omitted)
-neb git commit --tracker-only -m "Triage phase 01 backlog"
-
 # Full one-command sync (stage/commit + pull + reconcile + push)
 neb sync -i BUG-0001 -m "Fix unquoted TOML datetime deserialization" --all
 ```
 
 ---
 
-## Part 2: Model Context Protocol Server (`neb mcp`)
+## Part 2: Retro Amber-on-Black TUI (`neb` / `neb tui`)
+
+Running bare `neb` or `neb tui` (`neb ui`) in an interactive terminal launches the retro CRT Amber-on-Black dashboard:
+
+```bash
+neb
+# or
+neb tui
+```
+
+### Visual Architecture & Scaling Locks
+
+1. **P3 Phosphor Amber-on-Black Palette**:
+   - Pure CRT black background (`#000000`) painted across every cell of the terminal buffer so host terminal themes never bleed through.
+   - Primary Amber (`#FFB000`), High-Intensity Gold (`#FFD866`), Muted Amber Dust (`#996300`), Deep Starfield Amber (`#5C3A00`), and High-Contrast Alert Orange (`#FF5500`).
+2. **Centered ASCII Nebula + `NEBULOUS` Header**:
+   - **Full Banner (`5×76`, when terminal is `>= 78×26`)**: Multi-line block-letter `N E B U L O U S` glyphs framed by symmetric swirling cosmic dust (`* . · ░▒▓ ( ✦`, `✦ ) ▓▒░ · . *`).
+   - **Compact Banner (`3×60`, when terminal is `< 78` cols or `< 26` rows)**: Compact 3-line cosmic swirl framing `╔═╗ N E B U L O U S ╔═╗`.
+   - Rendered with horizontal centering (`Alignment::Center`) and wrapping strictly disabled so the ASCII artwork never clips or deforms.
+3. **Responsive Workspace Breakpoint Locks**:
+   - **Wide Mode (`>= 110` cols)**: 3-pane horizontal layout (Left Scopes Menu `26` cols, Center Stage Items Table `Min(44)` cols with locked `ID`/`Sev`/`Status`/`Title` columns, Right Inspector & Agent Context `Min(38)` cols).
+   - **Medium Mode (`64..109` cols)**: 2-pane top row (Left Scopes Menu `22` cols + Center Items Table `Min(40)` cols) paired with a scrollable bottom Inspector Drawer (`Min(7)` rows).
+   - **Minimum Terminal Lock Guard (`< 64×20`)**: Displays a centered scaling lock screen with the compact Nebula logo, current vs. required dimensions (`Current: WxH | Minimum Locked: 64x20`), and active focus without clipping or panicking.
+4. **Modal Field Accessibility & `[REQUIRED FIELD LOCK]`**:
+   - `New Bug` (`b`) and `New Feature` (`f`) modals pre-fill `Scope` (via `infer_scope_from_context`), `Stage` (active stage), and `Severity` (`medium`), giving every required field (`[1] Title *REQUIRED*`, `[2] Scope *REQUIRED*`, `[3] Stage *REQUIRED*`, `[4] Severity *REQUIRED*`, `[5] Description`) a locked row height and horizontal cursor-window scrolling.
+   - Pressing `Enter` when a required field (`Title` or `Summary`) is empty triggers an inline `AMBER_ALERT` `[REQUIRED FIELD LOCK]` indicator and keeps focus locked on the missing field.
+
+### Keyboard Shortcuts
+
+| Key | Action |
+| :--- | :--- |
+| `1` / `2` / `3` | Switch active stage (`Pre-Production` / `Production` / `Post-Production`) |
+| `Tab` / `Shift+Tab` or `h` / `l` | Cycle focus across panes (`Scopes` <-> `Items` <-> `Details`) or modal fields |
+| `j` / `k` or `↑` / `↓` | Move selection up/down in active list/table, or scroll Details inspector |
+| `PgUp` / `PgDn` or `J` / `K` | Scroll the Inspector / `desc.md` / Fix History pane |
+| `b` / `f` | Open predictive `New Bug` / `New Feature` modal |
+| `s` | Start work on selected/recommended item (marks `in_progress`, starts timer, copies prompt) |
+| `d` | Open `Done / Close` modal pre-filled with `"Resolved <ID>: <title>"` and Git `HEAD` SHA |
+| `m` | Open 1-key Stage Move modal (`1` Pre-Production, `2` Production, `3` Post-Production) |
+| `c` | Copy Bounded Agent Prompt for selected/active item to clipboard |
+| `i` | Ingest workspace directory and promote discovered components to scopes across all stages |
+| `n` | Jump directly to the top-ranked `"What's Next"` item |
+| `/` | Filter stage items by ID, title, or scope (`Enter`/`Esc` to exit filter input) |
+| `q` / `Esc` | Close active modal or quit the TUI |
+
+---
+
+## Part 3: Model Context Protocol Server (`neb mcp`)
 
 `neb mcp` runs a standard JSON-RPC 2.0 MCP server over `stdin`/`stdout` (supporting both newline-delimited JSON-RPC and `Content-Length` headers).
-
-### Exposed MCP Tools (21 Tools)
-
-1. **Task & Boundary Tools**:
-   - `get_active_task`: Returns the currently timed or `in_progress` item with its full bounded context.
-   - `list_items`: Lists tracked items with optional `phase_id`, `scope_id`, `status`, `item_type`, `stagnant_only`, and `recurring_only` filters.
-   - `get_item_context`: Returns the full `ItemDetail`, `@file` references, and Bounded Agent Prompt for an item.
-   - `list_crate_boundaries`: Returns all domain scopes in a phase along with their `target_path`, `tech_stack`, `bound_component`, `tracked_files`, and `pinned_release`.
-   - `create_item`: Creates a new `BUG-XXXX` or `FEAT-XXXX` item.
-   - `update_item_status`: Transitions an item's status.
-   - `close_item_with_fix`: Closes or merges an item and records the fix in `previous_fixes`.
-   - `record_regression`: Reopens a closed item (or logs a failed attempt), incrementing `recurrence_count` and appending failure details to `desc.md`.
-2. **Project & Ingestion Tools**:
-   - `list_projects`: Lists all projects in the global `projects.toml` registry.
-   - `switch_project`: Switches the active project (or registers a new project directory).
-   - `ingest_project_directory`: Runs the `.gitignore`-aware directory scanner and populates `[components]`.
-   - `upsert_component_manifest`: Creates or updates a `nebulous.component.toml` manifest (dependencies, flags, tags).
-   - `promote_component_to_scope`: Promotes an ingested component into a Tier 3 Phase Domain Scope (`scope.toml`).
-3. **NovOS Release Engineering & Self-Healing CI Tools**:
-   - `record_rolling_update`: Logs an upstream rolling package delta (e.g. Debian Sid or XanMod kernel bump) onto a component and creates/updates a tracking work item.
-   - `record_verification_run`: Records QEMU/container test execution results (`passed`, `exit_code`, `command`, `summary`, `logs_excerpt`) onto the component and linked item.
-   - `pin_stable_release`: Snapshots the current Git commit SHA, dependency versions, and build flags into `nebulous.component.toml` and `project.toml` as `last_known_good`.
-   - `rollback_to_pinned_release`: Restores `nebulous.component.toml` to the `last_known_good` pin and records a regression on the linked item when verification fails.
-4. **Git & Documentation Tools**:
-   - `git_status`, `git_fetch`, `git_pull`, `git_push`, `git_commit_documented`, `git_sync`.
 
 ### Configuration Snippets
 
@@ -231,78 +234,3 @@ neb sync -i BUG-0001 -m "Fix unquoted TOML datetime deserialization" --all
 command = "neb"
 args = ["mcp", "--root", "/abs/path/to/workspace"]
 ```
-
-#### Local Ollama / Open-Source Agent Bridge
-Point any MCP-compatible Ollama client (such as `mcp-cli`, `ollmcp`, or custom Python/Rust harnesses) at `neb mcp`:
-```json
-{
-  "servers": {
-    "nebulous": {
-      "transport": "stdio",
-      "command": "neb",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-#### NovOS Self-Healing QEMU CI Pipeline Example
-```bash
-# 1. Ingest ISO build component and record upstream Sid/XanMod package update via MCP or CLI
-neb ingest --write-manifests
-neb --json component pin novos_iso --script scripts/build_iso.sh --dep linux-xanmod=6.11.6
-
-# 2. If a subsequent rolling update fails QEMU boot verification, automatically roll back:
-if ! ./scripts/run-qemu-smoke-test.sh; then
-  neb --json component rollback novos_iso \
-    --item BUG-0001 \
-    --reason "QEMU smoke test failed after rolling Sid update; restored last_known_good pin"
-fi
-```
-
----
-
-## Part 3: Native COSMIC GUI (`nebulous`)
-
-### Launching the GUI
-
-```bash
-# Open the workspace in the current directory (or active project in projects.toml)
-nebulous
-
-# Open a specific workspace path
-nebulous --workspace /path/to/project
-
-# Run the headless verification self-test (no display server required)
-nebulous --self-test
-```
-
-### GUI Views & Workflows
-
-1. **Top Header Bar**:
-   - **Project Switcher Dropdown & `+ Project` Button**: Switch between registered projects in `projects.toml` or register/open a new repository directory directly from the header bar.
-   - **Phase Selector Dropdown**: Switch between project phases and view live phase completion ratios and logged effort hours.
-   - **Quick-Add Bar (`+ Bug` / `+ Feature`)**: Capture a new bug or feature inline with severity selection.
-   - **Filter Pills & Active Session Timer Pill**: Filter cards (`All`, `Bugs`, `Features`, `High/Crit`, `Stagnant`, `Recurring`) and control the live timer.
-   - **Git Status & Sync Bar**: Displays `HEAD` short SHA, ahead/behind counts (`↑N ↓M`), dirty file counts, `Fetch`, `Commit .tracker`, `Git Sync`, and `Reconcile`.
-2. **Kanban Board View**:
-   - 4-column board (`OPEN`, `IN PROGRESS`, `PENDING`, `CLOSED / MERGED`) with lazy-loaded right-hand **Context Drawer** for editing `desc.md`, logging effort, closing/reopening items, and copying Bounded Agent Prompts.
-3. **Metrics & Hotspots View**:
-   - Visualizes effort valuation (`target_daily_hours` equivalents), phase/scope effort breakdowns, stagnant items, and recurring bug hotspots.
-4. **Dedicated `Phases & Scopes` View**:
-   - **Project Directory Ingestion & Component Catalog**: Click **Scan Project Directory** (`neb ingest`) to discover components, inspect file counts and tech stacks, write `nebulous.component.toml`, or click **Promote to Scope** with 1 click.
-   - **Component Manifest & Rolling-Release Pin Builder**: Edit component metadata, dependencies (`name=version`), build script path, and build flags, with 1-click **Pin Known-Good Release** and **Rollback to Pin** actions.
-   - **Phase & Domain Scope Managers**: Create/activate phases and inspect or create domain scopes (`bound_component`, `tracked_files`).
-5. **Dedicated `Git & Settings` View**:
-   - **Multi-Project Registry Manager**: Add, switch, or remove projects in `projects.toml`.
-   - **Git Operations & Documented Commit Builder**: Run `Fetch`, `Pull`, `Push`, `Sync All`, or build a policy-validated commit linked to an Item ID (`Stage .tracker/ only` vs. `Stage Workspace + .tracker/`).
-   - **Commit Policy & Remote Settings**: Toggle `require_item_id`, `require_scope`, `auto_append_to_desc`, `min_summary_length`, remote/branch, and sync mode.
-   - **Cross-Platform `SecureStorage` Vault**: Store/delete HTTPS PATs and generate or import SSH Ed25519 keys backed by OS Keyring + AES-256-GCM `vault.enc`.
-
----
-
-## Part 4: Linux Packaging & Installation
-
-- **User or System Install**: `./scripts/install.sh --user` (installs to `~/.local`) or `sudo ./scripts/install.sh --system` (installs to `/usr/local`). Remove with `./scripts/install.sh --uninstall`.
-- **Portable AppImage / AppDir**: `./scripts/build-appimage.sh` creates `target/appimage/Nebulous.AppDir` and `target/appimage/Nebulous-x86_64-AppDir.tar.gz` (plus `Nebulous-x86_64.AppImage` if `appimagetool` is installed).
-- **Flatpak**: `flatpak-builder --user --install --force-clean build-flatpak packaging/flatpak/com.nebulous.Tracker.yml`.

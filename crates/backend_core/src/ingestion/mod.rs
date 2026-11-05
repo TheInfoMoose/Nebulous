@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, TrackerError};
 use crate::models::registry::slugify_project_id;
 use crate::models::{
-    ComponentManifest, ComponentType, RollingUpdateEntry, ScopeItems, ScopeManifest, ScopeMetadata,
-    ScopeRegistryEntry, VerificationRecord, COMPONENT_MANIFEST_FILE_NAME,
+    resolve_phase_alias, ComponentManifest, ComponentType, RollingUpdateEntry, ScopeItems,
+    ScopeManifest, ScopeMetadata, ScopeRegistryEntry, VerificationRecord,
+    COMPONENT_MANIFEST_FILE_NAME,
 };
 use crate::storage::{
     atomic_write_str, normalize_relative_path, normalize_relative_path_list,
@@ -639,11 +640,8 @@ impl TrackerStorage {
         let project = self.read_project()?;
 
         let resolved_phase = match phase_id.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(p) => {
-                validate_identifier("Phase", p)?;
-                p.to_string()
-            }
-            None => project.project.active_phase.clone(),
+            Some(p) => self.ensure_canonical_phase_if_missing(p)?,
+            None => resolve_phase_alias(&project.project.active_phase).to_string(),
         };
 
         let mut phase_manifest = self.read_phase(&resolved_phase)?;
@@ -744,6 +742,7 @@ impl TrackerStorage {
             });
         }
         self.write_phase(&resolved_phase, &phase_manifest)?;
+        self.ensure_scope_across_phases(&scope_manifest.scope, Some(&component.component_type))?;
 
         Ok(scope_manifest)
     }

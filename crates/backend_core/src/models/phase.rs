@@ -7,6 +7,57 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, TrackerError};
 use crate::models::{deserialize_opt_datetime_string, parse_date};
 
+/// Canonical 3-stage development lifecycle phases (`(phase_id, title)`).
+pub const CANONICAL_PHASES: &[(&str, &str)] = &[
+    ("pre_production", "Pre-Production"),
+    ("production", "Production"),
+    ("post_production", "Post-Production"),
+];
+
+/// Resolves shorthand stage aliases (`pre`, `prod`, `post`, `1`, `2`, `3`, etc.)
+/// to their canonical phase identifier (`pre_production`, `production`, `post_production`).
+///
+/// Any non-matching identifier is returned trimmed and unchanged so custom phases continue
+/// to work seamlessly.
+pub fn resolve_phase_alias(input: &str) -> &str {
+    let trimmed = input.trim();
+    if trimmed.eq_ignore_ascii_case("pre")
+        || trimmed.eq_ignore_ascii_case("pre-prod")
+        || trimmed.eq_ignore_ascii_case("pre_prod")
+        || trimmed.eq_ignore_ascii_case("pre-production")
+        || trimmed.eq_ignore_ascii_case("pre_production")
+        || trimmed == "1"
+    {
+        "pre_production"
+    } else if trimmed.eq_ignore_ascii_case("prod")
+        || trimmed.eq_ignore_ascii_case("production")
+        || trimmed.eq_ignore_ascii_case("active")
+        || trimmed == "2"
+    {
+        "production"
+    } else if trimmed.eq_ignore_ascii_case("post")
+        || trimmed.eq_ignore_ascii_case("post-prod")
+        || trimmed.eq_ignore_ascii_case("post_prod")
+        || trimmed.eq_ignore_ascii_case("post-production")
+        || trimmed.eq_ignore_ascii_case("post_production")
+        || trimmed == "3"
+    {
+        "post_production"
+    } else {
+        trimmed
+    }
+}
+
+/// Returns the human-readable title for a canonical phase ID (or alias), if `phase_id`
+/// resolves to one of [`CANONICAL_PHASES`].
+pub fn canonical_phase_title(phase_id: &str) -> Option<&'static str> {
+    let resolved = resolve_phase_alias(phase_id);
+    CANONICAL_PHASES
+        .iter()
+        .find(|(id, _)| *id == resolved)
+        .map(|(_, title)| *title)
+}
+
 /// Tier 2: Phase index manifest (`.tracker/phases/<phase_id>/phase.toml`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhaseManifest {

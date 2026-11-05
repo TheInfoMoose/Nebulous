@@ -14,10 +14,11 @@ pub use reconcile::ReconcileReport;
 
 use crate::error::{Result, TrackerError};
 use crate::models::{
-    ActiveTimer, ComponentRegistry, GitConfig, ItemDetail, ItemManifest, ItemStub, ItemType,
-    MetricsConfig, PhaseManifest, PhaseMetadata, PhaseRegistry, PhaseRegistryEntry, PhaseStatus,
-    PhaseSummary, ProjectCounters, ProjectManifest, ProjectMetadata, ScopeItems, ScopeManifest,
-    ScopeMetadata, ScopeRegistry, ScopeRegistryEntry,
+    canonical_phase_title, resolve_phase_alias, ActiveTimer, ComponentRegistry, GitConfig,
+    ItemDetail, ItemManifest, ItemStub, ItemType, MetricsConfig, PhaseManifest, PhaseMetadata,
+    PhaseRegistry, PhaseRegistryEntry, PhaseStatus, PhaseSummary, ProjectCounters, ProjectManifest,
+    ProjectMetadata, ScopeItems, ScopeManifest, ScopeMetadata, ScopeRegistry, ScopeRegistryEntry,
+    CANONICAL_PHASES,
 };
 use crate::storage::reconcile::infer_default_scope_type;
 
@@ -34,9 +35,12 @@ impl TrackerIndex {
         self.phase(&self.project.project.active_phase)
     }
 
-    /// Looks up a loaded [`PhaseIndex`] by phase ID.
+    /// Looks up a loaded [`PhaseIndex`] by phase ID (or canonical phase alias).
     pub fn phase(&self, phase_id: &str) -> Option<&PhaseIndex> {
-        self.phases.iter().find(|p| p.phase_id == phase_id)
+        let resolved = resolve_phase_alias(phase_id);
+        self.phases
+            .iter()
+            .find(|p| p.phase_id == resolved || p.phase_id == phase_id)
     }
 
     /// Looks up a loaded [`ScopeIndex`] by phase ID and scope ID.
@@ -206,8 +210,29 @@ impl TrackerStorage {
         Err(TrackerError::TrackerRootNotFound(start.to_path_buf()))
     }
 
+    /// Initializes a new `.tracker/` directory hierarchy at `root_or_tracker_dir` with all 3
+    /// canonical stages (`pre_production`, `production`, `post_production`), setting
+    /// `active_phase = "pre_production"` (`InProgress`, others `Planned`) and creating the
+    /// default `inbox` scope in all 3 stages.
+    pub fn init_standard(
+        root_or_tracker_dir: impl AsRef<Path>,
+        project_name: impl Into<String>,
+    ) -> Result<Self> {
+        Self::init(
+            root_or_tracker_dir,
+            project_name,
+            "pre_production",
+            "Pre-Production",
+        )
+    }
+
     /// Initializes a new `.tracker/` directory hierarchy at `root_or_tracker_dir` with a default
     /// phase and `inbox` scope.
+    ///
+    /// Resolves `initial_phase_id` via [`resolve_phase_alias`]. When `initial_phase_id` resolves
+    /// to one of the 3 canonical stages (`pre_production`, `production`, `post_production`), all
+    /// 3 canonical stages are scaffolded with their `inbox` scopes out of the box and
+    /// `active_phase` is set to the resolved stage.
     pub fn init(
         root_or_tracker_dir: impl AsRef<Path>,
         project_name: impl Into<String>,
@@ -216,51 +241,13 @@ impl TrackerStorage {
     ) -> Result<Self> {
         let storage = Self::new(root_or_tracker_dir);
         validate_safe_project_root(&storage.project_root())?;
-        let phase_id = initial_phase_id.into();
-        let phase_title = initial_phase_title.into();
+        let raw_phase_id = initial_phase_id.into();
+        let phase_id = resolve_phase_alias(&raw_phase_id).to_string();
+        let raw_phase_title = initial_phase_title.into();
         validate_identifier("Phase", &phase_id)?;
 
         let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         let today = Utc::now().format("%Y-%m-%d").to_string();
-
-        let project = ProjectManifest {
-            project: ProjectMetadata {
-                name: project_name.into(),
-                version: "0.1.0".to_string(),
-                active_phase: phase_id.clone(),
-                default_scope: "inbox".to_string(),
-                created_at: now,
-            },
-            counters: ProjectCounters::default(),
-            phases: PhaseRegistry {
-                registry: vec![PhaseRegistryEntry {
-                    id: phase_id.clone(),
-                    title: phase_title.clone(),
-                    path: format!("phases/{phase_id}"),
-                }],
-            },
-            metrics: MetricsConfig::default(),
-            git: GitConfig::default(),
-            components: ComponentRegistry::default(),
-        };
-
-        let phase = PhaseManifest {
-            phase: PhaseMetadata {
-                id: phase_id.clone(),
-                title: phase_title,
-                status: PhaseStatus::InProgress,
-                start_date: Some(today),
-                end_date: None,
-            },
-            scopes: ScopeRegistry {
-                manifest: vec![ScopeRegistryEntry {
-                    id: "inbox".to_string(),
-                    scope_type: "inbox".to_string(),
-                    path: "domains/inbox".to_string(),
-                }],
-            },
-            summary: PhaseSummary::default(),
-        };
 
         let inbox_scope = ScopeManifest {
             scope: ScopeMetadata {
@@ -274,17 +261,106 @@ impl TrackerStorage {
             items: ScopeItems::default(),
         };
 
+        let is_canonical = canonical_phase_title(&phase_id).is_some();
+        let stages_to_scaffold: Vec<(String, String)> = if is_canonical {
+            CANONICAL_PHASES
+                .iter()
+                .map(|(cid, ctitle)| {
+                    let title = if *cid == phase_id
+                        && !raw_phase_title.trim().is_empty()
+                        && raw_phase_title.trim() != "Core Engine & Initial Scope"
+                    {
+                        raw_phase_title.trim().to_string()
+                    } else {
+                        (*ctitle).to_string()
+                    };
+                    ((*cid).to_string(), title)
+                })
+                .collect()
+        } else {
+            let title = if raw_phase_title.trim().is_empty() {
+                phase_id.clone()
+            } else {
+                raw_phase_title
+            };
+            vec![(phase_id.clone(), title)]
+        };
+
+        let registry_entries: Vec<PhaseRegistryEntry> = stages_to_scaffold
+            .iter()
+            .map(|(sid, stitle)| PhaseRegistryEntry {
+                id: sid.clone(),
+                title: stitle.clone(),
+                path: format!("phases/{sid}"),
+            })
+            .collect();
+
+        let project = ProjectManifest {
+            project: ProjectMetadata {
+                name: project_name.into(),
+                version: "0.1.0".to_string(),
+                active_phase: phase_id.clone(),
+                default_scope: "inbox".to_string(),
+                created_at: now,
+            },
+            counters: ProjectCounters::default(),
+            phases: PhaseRegistry {
+                registry: registry_entries,
+            },
+            metrics: MetricsConfig::default(),
+            git: GitConfig::default(),
+            components: ComponentRegistry::default(),
+        };
+
         storage.write_project(&project)?;
-        storage.write_phase(&phase_id, &phase)?;
-        storage.write_scope(&phase_id, "inbox", &inbox_scope)?;
-        fs::create_dir_all(storage.items_dir(&phase_id, "inbox")?).map_err(|source| {
-            TrackerError::Io {
-                path: storage.tracker_dir.clone(),
-                source,
-            }
-        })?;
+
+        for (sid, stitle) in &stages_to_scaffold {
+            let phase = PhaseManifest {
+                phase: PhaseMetadata {
+                    id: sid.clone(),
+                    title: stitle.clone(),
+                    status: if *sid == phase_id {
+                        PhaseStatus::InProgress
+                    } else {
+                        PhaseStatus::Planned
+                    },
+                    start_date: Some(today.clone()),
+                    end_date: None,
+                },
+                scopes: ScopeRegistry {
+                    manifest: vec![ScopeRegistryEntry {
+                        id: "inbox".to_string(),
+                        scope_type: "inbox".to_string(),
+                        path: "domains/inbox".to_string(),
+                    }],
+                },
+                summary: PhaseSummary::default(),
+            };
+
+            storage.write_phase(sid, &phase)?;
+            storage.write_scope(sid, "inbox", &inbox_scope)?;
+            fs::create_dir_all(storage.items_dir(sid, "inbox")?).map_err(|source| {
+                TrackerError::Io {
+                    path: storage.tracker_dir.clone(),
+                    source,
+                }
+            })?;
+        }
 
         Ok(storage)
+    }
+
+    /// Ensures that if `phase_id` (after alias resolution) is one of [`CANONICAL_PHASES`] and its
+    /// `phase.toml` does not yet exist on disk, it is automatically scaffolded with `inbox`.
+    pub(crate) fn ensure_canonical_phase_if_missing(&self, phase_id: &str) -> Result<String> {
+        let resolved = resolve_phase_alias(phase_id).to_string();
+        validate_identifier("Phase", &resolved)?;
+        if let Some(canonical_title) = canonical_phase_title(&resolved) {
+            if !self.phase_toml_path(&resolved)?.is_file() {
+                let _ = self.create_phase(&resolved, canonical_title, false)?;
+            }
+        }
+        Ok(resolved)
     }
 
     /// Returns the path to the `.tracker/` directory.
@@ -317,13 +393,19 @@ impl TrackerStorage {
 
     /// Returns `.tracker/phases/<phase_id>` (or the custom relative path configured in `project.toml`).
     pub fn phase_dir(&self, phase_id: &str) -> Result<PathBuf> {
-        validate_identifier("Phase", phase_id)?;
+        let resolved = resolve_phase_alias(phase_id);
+        validate_identifier("Phase", resolved)?;
         if let Ok(project) = self.read_project() {
-            if let Some(entry) = project.phases.registry.iter().find(|p| p.id == phase_id) {
-                return self.resolve_phase_path(phase_id, Some(&entry.path));
+            if let Some(entry) = project
+                .phases
+                .registry
+                .iter()
+                .find(|p| p.id == resolved || p.id == phase_id)
+            {
+                return self.resolve_phase_path(&entry.id, Some(&entry.path));
             }
         }
-        Ok(self.phases_dir().join(phase_id))
+        Ok(self.phases_dir().join(resolved))
     }
 
     /// Returns `.tracker/phases/<phase_id>/phase.toml`.
@@ -434,11 +516,12 @@ impl TrackerStorage {
 
     /// Reads and parses Tier 2 `.tracker/phases/<phase_id>/phase.toml`.
     pub fn read_phase(&self, phase_id: &str) -> Result<PhaseManifest> {
-        let path = self.phase_toml_path(phase_id)?;
+        let resolved = resolve_phase_alias(phase_id);
+        let path = self.phase_toml_path(resolved)?;
         if !path.is_file() {
             return Err(TrackerError::NotFound {
                 kind: "Phase",
-                id: phase_id.to_string(),
+                id: resolved.to_string(),
             });
         }
         self.read_phase_from_path(&path)
@@ -717,12 +800,9 @@ impl TrackerStorage {
         let project = self.read_project()?;
 
         let resolved_phase = match phase_id.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(p) => {
-                validate_identifier("Phase", p)?;
-                p.to_string()
-            }
+            Some(p) => self.ensure_canonical_phase_if_missing(p)?,
             None => {
-                let active = project.project.active_phase.trim();
+                let active = resolve_phase_alias(project.project.active_phase.trim());
                 validate_identifier("Phase", active)?;
                 active.to_string()
             }

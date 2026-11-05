@@ -19,9 +19,10 @@ pub use models::*;
 pub use storage::*;
 pub use watcher::*;
 pub use workflow::{
-    format_boilerplate_description, CreateItemInput, PhaseEffortValuation, ProjectMetricsReport,
-    RecurringItemHotspot, ScopeEffortValuation, ScopeHotspot, StagnantItemEntry,
-    StoppedTimerSession, TimerStatus,
+    format_boilerplate_description, CreateItemInput, NextActionKind, NextRecommendation,
+    PhaseEffortValuation, PredictiveDefaults, ProjectMetricsReport, RecurringItemHotspot,
+    ScopeEffortValuation, ScopeHotspot, StagnantItemEntry, StoppedTimerSession, TimerStatus,
+    WhatsNextReport,
 };
 
 #[cfg(test)]
