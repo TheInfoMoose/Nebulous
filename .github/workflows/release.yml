@@ -6,16 +6,18 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  release-linux-x86_64:
-    name: Build & Package Linux x86_64 Release
+  build-linux-x86_64:
+    name: Build & Package `neb` (Linux x86_64)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,19 +31,7 @@ jobs:
             cmake \
             clang \
             libssl-dev \
-            libdbus-1-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libx11-dev \
-            libxi-dev \
-            libgl1-mesa-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libexpat1-dev \
-            libxcb1-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev
+            libdbus-1-dev
 
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -51,17 +41,22 @@ jobs:
       - name: Cache Cargo registry and target directory
         uses: Swatinem/rust-cache@v2
 
+      - name: Supply-chain advisory gate (cargo deny)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
       - name: Run verification suite
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace
 
-      - name: Build release binaries (`neb` and `nebulous`)
-        run: cargo build --workspace --release
+      - name: Build release binary (`neb`)
+        run: cargo build -p nebulous_cli --release --locked
 
-      - name: Verify release GUI headless self-test
-        run: ./target/release/nebulous --self-test
+      - name: Verify release binary (`neb --help`)
+        run: ./target/release/neb --help
 
       - name: Package `.tar.gz` archive and `.sha256` checksum
         run: |
@@ -71,12 +66,33 @@ jobs:
 
           mkdir -p "${STAGING_DIR}"
           cp target/release/neb "${STAGING_DIR}/"
-          cp target/release/nebulous "${STAGING_DIR}/"
           cp README.md LICENSE "${STAGING_DIR}/"
           cp -r docs "${STAGING_DIR}/"
 
           tar -C dist -czf "dist/${ARCHIVE_BASENAME}.tar.gz" "${ARCHIVE_BASENAME}"
           (cd dist && sha256sum "${ARCHIVE_BASENAME}.tar.gz" > "${ARCHIVE_BASENAME}.tar.gz.sha256")
+
+      - name: Upload release archive and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build-linux-x86_64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release archive and checksum
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
