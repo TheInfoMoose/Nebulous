@@ -14,9 +14,10 @@ use crate::models::{
     COMPONENT_MANIFEST_FILE_NAME,
 };
 use crate::storage::{
-    atomic_write_str, normalize_relative_path, normalize_relative_path_list,
-    normalize_relative_path_str, resolve_safe_relative_path, validate_identifier,
-    validate_safe_project_root, TrackerStorage,
+    atomic_write_str, is_valid_identifier, normalize_identifier, normalize_relative_path,
+    normalize_relative_path_list, normalize_relative_path_str, resolve_contained_reference,
+    resolve_safe_relative_path, validate_identifier, validate_safe_project_root, TrackerStorage,
+    MAX_IDENTIFIER_LEN,
 };
 
 /// Directories unconditionally skipped during project directory ingestion.
@@ -130,7 +131,7 @@ impl TrackerStorage {
 
         let scan_root = match norm_subpath.as_deref() {
             Some(rel) => {
-                let target = resolve_safe_relative_path(&project_root, rel)?;
+                let target = resolve_contained_reference(&project_root, rel)?;
                 if !target.is_dir() {
                     return Err(TrackerError::NotFound {
                         kind: "Directory",
@@ -329,20 +330,16 @@ impl TrackerStorage {
         let mut reserved_ids: BTreeMap<String, String> = BTreeMap::new();
 
         for comp_rel_dir in component_files.keys() {
-            let on_disk_manifest_path = if comp_rel_dir == "." {
-                project_root.join(COMPONENT_MANIFEST_FILE_NAME)
-            } else {
-                project_root
-                    .join(comp_rel_dir)
-                    .join(COMPONENT_MANIFEST_FILE_NAME)
-            };
-            if on_disk_manifest_path.is_file() {
+            // Symlinked or escaping manifests are skipped (treated as absent) here; a later
+            // write to the same component directory is rejected by `component_manifest_path`.
+            let on_disk_manifest_path = self.component_manifest_path(comp_rel_dir).ok();
+            if let Some(on_disk_manifest_path) = on_disk_manifest_path.filter(|p| p.is_file()) {
                 if let Some(disk_manifest) = fs::read_to_string(&on_disk_manifest_path)
                     .ok()
                     .and_then(|raw| ComponentManifest::from_toml_str(&raw).ok())
                 {
                     let id = disk_manifest.id.trim().to_string();
-                    if !id.is_empty() && !used_ids.contains(&id) {
+                    if is_valid_identifier(&id) && !used_ids.contains(&id) {
                         used_ids.insert(id.clone());
                         reserved_ids.insert(comp_rel_dir.clone(), id);
                     }
@@ -363,7 +360,7 @@ impl TrackerStorage {
         for (comp_rel_dir, proj_manifest) in &proj_manifests {
             if !reserved_ids.contains_key(comp_rel_dir) {
                 let id = proj_manifest.id.trim().to_string();
-                if !id.is_empty() && !used_ids.contains(&id) {
+                if is_valid_identifier(&id) && !used_ids.contains(&id) {
                     used_ids.insert(id.clone());
                     reserved_ids.insert(comp_rel_dir.clone(), id);
                 }
@@ -502,14 +499,18 @@ impl TrackerStorage {
     }
 
     /// Returns the filesystem path to `<relative_dir>/nebulous.component.toml` inside `project_root`.
+    ///
+    /// The path is resolved via [`crate::storage::contained_path`]: neither a symlinked component
+    /// directory resolving outside the project root nor a symlinked manifest file is accepted, so
+    /// every read and write of the component manifest is contained.
     pub fn component_manifest_path(&self, relative_dir: &str) -> Result<PathBuf> {
         let norm = normalize_relative_path_str(relative_dir);
-        let dir = if norm.is_empty() || norm == "." {
-            self.project_root()
+        let rel = if norm.is_empty() || norm == "." {
+            COMPONENT_MANIFEST_FILE_NAME.to_string()
         } else {
-            resolve_safe_relative_path(&self.project_root(), &norm)?
+            format!("{norm}/{COMPONENT_MANIFEST_FILE_NAME}")
         };
-        Ok(dir.join(COMPONENT_MANIFEST_FILE_NAME))
+        resolve_safe_relative_path(&self.project_root(), &rel)
     }
 
     /// Reads a [`ComponentManifest`] by `component_id` or `relative_path`, checking on-disk
@@ -605,7 +606,7 @@ impl TrackerStorage {
             }
         } else {
             for f in &normalized.files {
-                let _ = resolve_safe_relative_path(&self.project_root(), f)?;
+                let _ = resolve_contained_reference(&self.project_root(), f)?;
             }
         }
 
@@ -660,7 +661,7 @@ impl TrackerStorage {
         let tracked_files = match selected_files {
             Some(files) if !files.is_empty() => {
                 for raw_file in &files {
-                    let _ = resolve_safe_relative_path(&self.project_root(), raw_file)?;
+                    let _ = resolve_contained_reference(&self.project_root(), raw_file)?;
                 }
                 let normalized = normalize_relative_path_list(files);
                 let expanded: Vec<String> = normalized
@@ -1079,21 +1080,32 @@ fn infer_component_type_and_stack(
     (comp_type, stack)
 }
 
+/// Allocates a unique component ID that always satisfies the identifier allow-list.
+///
+/// IDs taken verbatim from an on-disk `nebulous.component.toml` (e.g. `my.crate`) or derived
+/// from long directory names are normalized via [`normalize_identifier`] rather than rejected,
+/// so ingestion of existing repositories keeps working.
 fn allocate_unique_component_id(
     used_ids: &BTreeSet<String>,
     base_id: &str,
     rel_dir: &str,
 ) -> String {
-    if !used_ids.contains(base_id) {
-        return base_id.to_string();
+    let base_id = normalize_identifier(base_id, MAX_IDENTIFIER_LEN);
+    if !used_ids.contains(&base_id) {
+        return base_id;
     }
-    let path_slug = slugify_project_id(&rel_dir.replace('/', "_"));
+    let path_slug = normalize_identifier(
+        &slugify_project_id(&rel_dir.replace('/', "_")),
+        MAX_IDENTIFIER_LEN,
+    );
     if !path_slug.is_empty() && !used_ids.contains(&path_slug) {
         return path_slug;
     }
+    // Leave room for a `_<n>` suffix within the length limit.
+    let stem = normalize_identifier(&base_id, MAX_IDENTIFIER_LEN - 11);
     let mut idx = 2u32;
     loop {
-        let candidate = format!("{base_id}_{idx}");
+        let candidate = format!("{stem}_{idx}");
         if !used_ids.contains(&candidate) {
             return candidate;
         }

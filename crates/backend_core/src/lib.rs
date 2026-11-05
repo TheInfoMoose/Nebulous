@@ -730,8 +730,8 @@ sIrutI2NuqcarHHe39XSQPcgOvzeKMOaWd1FA=\n\
 
         use crate::crypto::resolve_nebulous_config_dir_from;
         use crate::storage::{
-            atomic::replace_target_after_rename_error, atomic_write_str, normalize_relative_path,
-            normalize_relative_path_list, normalize_relative_path_str, TrackerStorage,
+            atomic_write_str, normalize_relative_path, normalize_relative_path_list,
+            normalize_relative_path_str, TrackerStorage,
         };
 
         // 1. NEBULOUS_CONFIG_DIR override takes highest precedence on all OS targets
@@ -841,7 +841,8 @@ sIrutI2NuqcarHHe39XSQPcgOvzeKMOaWd1FA=\n\
             .unwrap();
         assert_eq!(scope.scope.target, "crates/backend_core");
 
-        // 8. Verify atomic_write_str clears read-only on target file and fallback replacement works
+        // 8. Verify atomic_write_str replaces a read-only target and preserves its read-only
+        //    permission (it must never widen the original mode).
         let readonly_target = temp_dir.path().join("readonly_test.toml");
         atomic_write_str(&readonly_target, "v = 1\n").unwrap();
         let mut perms = std::fs::metadata(&readonly_target).unwrap().permissions();
@@ -854,26 +855,13 @@ sIrutI2NuqcarHHe39XSQPcgOvzeKMOaWd1FA=\n\
             std::fs::read_to_string(&readonly_target).unwrap(),
             "v = 2\n"
         );
+        let mut after = std::fs::metadata(&readonly_target).unwrap().permissions();
         assert!(
-            !std::fs::metadata(&readonly_target)
-                .unwrap()
-                .permissions()
-                .readonly(),
-            "target file must not remain read-only after atomic_write_str"
+            after.readonly(),
+            "atomic_write_str must preserve the target's read-only permission"
         );
-
-        // Directly exercise replace_target_after_rename_error fallback path
-        let mut perms2 = std::fs::metadata(&readonly_target).unwrap().permissions();
-        perms2.set_readonly(true);
-        std::fs::set_permissions(&readonly_target, perms2).unwrap();
-        let manual_tmp = temp_dir.path().join(".readonly_test.toml.tmp.manual");
-        std::fs::write(&manual_tmp, b"v = 3\n").unwrap();
-        replace_target_after_rename_error(&manual_tmp, &readonly_target, b"v = 3\n")
-            .expect("fallback replacement should clear readonly and replace target");
-        assert_eq!(
-            std::fs::read_to_string(&readonly_target).unwrap(),
-            "v = 3\n"
-        );
-        assert!(!manual_tmp.exists());
+        #[allow(clippy::permissions_set_readonly_false)]
+        after.set_readonly(false);
+        std::fs::set_permissions(&readonly_target, after).unwrap();
     }
 }

@@ -339,12 +339,7 @@ impl TrackerStorage {
 
             storage.write_phase(sid, &phase)?;
             storage.write_scope(sid, "inbox", &inbox_scope)?;
-            fs::create_dir_all(storage.items_dir(sid, "inbox")?).map_err(|source| {
-                TrackerError::Io {
-                    path: storage.tracker_dir.clone(),
-                    source,
-                }
-            })?;
+            storage.ensure_items_dir(sid, "inbox")?;
         }
 
         Ok(storage)
@@ -374,6 +369,44 @@ impl TrackerStorage {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.tracker_dir.clone())
+    }
+
+    /// Proves `path` (which must be lexically beneath `tracker_dir`) stays inside `.tracker/` on
+    /// disk and is not a symlink, via [`contained_path`].
+    pub(crate) fn guard_tracker_path(&self, path: &Path) -> Result<PathBuf> {
+        let rel = path.strip_prefix(&self.tracker_dir).map_err(|_| {
+            TrackerError::ValidationError(format!(
+                "Path '{}' is not inside tracker directory '{}'",
+                path.display(),
+                self.tracker_dir.display()
+            ))
+        })?;
+        contained_path(&self.tracker_dir, rel)
+    }
+
+    /// Reads a UTF-8 file under `.tracker/` after containment checks.
+    pub(crate) fn read_tracker_file(&self, path: &Path) -> Result<String> {
+        let path = self.guard_tracker_path(path)?;
+        fs::read_to_string(&path).map_err(|source| TrackerError::Io { path, source })
+    }
+
+    /// Atomically writes a UTF-8 file under `.tracker/` after containment checks.
+    pub(crate) fn write_tracker_file(&self, path: &Path, contents: &str) -> Result<()> {
+        let path = self.guard_tracker_path(path)?;
+        atomic_write_str(&path, contents)
+    }
+
+    /// Creates a directory (and parents) under `.tracker/` after containment checks.
+    pub(crate) fn create_tracker_dir_all(&self, path: &Path) -> Result<()> {
+        let path = self.guard_tracker_path(path)?;
+        fs::create_dir_all(&path).map_err(|source| TrackerError::Io { path, source })
+    }
+
+    /// Creates `items/` for `(phase_id, scope_id)` under `.tracker/` after containment checks.
+    pub fn ensure_items_dir(&self, phase_id: &str, scope_id: &str) -> Result<PathBuf> {
+        let dir = self.items_dir(phase_id, scope_id)?;
+        self.create_tracker_dir_all(&dir)?;
+        Ok(dir)
     }
 
     /// Returns `.tracker/project.toml`.
@@ -496,10 +529,7 @@ impl TrackerStorage {
         if !path.is_file() {
             return Err(TrackerError::TrackerRootNotFound(self.tracker_dir.clone()));
         }
-        let raw = fs::read_to_string(&path).map_err(|source| TrackerError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        let raw = self.read_tracker_file(&path)?;
         let mut manifest =
             ProjectManifest::from_toml_str(&raw).map_err(|err| attach_toml_path(err, path))?;
         normalize_project_manifest_paths(&mut manifest);
@@ -511,7 +541,7 @@ impl TrackerStorage {
         let mut normalized = manifest.clone();
         normalize_project_manifest_paths(&mut normalized);
         let serialized = normalized.to_toml_string()?;
-        atomic_write_str(&self.project_toml_path(), &serialized)
+        self.write_tracker_file(&self.project_toml_path(), &serialized)
     }
 
     /// Reads and parses Tier 2 `.tracker/phases/<phase_id>/phase.toml`.
@@ -528,10 +558,7 @@ impl TrackerStorage {
     }
 
     pub(crate) fn read_phase_from_path(&self, path: &Path) -> Result<PhaseManifest> {
-        let raw = fs::read_to_string(path).map_err(|source| TrackerError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        let raw = self.read_tracker_file(path)?;
         let mut manifest = PhaseManifest::from_toml_str(&raw)
             .map_err(|err| attach_toml_path(err, path.to_path_buf()))?;
         normalize_phase_manifest_paths(&mut manifest);
@@ -548,7 +575,7 @@ impl TrackerStorage {
         let mut normalized = manifest.clone();
         normalize_phase_manifest_paths(&mut normalized);
         let serialized = normalized.to_toml_string()?;
-        atomic_write_str(path, &serialized)
+        self.write_tracker_file(path, &serialized)
     }
 
     /// Reads and parses Tier 3 `.tracker/phases/<phase_id>/domains/<scope_id>/scope.toml`.
@@ -564,10 +591,7 @@ impl TrackerStorage {
     }
 
     pub(crate) fn read_scope_from_path(&self, path: &Path) -> Result<ScopeManifest> {
-        let raw = fs::read_to_string(path).map_err(|source| TrackerError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        let raw = self.read_tracker_file(path)?;
         let mut manifest = ScopeManifest::from_toml_str(&raw)
             .map_err(|err| attach_toml_path(err, path.to_path_buf()))?;
         normalize_scope_manifest_paths(&mut manifest);
@@ -589,7 +613,7 @@ impl TrackerStorage {
         let mut normalized = manifest.clone();
         normalize_scope_manifest_paths(&mut normalized);
         let serialized = normalized.to_toml_string()?;
-        atomic_write_str(path, &serialized)
+        self.write_tracker_file(path, &serialized)
     }
 
     /// Reads and parses Tier 4 `items/<item_id>/item.toml`.
@@ -606,10 +630,7 @@ impl TrackerStorage {
                 id: item_id.to_string(),
             });
         }
-        let raw = fs::read_to_string(&path).map_err(|source| TrackerError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        let raw = self.read_tracker_file(&path)?;
         ItemManifest::from_toml_str(&raw).map_err(|err| attach_toml_path(err, path))
     }
 
@@ -623,13 +644,13 @@ impl TrackerStorage {
     ) -> Result<()> {
         let path = self.item_toml_path(phase_id, scope_id, item_id)?;
         let serialized = manifest.to_toml_string()?;
-        atomic_write_str(&path, &serialized)
+        self.write_tracker_file(&path, &serialized)
     }
 
     /// Reads Tier 4 `items/<item_id>/desc.md`.
     pub fn read_item_desc(&self, phase_id: &str, scope_id: &str, item_id: &str) -> Result<String> {
         let path = self.item_desc_path(phase_id, scope_id, item_id)?;
-        fs::read_to_string(&path).map_err(|source| TrackerError::Io { path, source })
+        self.read_tracker_file(&path)
     }
 
     /// Atomically writes Tier 4 `items/<item_id>/desc.md`.
@@ -641,7 +662,7 @@ impl TrackerStorage {
         description_markdown: &str,
     ) -> Result<()> {
         let path = self.item_desc_path(phase_id, scope_id, item_id)?;
-        atomic_write_str(&path, description_markdown)
+        self.write_tracker_file(&path, description_markdown)
     }
 
     /// Atomically writes both `item.toml` and `desc.md` for an [`ItemDetail`].
@@ -663,10 +684,7 @@ impl TrackerStorage {
         if !path.is_file() {
             return Ok(None);
         }
-        let raw = fs::read_to_string(&path).map_err(|source| TrackerError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        let raw = self.read_tracker_file(&path)?;
         let timer = ActiveTimer::from_toml_str(&raw).map_err(|err| attach_toml_path(err, path))?;
         Ok(Some(timer))
     }
@@ -674,12 +692,12 @@ impl TrackerStorage {
     /// Atomically writes `.tracker/.timer.toml`.
     pub fn write_active_timer(&self, timer: &ActiveTimer) -> Result<()> {
         let serialized = timer.to_toml_string()?;
-        atomic_write_str(&self.timer_toml_path(), &serialized)
+        self.write_tracker_file(&self.timer_toml_path(), &serialized)
     }
 
     /// Removes `.tracker/.timer.toml` if it exists.
     pub fn clear_active_timer(&self) -> Result<()> {
-        let path = self.timer_toml_path();
+        let path = self.guard_tracker_path(&self.timer_toml_path())?;
         if path.exists() {
             fs::remove_file(&path).map_err(|source| TrackerError::Io { path, source })?;
         }
@@ -846,12 +864,7 @@ impl TrackerStorage {
                     items: ScopeItems::default(),
                 };
                 self.write_scope(&resolved_phase, &resolved_scope, &inbox_manifest)?;
-                fs::create_dir_all(self.items_dir(&resolved_phase, &resolved_scope)?).map_err(
-                    |source| TrackerError::Io {
-                        path: scope_toml.clone(),
-                        source,
-                    },
-                )?;
+                self.ensure_items_dir(&resolved_phase, &resolved_scope)?;
             } else {
                 return Err(TrackerError::NotFound {
                     kind: "Scope",
@@ -949,23 +962,199 @@ pub(crate) fn normalize_scope_manifest_paths(manifest: &mut ScopeManifest) {
     manifest.scope.tracked_files = normalize_relative_path_list(&manifest.scope.tracked_files);
 }
 
-pub(crate) fn validate_identifier(kind: &'static str, id: &str) -> Result<()> {
-    let trimmed = id.trim();
-    if trimmed.is_empty()
-        || trimmed == "."
-        || trimmed == ".."
-        || trimmed.contains('/')
-        || trimmed.contains('\\')
-        || trimmed.contains('\0')
+/// Maximum length of a phase / scope / item / component identifier.
+pub const MAX_IDENTIFIER_LEN: usize = 64;
+
+/// Windows device names that cannot be used as file or directory names on any Windows volume.
+const WINDOWS_RESERVED_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "COM0", "COM1", "COM2", "COM3", "COM4",
+    "COM5", "COM6", "COM7", "COM8", "COM9", "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
+    "LPT7", "LPT8", "LPT9",
+];
+
+/// Returns `true` if `id` matches `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` and is not a Windows
+/// reserved device name (case-insensitive).
+///
+/// The allow-list guarantees an identifier is always exactly one plain path component on every
+/// platform: no separators, no `.`/`..`, no drive prefixes (`C:x`), no trailing dots or spaces,
+/// and no NUL.
+pub fn is_valid_identifier(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    if bytes.is_empty() || bytes.len() > MAX_IDENTIFIER_LEN || !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    if !bytes[1..]
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
     {
+        return false;
+    }
+    !WINDOWS_RESERVED_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(id))
+}
+
+pub(crate) fn validate_identifier(kind: &'static str, id: &str) -> Result<()> {
+    if !is_valid_identifier(id) {
         return Err(TrackerError::ValidationError(format!(
-            "Invalid {kind} identifier '{id}'"
+            "Invalid {kind} identifier '{id}': must match ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$ \
+             and must not be a reserved Windows device name"
         )));
     }
     Ok(())
 }
 
+/// Normalizes an arbitrary label (e.g. an on-disk component id such as `my.crate`) into a valid
+/// identifier: invalid input is slugified (lowercase ASCII alphanumerics joined by `_`),
+/// truncated to `max_len` (capped at [`MAX_IDENTIFIER_LEN`]), and suffixed with `_` if it would
+/// collide with a Windows reserved name. Already-valid identifiers that fit are returned as-is.
+pub(crate) fn normalize_identifier(raw: &str, max_len: usize) -> String {
+    let max_len = max_len.clamp(1, MAX_IDENTIFIER_LEN);
+    if raw.len() <= max_len && is_valid_identifier(raw) {
+        return raw.to_string();
+    }
+    let mut slug = crate::models::registry::slugify_project_id(raw);
+    slug.truncate(max_len);
+    while slug.ends_with('_') && slug.len() > 1 {
+        slug.pop();
+    }
+    if !is_valid_identifier(&slug) {
+        // Only reachable for reserved names (slugify output is otherwise always valid).
+        if slug.len() >= max_len {
+            slug.pop();
+        }
+        slug.push('_');
+    }
+    slug
+}
+
+/// Resolves `rel` beneath `base` and proves the result stays inside `base` on disk.
+///
+/// - `rel` must consist only of normal components (no `..`, root, or drive/UNC prefix).
+/// - The deepest existing ancestor of `base.join(rel)` is canonicalized (following any
+///   symlinked directories) and must start with the canonicalized `base`.
+/// - The final component must not itself be a symlink (checked with `symlink_metadata`), so a
+///   planted `desc.md -> ~/.ssh/id_ed25519` is rejected for both reads and writes.
+///
+/// Returns the lexical path `base.join(rel)` (not the canonical form) so callers keep the
+/// tracker-relative paths they display and compare.
+pub fn contained_path(base: &Path, rel: impl AsRef<Path>) -> Result<PathBuf> {
+    resolve_contained(base, rel.as_ref(), true)
+}
+
+/// Like [`contained_path`] but permits the final component to be a symlink as long as it
+/// resolves inside `base`. Only for validating references (e.g. tracked file lists or an
+/// ingestion scan root) that are never opened for reading or writing tracker content.
+pub(crate) fn contained_reference_path(base: &Path, rel: impl AsRef<Path>) -> Result<PathBuf> {
+    resolve_contained(base, rel.as_ref(), false)
+}
+
+fn resolve_contained(base: &Path, rel: &Path, reject_final_symlink: bool) -> Result<PathBuf> {
+    let escape = |why: &str| {
+        TrackerError::ValidationError(format!(
+            "Path '{}' escapes '{}': {why}",
+            rel.display(),
+            base.display()
+        ))
+    };
+
+    let mut joined = base.to_path_buf();
+    let mut has_normal = false;
+    for comp in rel.components() {
+        match comp {
+            Component::Normal(part) => {
+                joined.push(part);
+                has_normal = true;
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(escape(
+                    "must be relative without '..' or a root/drive prefix",
+                ));
+            }
+        }
+    }
+
+    let canon_base = canonicalize_existing_prefix(base)?;
+    let canon_target = canonicalize_existing_prefix(&joined)?;
+    if !canon_target.starts_with(&canon_base) {
+        return Err(escape(&format!(
+            "resolves to '{}' outside '{}'",
+            canon_target.display(),
+            canon_base.display()
+        )));
+    }
+
+    if reject_final_symlink && has_normal {
+        if let Ok(meta) = fs::symlink_metadata(&joined) {
+            if meta.file_type().is_symlink() {
+                return Err(escape("final path component is a symlink"));
+            }
+        }
+    }
+
+    Ok(joined)
+}
+
+/// Canonicalizes the deepest existing ancestor of `path` and re-appends the non-existent tail.
+fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf> {
+    let io_err = |source: std::io::Error| TrackerError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+
+    let mut existing = path;
+    let mut tail: Vec<&OsStr> = Vec::new();
+    loop {
+        let probe = if existing.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            existing
+        };
+        match fs::symlink_metadata(probe) {
+            Ok(meta) => {
+                let mut canon = fs::canonicalize(probe).map_err(|source| {
+                    if meta.file_type().is_symlink() {
+                        TrackerError::ValidationError(format!(
+                            "Dangling or unresolvable symlink '{}'",
+                            probe.display()
+                        ))
+                    } else {
+                        io_err(source)
+                    }
+                })?;
+                for part in tail.iter().rev() {
+                    canon.push(part);
+                }
+                return Ok(canon);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+                    return Err(TrackerError::ValidationError(format!(
+                        "Cannot resolve path '{}' (no existing ancestor)",
+                        path.display()
+                    )));
+                };
+                tail.push(name);
+                existing = parent;
+            }
+            Err(err) => return Err(io_err(err)),
+        }
+    }
+}
+
+/// Lexically validates a slash- or backslash-separated tracker-relative path and resolves it
+/// beneath `base` via [`contained_path`] (symlink-aware containment, final symlink rejected).
 pub(crate) fn resolve_safe_relative_path(base: &Path, rel: &str) -> Result<PathBuf> {
+    contained_path(base, lexical_relative_path(rel)?)
+}
+
+/// Like [`resolve_safe_relative_path`] but delegates to [`contained_reference_path`].
+pub(crate) fn resolve_contained_reference(base: &Path, rel: &str) -> Result<PathBuf> {
+    contained_reference_path(base, lexical_relative_path(rel)?)
+}
+
+fn lexical_relative_path(rel: &str) -> Result<PathBuf> {
     let trimmed = rel.trim();
     if trimmed.is_empty() {
         return Err(TrackerError::ValidationError(
@@ -988,7 +1177,7 @@ pub(crate) fn resolve_safe_relative_path(base: &Path, rel: &str) -> Result<PathB
     }
 
     let unified = trimmed.replace('\\', "/");
-    let mut resolved = base.to_path_buf();
+    let mut resolved = PathBuf::new();
 
     for seg in unified.split('/') {
         if seg.is_empty() || seg == "." {
@@ -1192,4 +1381,23 @@ pub fn validate_safe_project_root(path: &Path) -> Result<PathBuf> {
         )));
     }
     Ok(resolved)
+}
+
+#[cfg(test)]
+mod identifier_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_identifier_maps_invalid_labels_to_valid_ids() {
+        assert_eq!(normalize_identifier("backend_core", 64), "backend_core");
+        assert_eq!(normalize_identifier("my.crate", 64), "my_crate");
+        assert_eq!(normalize_identifier("serde.json-2", 64), "serde_json_2");
+        assert_eq!(normalize_identifier("CON", 64), "con_");
+        assert_eq!(normalize_identifier("..", 64), "project");
+        let long = normalize_identifier(&"x".repeat(100), 53);
+        assert_eq!(long.len(), 53);
+        for raw in ["my.crate", "CON", "..", "C:x", "a.", &"y".repeat(80)] {
+            assert!(is_valid_identifier(&normalize_identifier(raw, 64)), "{raw}");
+        }
+    }
 }

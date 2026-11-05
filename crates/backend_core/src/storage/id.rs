@@ -101,7 +101,7 @@ impl TrackerStorage {
                 if let Ok(scope_dir) =
                     self.resolve_scope_path(phase_dir, &scope_entry.id, Some(&scope_entry.path))
                 {
-                    scan_scope_dir(&scope_dir, counters);
+                    scan_scope_dir(self, &scope_dir, counters);
                 }
             }
         }
@@ -118,20 +118,20 @@ impl TrackerStorage {
         for scope_entry in scope_entries.flatten() {
             let scope_dir = scope_entry.path();
             if scope_dir.is_dir() {
-                scan_scope_dir(&scope_dir, counters);
+                scan_scope_dir(self, &scope_dir, counters);
             }
         }
     }
 }
 
-fn scan_scope_dir(scope_dir: &Path, counters: &mut ProjectCounters) {
+fn scan_scope_dir(storage: &TrackerStorage, scope_dir: &Path, counters: &mut ProjectCounters) {
     if !scope_dir.is_dir() {
         return;
     }
 
     // Check stubs in scope.toml if readable
     let scope_toml = scope_dir.join("scope.toml");
-    if let Ok(raw) = fs::read_to_string(&scope_toml) {
+    if let Ok(raw) = storage.read_tracker_file(&scope_toml) {
         if let Ok(scope_manifest) = ScopeManifest::from_toml_str(&raw) {
             for stub in &scope_manifest.items.bugs {
                 record_id_in_counters(counters, &stub.id);
@@ -159,7 +159,7 @@ fn scan_scope_dir(scope_dir: &Path, counters: &mut ProjectCounters) {
             record_id_in_counters(counters, dir_name);
         }
         let item_toml = item_dir.join("item.toml");
-        if let Ok(raw) = fs::read_to_string(&item_toml) {
+        if let Ok(raw) = storage.read_tracker_file(&item_toml) {
             if let Ok(item_manifest) = ItemManifest::from_toml_str(&raw) {
                 record_id_in_counters(counters, &item_manifest.item.id);
             }

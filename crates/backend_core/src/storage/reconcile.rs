@@ -145,7 +145,7 @@ impl TrackerStorage {
                 let items_dir = scope_dir.join("items");
 
                 let (bugs, features, scope_completed) =
-                    collect_authoritative_items(&items_dir, &mut max_counters)?;
+                    collect_authoritative_items(self, &items_dir, &mut max_counters)?;
 
                 let scope_item_count = (bugs.len() + features.len()) as u32;
                 phase_total_items += scope_item_count;
@@ -200,6 +200,7 @@ impl TrackerStorage {
 }
 
 fn collect_authoritative_items(
+    storage: &TrackerStorage,
     items_dir: &Path,
     max_counters: &mut ProjectCounters,
 ) -> Result<(Vec<ItemStub>, Vec<ItemStub>, u32)> {
@@ -244,12 +245,7 @@ fn collect_authoritative_items(
             continue;
         }
 
-        let raw = fs::read_to_string(&item_toml_path).map_err(|source| {
-            crate::error::TrackerError::Io {
-                path: item_toml_path.clone(),
-                source,
-            }
-        })?;
+        let raw = storage.read_tracker_file(&item_toml_path)?;
         let manifest = ItemManifest::from_toml_str(&raw).map_err(|err| match err {
             crate::error::TrackerError::TomlDeserialize { source, .. } => {
                 crate::error::TrackerError::TomlDeserialize {

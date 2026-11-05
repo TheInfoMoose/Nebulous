@@ -610,12 +610,7 @@ impl TrackerStorage {
 
         self.write_phase(phase_id, &phase_manifest)?;
         self.write_scope(phase_id, &default_scope, &inbox_scope)?;
-        fs::create_dir_all(self.items_dir(phase_id, &default_scope)?).map_err(|source| {
-            TrackerError::Io {
-                path: self.tracker_dir().to_path_buf(),
-                source,
-            }
-        })?;
+        self.ensure_items_dir(phase_id, &default_scope)?;
         self.write_project(&project)?;
 
         Ok(phase_manifest)
@@ -682,12 +677,7 @@ impl TrackerStorage {
         };
 
         self.write_scope(&resolved_phase, scope_id, &scope_manifest)?;
-        fs::create_dir_all(self.items_dir(&resolved_phase, scope_id)?).map_err(|source| {
-            TrackerError::Io {
-                path: self.tracker_dir().to_path_buf(),
-                source,
-            }
-        })?;
+        self.ensure_items_dir(&resolved_phase, scope_id)?;
 
         let scope_type = infer_default_scope_type(scope_id);
         if !phase_manifest
@@ -740,12 +730,7 @@ impl TrackerStorage {
                     items: ScopeItems::default(),
                 };
                 self.write_scope(phase_id, scope_id, &mirrored_manifest)?;
-                fs::create_dir_all(self.items_dir(phase_id, scope_id)?).map_err(|source| {
-                    TrackerError::Io {
-                        path: self.tracker_dir().to_path_buf(),
-                        source,
-                    }
-                })?;
+                self.ensure_items_dir(phase_id, scope_id)?;
             } else if scope_metadata.bound_component.is_some() {
                 let mut existing = self.read_scope(phase_id, scope_id)?;
                 existing.scope.target = scope_metadata.target.clone();
@@ -825,12 +810,7 @@ impl TrackerStorage {
                 items: ScopeItems::default(),
             };
             self.write_scope(&resolved_target_phase, &loc.scope_id, &copied_scope)?;
-            fs::create_dir_all(self.items_dir(&resolved_target_phase, &loc.scope_id)?).map_err(
-                |source| TrackerError::Io {
-                    path: self.tracker_dir().to_path_buf(),
-                    source,
-                },
-            )?;
+            self.ensure_items_dir(&resolved_target_phase, &loc.scope_id)?;
         }
 
         if !target_phase_manifest
@@ -853,7 +833,11 @@ impl TrackerStorage {
         detail.manifest.item.updated_at = now_rfc3339();
         self.write_item_detail(&resolved_target_phase, &loc.scope_id, &detail)?;
 
-        let old_item_dir = self.item_dir(&loc.phase_id, &loc.scope_id, &canonical_item_id)?;
+        let old_item_dir = self.guard_tracker_path(&self.item_dir(
+            &loc.phase_id,
+            &loc.scope_id,
+            &canonical_item_id,
+        )?)?;
         if old_item_dir.exists() {
             fs::remove_dir_all(&old_item_dir).map_err(|source| TrackerError::Io {
                 path: old_item_dir,
