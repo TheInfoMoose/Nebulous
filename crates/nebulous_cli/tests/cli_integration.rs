@@ -2335,3 +2335,69 @@ fn test_tui_amber_on_black_palette_nebula_header_and_responsive_scaling_locks() 
         }
     }
 }
+
+#[test]
+fn test_project_add_scaffolds_canonical_stages_and_no_use_flag() {
+    let temp = TempDir::new().expect("should create temp dir");
+    let cfg_dir = temp.path().join("nebulous_config");
+    let proj_one = temp.path().join("proj_one");
+    let proj_two = temp.path().join("proj_two");
+    let proj_three = temp.path().join("proj_three");
+    fs::create_dir_all(&proj_one).unwrap();
+    fs::create_dir_all(&proj_two).unwrap();
+    fs::create_dir_all(&proj_three).unwrap();
+
+    let one_str = proj_one.to_str().unwrap();
+    let two_str = proj_two.to_str().unwrap();
+    let three_str = proj_three.to_str().unwrap();
+
+    // 1. `neb project add <tmp>` on a directory without `.tracker/` creates phases
+    // pre_production, production and post_production, with active_phase pre_production
+    let add_one = run_neb_json_with_env(
+        &["project", "add", one_str, "--name", "ProjOne"],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(add_one["action"], "add");
+    assert_eq!(add_one["id"], "projone");
+    assert_eq!(add_one["active_project_id"], "projone");
+
+    let storage_one = TrackerStorage::new(&proj_one);
+    let project_one = storage_one
+        .read_project()
+        .expect("should read initialized project.toml");
+    assert_eq!(project_one.project.active_phase, "pre_production");
+    let phase_ids: Vec<&str> = project_one
+        .phases
+        .registry
+        .iter()
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(
+        phase_ids,
+        vec!["pre_production", "production", "post_production"]
+    );
+
+    // 2. `--no-use` leaves the previously active project active
+    let add_two = run_neb_json_with_env(
+        &["project", "add", two_str, "--name", "ProjTwo", "--no-use"],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(add_two["action"], "add");
+    assert_eq!(add_two["id"], "projtwo");
+    assert_eq!(add_two["active_project_id"], "projone");
+
+    let list_after_no_use = run_neb_json_with_env(&["project", "list"], None, &cfg_dir);
+    assert_eq!(list_after_no_use["active_project_id"], "projone");
+
+    // 3. `--use` is still accepted
+    let add_three = run_neb_json_with_env(
+        &["project", "add", three_str, "--name", "ProjThree", "--use"],
+        None,
+        &cfg_dir,
+    );
+    assert_eq!(add_three["action"], "add");
+    assert_eq!(add_three["id"], "projthree");
+    assert_eq!(add_three["active_project_id"], "projthree");
+}

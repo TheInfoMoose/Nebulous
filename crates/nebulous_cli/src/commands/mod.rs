@@ -2080,7 +2080,8 @@ fn handle_project(action: &ProjectCommand, json: bool) -> Result<String> {
             path,
             name,
             tags,
-            set_active,
+            no_use,
+            use_compat: _,
         } => {
             if path.is_dir() {
                 let candidate_storage = TrackerStorage::new(path);
@@ -2091,16 +2092,11 @@ fn handle_project(action: &ProjectCommand, json: bool) -> Result<String> {
                         .filter(|s| !s.is_empty())
                         .map(str::to_string)
                         .unwrap_or_else(|| infer_project_name(path));
-                    let _ = TrackerStorage::init(
-                        path,
-                        &init_name,
-                        "01_core_engine",
-                        "Core Engine & Initial Scope",
-                    )?;
+                    let _ = TrackerStorage::init_standard(path, &init_name)?;
                 }
             }
 
-            let entry = register_project(path, name.as_deref(), tags.clone(), *set_active)?;
+            let entry = register_project(path, name.as_deref(), tags.clone(), !*no_use)?;
             let registry = load_global_registry()?;
 
             if json {

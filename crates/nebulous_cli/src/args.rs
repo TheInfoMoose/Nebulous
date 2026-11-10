@@ -466,9 +466,12 @@ pub enum ProjectCommand {
         #[arg(long = "tag", visible_alias = "tags", value_delimiter = ',')]
         tags: Vec<String>,
 
-        /// Set this project as the active project in `projects.toml`.
-        #[arg(long = "use", visible_alias = "active", default_value_t = true)]
-        set_active: bool,
+        /// Register without making it the active project.
+        #[arg(long = "no-use")]
+        no_use: bool,
+
+        #[arg(long = "use", alias = "active", hide = true)]
+        use_compat: bool,
     },
 
     /// Switch the active project in the global Nebulous registry by ID, name, or path.
