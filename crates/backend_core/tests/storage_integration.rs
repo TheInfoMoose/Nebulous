@@ -2245,3 +2245,171 @@ fn concurrent_creators_get_unique_ids() {
         .count();
     assert_eq!(dir_count, 100);
 }
+
+#[test]
+fn versioned_reads_and_writes_preserve_unknown_keys_and_layout() {
+    let temp = TempTrackerDir::new("versioned_compat");
+    let storage = TrackerStorage::init_standard(temp.path(), "CompatTest").unwrap();
+
+    let (loc, detail) = storage
+        .create_bug("Initial bug", None, None, Severity::Medium, None)
+        .unwrap();
+    let item_path = storage
+        .item_toml_path(&loc.phase_id, &loc.scope_id, &detail.manifest.item.id)
+        .unwrap();
+
+    // 1. Freshly created bug's item.toml has no schema_version line, and layout matches model serializer
+    let item_text = fs::read_to_string(&item_path).unwrap();
+    assert!(
+        !item_text.contains("schema_version"),
+        "v1 bug item.toml must not contain schema_version: {item_text}"
+    );
+    assert_eq!(
+        item_text,
+        storage
+            .read_item_manifest(&loc.phase_id, &loc.scope_id, &detail.manifest.item.id)
+            .unwrap()
+            .to_toml_string()
+            .unwrap()
+    );
+
+    let project_path = storage.project_toml_path();
+    let project_text = fs::read_to_string(&project_path).unwrap();
+    assert_eq!(
+        project_text,
+        storage.read_project().unwrap().to_toml_string().unwrap()
+    );
+
+    // 2. Hand-add `future_flag = true` at top level and `future_field = "x"` under `[item]` to item.toml
+    let injected_item_toml = format!(
+        "future_flag = true\n{}",
+        item_text.replacen("[item]\n", "[item]\nfuture_field = \"x\"\n", 1)
+    );
+    fs::write(&item_path, &injected_item_toml).unwrap();
+
+    storage
+        .update_item_status(&detail.manifest.item.id, ItemStatus::InProgress)
+        .unwrap();
+
+    let updated_item_text = fs::read_to_string(&item_path).unwrap();
+    assert!(
+        updated_item_text.contains("future_flag = true"),
+        "top-level unknown key must survive update_item_status: {updated_item_text}"
+    );
+    assert!(
+        updated_item_text.contains("future_field = \"x\""),
+        "nested [item] unknown key must survive update_item_status: {updated_item_text}"
+    );
+    let parsed_updated: toml::Table = toml::from_str(&updated_item_text).unwrap();
+    assert_eq!(
+        parsed_updated
+            .get("future_flag")
+            .and_then(toml::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        parsed_updated
+            .get("item")
+            .and_then(toml::Value::as_table)
+            .and_then(|t| t.get("future_field"))
+            .and_then(toml::Value::as_str),
+        Some("x")
+    );
+
+    // 3. Unknown top-level key in project.toml survives set_active_phase
+    let injected_project_toml = format!("future_project_key = \"keep_me\"\n{project_text}");
+    fs::write(&project_path, &injected_project_toml).unwrap();
+
+    storage.set_active_phase("production").unwrap();
+    let updated_project_text = fs::read_to_string(&project_path).unwrap();
+    assert!(
+        updated_project_text.contains("future_project_key = \"keep_me\""),
+        "unknown top-level key in project.toml must survive set_active_phase: {updated_project_text}"
+    );
+
+    // 4. Unknown keys in phase.toml and scope.toml survive writes, and explicit schema_version = 1 is retained
+    let phase_path = storage.phase_toml_path(&loc.phase_id).unwrap();
+    let phase_text = fs::read_to_string(&phase_path).unwrap();
+    fs::write(
+        &phase_path,
+        format!("schema_version = 1\nfuture_phase_key = 42\n{phase_text}"),
+    )
+    .unwrap();
+    let phase_manifest = storage.read_phase(&loc.phase_id).unwrap();
+    storage.write_phase(&loc.phase_id, &phase_manifest).unwrap();
+    let updated_phase_text = fs::read_to_string(&phase_path).unwrap();
+    assert!(
+        updated_phase_text.contains("schema_version = 1"),
+        "explicit schema_version = 1 must be retained when old_had_key is true: {updated_phase_text}"
+    );
+    assert!(
+        updated_phase_text.contains("future_phase_key = 42"),
+        "unknown key in phase.toml must survive write_phase: {updated_phase_text}"
+    );
+
+    let scope_path = storage
+        .scope_toml_path(&loc.phase_id, &loc.scope_id)
+        .unwrap();
+    let scope_text = fs::read_to_string(&scope_path).unwrap();
+    fs::write(
+        &scope_path,
+        format!("future_scope_key = \"sc\"\n{scope_text}"),
+    )
+    .unwrap();
+    let scope_manifest = storage.read_scope(&loc.phase_id, &loc.scope_id).unwrap();
+    storage
+        .write_scope(&loc.phase_id, &loc.scope_id, &scope_manifest)
+        .unwrap();
+    let updated_scope_text = fs::read_to_string(&scope_path).unwrap();
+    assert!(
+        updated_scope_text.contains("future_scope_key = \"sc\""),
+        "unknown key in scope.toml must survive write_scope: {updated_scope_text}"
+    );
+
+    // 5. An item.toml with schema_version = 9 makes read_item_manifest and write_item_manifest return UnsupportedSchema
+    let v9_item_toml = format!("schema_version = 9\n{updated_item_text}");
+    fs::write(&item_path, &v9_item_toml).unwrap();
+
+    let read_err = storage
+        .read_item_manifest(&loc.phase_id, &loc.scope_id, &detail.manifest.item.id)
+        .expect_err("reading schema_version = 9 must fail");
+    match read_err {
+        TrackerError::UnsupportedSchema {
+            path,
+            found,
+            supported,
+        } => {
+            assert_eq!(path, item_path);
+            assert_eq!(found, 9);
+            assert_eq!(supported, 1);
+        }
+        other => panic!("expected UnsupportedSchema on read, got {other:?}"),
+    }
+
+    let write_err = storage
+        .write_item_manifest(
+            &loc.phase_id,
+            &loc.scope_id,
+            &detail.manifest.item.id,
+            &detail.manifest,
+        )
+        .expect_err("overwriting schema_version = 9 must fail");
+    match write_err {
+        TrackerError::UnsupportedSchema {
+            path,
+            found,
+            supported,
+        } => {
+            assert_eq!(path, item_path);
+            assert_eq!(found, 9);
+            assert_eq!(supported, 1);
+        }
+        other => panic!("expected UnsupportedSchema on write, got {other:?}"),
+    }
+
+    assert_eq!(
+        fs::read_to_string(&item_path).unwrap(),
+        v9_item_toml,
+        "item.toml with unsupported schema must remain byte-identical after rejected write"
+    );
+}

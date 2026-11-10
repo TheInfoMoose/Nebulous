@@ -669,15 +669,46 @@ impl TrackerStorage {
         Ok(phase_dir.join("domains").join(scope_id))
     }
 
+    /// Reads and parses a versioned TOML manifest under `.tracker/`.
+    fn read_versioned<T: serde::de::DeserializeOwned>(&self, path: &Path) -> Result<T> {
+        let raw = self.read_tracker_file(path)?;
+        let mut table: toml::Table =
+            toml::from_str(&raw).map_err(|err| attach_toml_path(err.into(), path.to_path_buf()))?;
+        compat::check_readable(&table, path, crate::models::item::MAX_ITEM_SCHEMA_VERSION)?;
+        table.remove(compat::SCHEMA_KEY);
+        T::deserialize(toml::Value::Table(table))
+            .map_err(|err| attach_toml_path(err.into(), path.to_path_buf()))
+    }
+
+    /// Writes a versioned TOML manifest under `.tracker/`, preserving unknown keys from any existing file.
+    fn write_versioned<T: serde::Serialize>(
+        &self,
+        path: &Path,
+        value: &T,
+        version: u32,
+    ) -> Result<()> {
+        let mut new = toml::Table::try_from(value)?;
+        let mut old_had_key = false;
+        if path.is_file() {
+            let raw = self.read_tracker_file(path)?;
+            let old: toml::Table = toml::from_str(&raw)
+                .map_err(|err| attach_toml_path(err.into(), path.to_path_buf()))?;
+            compat::check_readable(&old, path, crate::models::item::MAX_ITEM_SCHEMA_VERSION)?;
+            old_had_key = old.contains_key(compat::SCHEMA_KEY);
+            compat::merge_unknown(&mut new, &old);
+        }
+        compat::stamp(&mut new, version, old_had_key);
+        let serialized = toml::to_string_pretty(&new)?;
+        self.write_tracker_file(path, &serialized)
+    }
+
     /// Reads and parses Tier 1 `.tracker/project.toml`.
     pub fn read_project(&self) -> Result<ProjectManifest> {
         let path = self.project_toml_path();
         if !path.is_file() {
             return Err(TrackerError::TrackerRootNotFound(self.tracker_dir.clone()));
         }
-        let raw = self.read_tracker_file(&path)?;
-        let mut manifest =
-            ProjectManifest::from_toml_str(&raw).map_err(|err| attach_toml_path(err, path))?;
+        let mut manifest: ProjectManifest = self.read_versioned(&path)?;
         normalize_project_manifest_paths(&mut manifest);
         Ok(manifest)
     }
@@ -686,8 +717,7 @@ impl TrackerStorage {
     pub fn write_project(&self, manifest: &ProjectManifest) -> Result<()> {
         let mut normalized = manifest.clone();
         normalize_project_manifest_paths(&mut normalized);
-        let serialized = normalized.to_toml_string()?;
-        self.write_tracker_file(&self.project_toml_path(), &serialized)
+        self.write_versioned(&self.project_toml_path(), &normalized, 1)
     }
 
     /// Reads and parses Tier 2 `.tracker/phases/<phase_id>/phase.toml`.
@@ -704,9 +734,7 @@ impl TrackerStorage {
     }
 
     pub(crate) fn read_phase_from_path(&self, path: &Path) -> Result<PhaseManifest> {
-        let raw = self.read_tracker_file(path)?;
-        let mut manifest = PhaseManifest::from_toml_str(&raw)
-            .map_err(|err| attach_toml_path(err, path.to_path_buf()))?;
+        let mut manifest: PhaseManifest = self.read_versioned(path)?;
         normalize_phase_manifest_paths(&mut manifest);
         Ok(manifest)
     }
@@ -720,8 +748,7 @@ impl TrackerStorage {
     pub(crate) fn write_phase_to_path(&self, path: &Path, manifest: &PhaseManifest) -> Result<()> {
         let mut normalized = manifest.clone();
         normalize_phase_manifest_paths(&mut normalized);
-        let serialized = normalized.to_toml_string()?;
-        self.write_tracker_file(path, &serialized)
+        self.write_versioned(path, &normalized, 1)
     }
 
     /// Reads and parses Tier 3 `.tracker/phases/<phase_id>/domains/<scope_id>/scope.toml`.
@@ -737,9 +764,7 @@ impl TrackerStorage {
     }
 
     pub(crate) fn read_scope_from_path(&self, path: &Path) -> Result<ScopeManifest> {
-        let raw = self.read_tracker_file(path)?;
-        let mut manifest = ScopeManifest::from_toml_str(&raw)
-            .map_err(|err| attach_toml_path(err, path.to_path_buf()))?;
+        let mut manifest: ScopeManifest = self.read_versioned(path)?;
         normalize_scope_manifest_paths(&mut manifest);
         Ok(manifest)
     }
@@ -758,8 +783,7 @@ impl TrackerStorage {
     pub(crate) fn write_scope_to_path(&self, path: &Path, manifest: &ScopeManifest) -> Result<()> {
         let mut normalized = manifest.clone();
         normalize_scope_manifest_paths(&mut normalized);
-        let serialized = normalized.to_toml_string()?;
-        self.write_tracker_file(path, &serialized)
+        self.write_versioned(path, &normalized, 1)
     }
 
     /// Reads and parses Tier 4 `items/<item_id>/item.toml`.
@@ -776,8 +800,7 @@ impl TrackerStorage {
                 id: item_id.to_string(),
             });
         }
-        let raw = self.read_tracker_file(&path)?;
-        ItemManifest::from_toml_str(&raw).map_err(|err| attach_toml_path(err, path))
+        self.read_versioned(&path)
     }
 
     /// Atomically writes Tier 4 `items/<item_id>/item.toml`.
@@ -789,8 +812,8 @@ impl TrackerStorage {
         manifest: &ItemManifest,
     ) -> Result<()> {
         let path = self.item_toml_path(phase_id, scope_id, item_id)?;
-        let serialized = manifest.to_toml_string()?;
-        self.write_tracker_file(&path, &serialized)
+        let version = manifest.item.item_type.min_schema_version();
+        self.write_versioned(&path, manifest, version)
     }
 
     /// Reads Tier 4 `items/<item_id>/desc.md`.

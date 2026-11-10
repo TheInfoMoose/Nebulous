@@ -47,6 +47,11 @@ pub struct ItemDetail {
     pub description_markdown: String,
 }
 
+/// Maximum item schema version supported by this binary.
+///
+/// STEP 23F sets `Task => 2` and raises `MAX_ITEM_SCHEMA_VERSION` to 2.
+pub const MAX_ITEM_SCHEMA_VERSION: u32 = 1;
+
 /// Category of tracked work item (`bug` or `feature`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -58,6 +63,15 @@ pub enum ItemType {
 }
 
 impl ItemType {
+    /// Returns the minimum `schema_version` required for an item of this type.
+    ///
+    /// STEP 23F sets `Task => 2` and raises `MAX_ITEM_SCHEMA_VERSION` to 2.
+    pub fn min_schema_version(self) -> u32 {
+        match self {
+            Self::Bug | Self::Feature => 1,
+        }
+    }
+
     /// Returns the canonical ID prefix (`BUG` or `FEAT`).
     pub fn id_prefix(self) -> &'static str {
         match self {
