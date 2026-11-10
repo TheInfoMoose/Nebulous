@@ -440,6 +440,30 @@ impl TrackerStorage {
         fs::create_dir_all(&path).map_err(|source| TrackerError::Io { path, source })
     }
 
+    /// Creates a new directory under `.tracker/` after containment checks, failing with
+    /// [`TrackerError::AlreadyExists`] if `path` already exists.
+    pub(crate) fn create_tracker_dir_new(&self, path: &Path) -> Result<()> {
+        let path = self.guard_tracker_path(path)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| TrackerError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        fs::create_dir(&path).map_err(|source| {
+            if source.kind() == std::io::ErrorKind::AlreadyExists {
+                let id = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                TrackerError::AlreadyExists { kind: "Item", id }
+            } else {
+                TrackerError::Io { path, source }
+            }
+        })
+    }
+
     /// Creates `items/` for `(phase_id, scope_id)` under `.tracker/` after containment checks.
     pub fn ensure_items_dir(&self, phase_id: &str, scope_id: &str) -> Result<PathBuf> {
         let dir = self.items_dir(phase_id, scope_id)?;
