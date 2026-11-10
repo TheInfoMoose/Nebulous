@@ -15,6 +15,7 @@ ignore = "0.4"
 keyring = "3"
 notify = "6"
 rand = "0.8"
+regex = "1"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"

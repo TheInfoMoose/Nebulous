@@ -4,6 +4,7 @@ pub mod config;
 pub mod debver;
 pub mod gate;
 pub mod inventory;
+pub mod rootfs;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
