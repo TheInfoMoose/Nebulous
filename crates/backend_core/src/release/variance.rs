@@ -9,6 +9,7 @@ use crate::release::component::{binary_changes, find_match};
 use crate::release::debver;
 use crate::release::golden::Golden;
 use crate::release::inventory::CustomBinary;
+use crate::release::manifest::Manifest;
 use crate::release::Violation;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +44,234 @@ impl VarianceReport {
 
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+fn index_custom_binaries(bins: &BTreeMap<String, CustomBinary>) -> BTreeMap<&str, &CustomBinary> {
+    let mut indexed = BTreeMap::new();
+    for (key, entry) in bins {
+        indexed.insert(key.as_str(), entry);
+        indexed.insert(basename(key), entry);
+        if !entry.path.is_empty() {
+            indexed.insert(entry.path.as_str(), entry);
+        }
+    }
+    indexed
+}
+
+/// Evaluates `live` against `manifest` using the forward-only variance rule.
+///
+/// Whereas the Python implementation skipped an entire item on any approval by
+/// name, `neb` scopes a versioned approval to the downgrade target version (and
+/// open-ended approvals without a `version` cover missing items, flags, and
+/// downgrades alike).
+pub fn evaluate_against_manifest(
+    live: &Golden,
+    manifest: &Manifest,
+    approvals: &Approvals,
+) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    // 0. Check os-release metadata when required in manifest and present in live.
+    if manifest.os.required && !live.os_release.is_empty() && !approvals.covers("os_release", None)
+    {
+        if let (Some(expected_id), Some(live_id)) = (
+            manifest.os.distro_id.as_deref().filter(|s| !s.is_empty()),
+            live.os_release
+                .get("ID")
+                .map(String::as_str)
+                .filter(|s| !s.is_empty()),
+        ) {
+            if live_id != expected_id {
+                violations.push(Violation::new(
+                    "manifest_os_id_mismatch",
+                    "os_release.ID",
+                    format!("/etc/os-release ID '{live_id}' != '{expected_id}'"),
+                ));
+            }
+        }
+
+        if let (Some(min_os_ver), Some(live_os_ver)) = (
+            manifest
+                .os
+                .distro_version
+                .as_deref()
+                .filter(|s| !s.is_empty()),
+            live.os_release
+                .get("VERSION_ID")
+                .map(String::as_str)
+                .filter(|s| !s.is_empty()),
+        ) {
+            if debver::compare(live_os_ver, min_os_ver) == Ordering::Less {
+                violations.push(Violation::new(
+                    "manifest_os_version_downgrade",
+                    "os_release.VERSION_ID",
+                    format!("/etc/os-release VERSION_ID {live_os_ver} < {min_os_ver}"),
+                ));
+            }
+        }
+    }
+
+    // 1. Check against manifest.toml packages (core, then cosmic, BTreeMap order).
+    for group in [&manifest.packages.core, &manifest.packages.cosmic] {
+        for (pkg_name, spec) in group {
+            if !spec.required {
+                continue;
+            }
+            match live.packages.get(pkg_name) {
+                None => {
+                    if !approvals.covers(pkg_name, None) {
+                        violations.push(Violation::new(
+                            "manifest_package_missing",
+                            pkg_name.clone(),
+                            format!(
+                                "Required manifest package '{pkg_name}' is missing from live OS"
+                            ),
+                        ));
+                    }
+                }
+                Some(live_ver) => {
+                    if debver::compare(live_ver, &spec.min_version) == Ordering::Less
+                        && !approvals.covers(pkg_name, Some(live_ver))
+                    {
+                        violations.push(Violation::new(
+                            "manifest_package_downgrade",
+                            pkg_name.clone(),
+                            format!(
+                                "Package '{pkg_name}' version {live_ver} < manifest min_version {}",
+                                spec.min_version
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Check against manifest.toml custom_binaries (BTreeMap order).
+    let live_bins = index_custom_binaries(&live.custom_binaries);
+    for (bin_path, spec) in &manifest.custom_binaries {
+        if !spec.required {
+            continue;
+        }
+        let bname = basename(bin_path);
+        let ok = |target_ver: Option<&str>| {
+            approvals.covers(bin_path, target_ver) || approvals.covers(bname, target_ver)
+        };
+
+        let live_entry = live_bins
+            .get(bin_path.as_str())
+            .or_else(|| live_bins.get(bname))
+            .copied();
+
+        match live_entry {
+            None => {
+                if !ok(None) {
+                    violations.push(Violation::new(
+                        "manifest_binary_missing",
+                        bin_path.clone(),
+                        format!("Required custom binary '{bin_path}' is missing from live OS"),
+                    ));
+                }
+            }
+            Some(entry) if !entry.present => {
+                if !ok(None) {
+                    violations.push(Violation::new(
+                        "manifest_binary_missing",
+                        bin_path.clone(),
+                        format!("Required custom binary '{bin_path}' is missing from live OS"),
+                    ));
+                }
+            }
+            Some(entry) => {
+                if debver::compare(&entry.version, &spec.min_version) == Ordering::Less
+                    && !ok(Some(&entry.version))
+                {
+                    violations.push(Violation::new(
+                        "manifest_binary_downgrade",
+                        bin_path.clone(),
+                        format!(
+                            "Custom binary '{bin_path}' version {} < manifest min_version {}",
+                            entry.version, spec.min_version
+                        ),
+                    ));
+                }
+                for req_flag in &spec.required_flags {
+                    if !entry.flags.contains(req_flag) && !ok(None) {
+                        violations.push(Violation::new(
+                            "manifest_binary_flag_missing",
+                            bin_path.clone(),
+                            format!(
+                                "Custom binary '{bin_path}' missing required flag '{req_flag}'"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Check against manifest.toml calamares_modules.
+    if manifest.calamares_modules.required {
+        for cfg in &manifest.calamares_modules.required_configs {
+            let is_present = live
+                .calamares_modules
+                .presence
+                .get(cfg)
+                .copied()
+                .unwrap_or(false);
+            if !is_present && !approvals.covers(cfg, None) {
+                violations.push(Violation::new(
+                    "manifest_calamares_missing",
+                    cfg.clone(),
+                    format!("Required Calamares module config '{cfg}' missing from live OS"),
+                ));
+            }
+        }
+        for cmod in &manifest.calamares_modules.custom_modules {
+            let is_present = live
+                .calamares_modules
+                .presence
+                .get(cmod)
+                .copied()
+                .unwrap_or(false);
+            if !is_present && !approvals.covers(cmod, None) {
+                violations.push(Violation::new(
+                    "manifest_calamares_custom_missing",
+                    cmod.clone(),
+                    format!("Required Calamares custom module '{cmod}' missing from live OS"),
+                ));
+            }
+        }
+    }
+
+    violations
+}
+
+pub fn evaluate_variance(
+    live: &Golden,
+    manifest: &Manifest,
+    golden: Option<&Golden>,
+    approvals: &Approvals,
+) -> Result<VarianceReport> {
+    let mut violations = evaluate_against_manifest(live, manifest, approvals);
+    let mut upgrades = Vec::new();
+    let mut abi_renames = Vec::new();
+
+    if let Some(g) = golden {
+        let golden_report = evaluate_against_golden(live, g, approvals)?;
+        violations.extend(golden_report.violations);
+        upgrades = golden_report.upgrades;
+        abi_renames = golden_report.abi_renames;
+    }
+
+    Ok(VarianceReport {
+        violations,
+        upgrades,
+        abi_renames,
+        checked_packages_count: live.packages.len(),
+        checked_binaries_count: live.custom_binaries.len(),
+        checked_components_count: live.components.len(),
+    })
 }
 
 pub fn evaluate_against_golden(
@@ -126,14 +355,7 @@ pub fn evaluate_against_golden(
     }
 
     // 2. Custom binaries, in golden key order (BTreeMap).
-    let mut live_bins: BTreeMap<&str, &CustomBinary> = BTreeMap::new();
-    for (key, entry) in &live.custom_binaries {
-        live_bins.insert(key.as_str(), entry);
-        live_bins.insert(basename(key), entry);
-        if !entry.path.is_empty() {
-            live_bins.insert(entry.path.as_str(), entry);
-        }
-    }
+    let live_bins = index_custom_binaries(&live.custom_binaries);
 
     for (bin_key, golden_meta) in &golden.custom_binaries {
         let bname = basename(bin_key);
@@ -235,6 +457,9 @@ mod tests {
     use crate::release::approvals::Approval;
     use crate::release::golden::{GoldenComponent, Origin, GOLDEN_SCHEMA_VERSION};
     use crate::release::inventory::{BootInfo, CalamaresModules, IsoMeta};
+    use crate::release::manifest::{
+        BinarySpec, CalamaresSpec, ManifestPackages, OsSpec, PackageSpec, MANIFEST_SCHEMA_VERSION,
+    };
 
     fn empty_golden() -> Golden {
         Golden {
@@ -847,5 +1072,396 @@ mod tests {
         assert_eq!(report_a.checked_packages_count, 3);
         assert_eq!(report_a.checked_binaries_count, 2);
         assert_eq!(report_a.checked_components_count, 2);
+    }
+
+    fn sample_manifest() -> Manifest {
+        Manifest {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            os: OsSpec {
+                required: true,
+                distro_id: Some("exampleos".to_string()),
+                distro_version: Some("13".to_string()),
+            },
+            packages: ManifestPackages {
+                core: BTreeMap::from([
+                    (
+                        "dracut".to_string(),
+                        PackageSpec {
+                            required: true,
+                            min_version: "105-1".to_string(),
+                        },
+                    ),
+                    (
+                        "systemd-sysv".to_string(),
+                        PackageSpec {
+                            required: true,
+                            min_version: "255".to_string(),
+                        },
+                    ),
+                ]),
+                cosmic: BTreeMap::from([(
+                    "cosmic-comp".to_string(),
+                    PackageSpec {
+                        required: true,
+                        min_version: "0.1.0".to_string(),
+                    },
+                )]),
+            },
+            custom_binaries: BTreeMap::from([(
+                "/usr/local/bin/testtool".to_string(),
+                BinarySpec {
+                    required: true,
+                    min_version: "0.2.0".to_string(),
+                    required_flags: vec!["--pre-packages".to_string(), "--verify".to_string()],
+                },
+            )]),
+            calamares_modules: CalamaresSpec {
+                required: true,
+                required_configs: vec!["fstab.conf".to_string()],
+                custom_modules: vec!["limine-bootloader".to_string()],
+            },
+        }
+    }
+
+    fn matching_live_for_manifest() -> Golden {
+        let mut live = empty_golden();
+        live.os_release
+            .insert("ID".to_string(), "exampleos".to_string());
+        live.os_release
+            .insert("VERSION_ID".to_string(), "13".to_string());
+        live.packages
+            .insert("dracut".to_string(), "106-1".to_string());
+        live.packages
+            .insert("systemd-sysv".to_string(), "256".to_string());
+        live.packages
+            .insert("cosmic-comp".to_string(), "0.1.0".to_string());
+
+        let mut bin = custom_bin("/usr/local/bin/testtool", "0.2.0", true);
+        bin.flags = vec!["--pre-packages".to_string(), "--verify".to_string()];
+        live.custom_binaries
+            .insert("/usr/local/bin/testtool".to_string(), bin);
+
+        live.calamares_modules
+            .presence
+            .insert("fstab.conf".to_string(), true);
+        live.calamares_modules
+            .presence
+            .insert("limine-bootloader".to_string(), true);
+        live
+    }
+
+    #[test]
+    fn manifest_clean_live_inventory_produces_no_violations() {
+        let manifest = sample_manifest();
+        let live = matching_live_for_manifest();
+        let violations = evaluate_against_manifest(&live, &manifest, &Approvals::default());
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn manifest_reports_each_violation_kind_with_exact_details() {
+        let manifest = sample_manifest();
+
+        // 1. manifest_os_id_mismatch
+        let mut live = matching_live_for_manifest();
+        live.os_release
+            .insert("ID".to_string(), "wrongos".to_string());
+        assert_eq!(
+            evaluate_against_manifest(&live, &manifest, &Approvals::default()),
+            vec![Violation::new(
+                "manifest_os_id_mismatch",
+                "os_release.ID",
+                "/etc/os-release ID 'wrongos' != 'exampleos'",
+            )]
+        );
+
+        // 2. manifest_os_version_downgrade
+        let mut live = matching_live_for_manifest();
+        live.os_release
+            .insert("VERSION_ID".to_string(), "12".to_string());
+        assert_eq!(
+            evaluate_against_manifest(&live, &manifest, &Approvals::default()),
+            vec![Violation::new(
+                "manifest_os_version_downgrade",
+                "os_release.VERSION_ID",
+                "/etc/os-release VERSION_ID 12 < 13",
+            )]
+        );
+
+        // 3. manifest_package_missing (core and cosmic)
+        let mut live = matching_live_for_manifest();
+        live.packages.remove("dracut");
+        live.packages.remove("cosmic-comp");
+        assert_eq!(
+            evaluate_against_manifest(&live, &manifest, &Approvals::default()),
+            vec![
+                Violation::new(
+                    "manifest_package_missing",
+                    "dracut",
+                    "Required manifest package 'dracut' is missing from live OS",
+                ),
+                Violation::new(
+                    "manifest_package_missing",
+                    "cosmic-comp",
+                    "Required manifest package 'cosmic-comp' is missing from live OS",
+                ),
+            ]
+        );
+
+        // 4. manifest_package_downgrade
+        let mut live = matching_live_for_manifest();
+        live.packages
+            .insert("dracut".to_string(), "104-1".to_string());
+        assert_eq!(
+            evaluate_against_manifest(&live, &manifest, &Approvals::default()),
+            vec![Violation::new(
+                "manifest_package_downgrade",
+                "dracut",
+                "Package 'dracut' version 104-1 < manifest min_version 105-1",
+            )]
+        );
+
+        // 5. manifest_binary_missing (absent from map)
+        let mut live = matching_live_for_manifest();
+        live.custom_binaries.clear();
+        assert_eq!(
+            evaluate_against_manifest(&live, &manifest, &Approvals::default()),
+            vec![Violation::new(
+                "manifest_binary_missing",
+                "/usr/local/bin/testtool",
+                "Required custom binary '/usr/local/bin/testtool' is missing from live OS",
+            )]
+        );
+
+        // 6. manifest_binary_missing (present = false)
+        let mut live = matching_live_for_manifest();
+        live.custom_binaries
+            .get_mut("/usr/local/bin/testtool")
+            .expect("testtool")
+            .present = false;
+        assert_eq!(
+            evaluate_against_manifest(&live, &manifest, &Approvals::default()),
+            vec![Violation::new(
+                "manifest_binary_missing",
+                "/usr/local/bin/testtool",
+                "Required custom binary '/usr/local/bin/testtool' is missing from live OS",
+            )]
+        );
+
+        // 7. manifest_binary_downgrade
+        let mut live = matching_live_for_manifest();
+        live.custom_binaries
+            .get_mut("/usr/local/bin/testtool")
+            .expect("testtool")
+            .version = "0.1.5".to_string();
+        assert_eq!(
+            evaluate_against_manifest(&live, &manifest, &Approvals::default()),
+            vec![Violation::new(
+                "manifest_binary_downgrade",
+                "/usr/local/bin/testtool",
+                "Custom binary '/usr/local/bin/testtool' version 0.1.5 < manifest min_version 0.2.0",
+            )]
+        );
+
+        // 8. manifest_binary_flag_missing
+        let mut live = matching_live_for_manifest();
+        live.custom_binaries
+            .get_mut("/usr/local/bin/testtool")
+            .expect("testtool")
+            .flags = vec!["--pre-packages".to_string()];
+        assert_eq!(
+            evaluate_against_manifest(&live, &manifest, &Approvals::default()),
+            vec![Violation::new(
+                "manifest_binary_flag_missing",
+                "/usr/local/bin/testtool",
+                "Custom binary '/usr/local/bin/testtool' missing required flag '--verify'",
+            )]
+        );
+
+        // 9. manifest_calamares_missing
+        let mut live = matching_live_for_manifest();
+        live.calamares_modules.presence.remove("fstab.conf");
+        assert_eq!(
+            evaluate_against_manifest(&live, &manifest, &Approvals::default()),
+            vec![Violation::new(
+                "manifest_calamares_missing",
+                "fstab.conf",
+                "Required Calamares module config 'fstab.conf' missing from live OS",
+            )]
+        );
+
+        // 10. manifest_calamares_custom_missing
+        let mut live = matching_live_for_manifest();
+        live.calamares_modules.presence.remove("limine-bootloader");
+        assert_eq!(
+            evaluate_against_manifest(&live, &manifest, &Approvals::default()),
+            vec![Violation::new(
+                "manifest_calamares_custom_missing",
+                "limine-bootloader",
+                "Required Calamares custom module 'limine-bootloader' missing from live OS",
+            )]
+        );
+    }
+
+    #[test]
+    fn manifest_optional_sections_and_specs_are_skipped_when_not_required() {
+        let mut manifest = sample_manifest();
+        manifest.os.required = false;
+        manifest.calamares_modules.required = false;
+        manifest.packages.core.insert(
+            "optional-pkg".to_string(),
+            PackageSpec {
+                required: false,
+                min_version: "99.0".to_string(),
+            },
+        );
+        manifest.custom_binaries.insert(
+            "/usr/local/bin/optional-bin".to_string(),
+            BinarySpec {
+                required: false,
+                min_version: "9.9.9".to_string(),
+                required_flags: vec!["--flag".to_string()],
+            },
+        );
+
+        let mut live = matching_live_for_manifest();
+        live.os_release
+            .insert("ID".to_string(), "otheros".to_string());
+        live.os_release
+            .insert("VERSION_ID".to_string(), "1".to_string());
+        live.calamares_modules.presence.clear();
+
+        let violations = evaluate_against_manifest(&live, &manifest, &Approvals::default());
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn manifest_basename_and_version_scoped_approvals() {
+        let manifest = sample_manifest();
+
+        // Missing binary keyed by full path is covered by an open approval on its basename.
+        let mut live_missing_bin = matching_live_for_manifest();
+        live_missing_bin.custom_binaries.clear();
+        let basename_approvals = Approvals {
+            approvals: vec![approval("testtool", None)],
+        };
+        assert!(
+            evaluate_against_manifest(&live_missing_bin, &manifest, &basename_approvals).is_empty()
+        );
+
+        // Version-scoped approval `version = "254"` covers systemd-sysv downgrade to 254, not 253.
+        let ver_approvals = Approvals {
+            approvals: vec![approval("systemd-sysv", Some("254"))],
+        };
+        let mut live_254 = matching_live_for_manifest();
+        live_254
+            .packages
+            .insert("systemd-sysv".to_string(), "254".to_string());
+        assert!(evaluate_against_manifest(&live_254, &manifest, &ver_approvals).is_empty());
+
+        let mut live_253 = matching_live_for_manifest();
+        live_253
+            .packages
+            .insert("systemd-sysv".to_string(), "253".to_string());
+        assert_eq!(
+            evaluate_against_manifest(&live_253, &manifest, &ver_approvals),
+            vec![Violation::new(
+                "manifest_package_downgrade",
+                "systemd-sysv",
+                "Package 'systemd-sysv' version 253 < manifest min_version 255",
+            )]
+        );
+    }
+
+    #[test]
+    fn evaluate_variance_combines_manifest_and_optional_golden() {
+        let manifest = sample_manifest();
+        let mut live = matching_live_for_manifest();
+        // Trigger a manifest violation: remove cosmic-comp.
+        live.packages.remove("cosmic-comp");
+        live.components.insert(
+            "dracut".to_string(),
+            GoldenComponent {
+                version: "106-1".to_string(),
+                origin: Origin::Debian,
+                kernel_line: false,
+                source_unknown: false,
+                binaries: BTreeMap::from([("dracut".to_string(), "106-1".to_string())]),
+            },
+        );
+
+        // With golden = None: upgrades and abi_renames are empty, manifest violation is reported.
+        let without_golden = evaluate_variance(&live, &manifest, None, &Approvals::default())
+            .expect("evaluate_variance without golden");
+        assert!(!without_golden.is_pass());
+        assert!(without_golden.upgrades.is_empty());
+        assert!(without_golden.abi_renames.is_empty());
+        assert_eq!(
+            without_golden.violations,
+            vec![Violation::new(
+                "manifest_package_missing",
+                "cosmic-comp",
+                "Required manifest package 'cosmic-comp' is missing from live OS",
+            )]
+        );
+        assert_eq!(without_golden.checked_packages_count, live.packages.len());
+        assert_eq!(
+            without_golden.checked_binaries_count,
+            live.custom_binaries.len()
+        );
+        assert_eq!(
+            without_golden.checked_components_count,
+            live.components.len()
+        );
+
+        // With golden = Some: manifest violations precede golden violations, and golden upgrades are kept.
+        let mut golden = empty_golden();
+        golden.components.insert(
+            "dracut".to_string(),
+            GoldenComponent {
+                version: "105-1".to_string(),
+                origin: Origin::Debian,
+                kernel_line: false,
+                source_unknown: false,
+                binaries: BTreeMap::from([("dracut".to_string(), "105-1".to_string())]),
+            },
+        );
+        golden.components.insert(
+            "btrfs-progs".to_string(),
+            GoldenComponent {
+                version: "6.6.3-1".to_string(),
+                origin: Origin::Debian,
+                kernel_line: false,
+                source_unknown: false,
+                binaries: BTreeMap::from([("btrfs-progs".to_string(), "6.6.3-1".to_string())]),
+            },
+        );
+
+        let with_golden = evaluate_variance(&live, &manifest, Some(&golden), &Approvals::default())
+            .expect("evaluate_variance with golden");
+        assert!(!with_golden.is_pass());
+        assert_eq!(
+            with_golden.violations,
+            vec![
+                Violation::new(
+                    "manifest_package_missing",
+                    "cosmic-comp",
+                    "Required manifest package 'cosmic-comp' is missing from live OS",
+                ),
+                Violation::new(
+                    "golden_component_removed",
+                    "btrfs-progs",
+                    "Component 'btrfs-progs' (golden=6.6.3-1) was removed from live OS",
+                ),
+            ]
+        );
+        assert_eq!(
+            with_golden.upgrades,
+            vec![Upgrade {
+                item: "dracut".to_string(),
+                from_version: "105-1".to_string(),
+                to_version: "106-1".to_string(),
+            }]
+        );
     }
 }
