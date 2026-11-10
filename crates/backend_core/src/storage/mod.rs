@@ -681,7 +681,7 @@ impl TrackerStorage {
     }
 
     /// Writes a versioned TOML manifest under `.tracker/`, preserving unknown keys from any existing file.
-    fn write_versioned<T: serde::Serialize>(
+    fn write_versioned<T: serde::Serialize + serde::de::DeserializeOwned>(
         &self,
         path: &Path,
         value: &T,
@@ -691,11 +691,16 @@ impl TrackerStorage {
         let mut old_had_key = false;
         if path.is_file() {
             let raw = self.read_tracker_file(path)?;
-            let old: toml::Table = toml::from_str(&raw)
+            let mut old: toml::Table = toml::from_str(&raw)
                 .map_err(|err| attach_toml_path(err.into(), path.to_path_buf()))?;
             compat::check_readable(&old, path, crate::models::item::MAX_ITEM_SCHEMA_VERSION)?;
-            old_had_key = old.contains_key(compat::SCHEMA_KEY);
-            compat::merge_unknown(&mut new, &old);
+            old_had_key = old.remove(compat::SCHEMA_KEY).is_some();
+            let extra = compat::unknown_keys(&old, |t| {
+                let parsed = T::deserialize(toml::Value::Table(t.clone()))
+                    .map_err(|err| attach_toml_path(err.into(), path.to_path_buf()))?;
+                Ok(toml::Table::try_from(parsed)?)
+            })?;
+            compat::merge_unknown(&mut new, &extra);
         }
         compat::stamp(&mut new, version, old_had_key);
         let serialized = toml::to_string_pretty(&new)?;

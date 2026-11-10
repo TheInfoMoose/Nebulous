@@ -58,6 +58,89 @@ pub fn merge_unknown(new: &mut Table, old: &Table) {
     }
 }
 
+/// Extracts only the keys in `old` that are genuinely unknown to the model `roundtrip` represents.
+///
+/// `roundtrip` deserializes a raw table into the target model and serializes it back into a
+/// `Table`, producing `known` (the exact keys the model understood and emitted).
+/// Every key path present in `old` but absent from `known` is a candidate (recursing only
+/// where the value is a table in both `old` and `known`).
+///
+/// For each candidate path, `unknown_keys` clones `old`, removes that path, and calls
+/// `roundtrip` on the clone:
+/// - If the round-tripped clone equals `known`, the model ignored the key, so it is unknown
+///   and kept in the returned table.
+/// - Otherwise the model consumed the key (a legacy alias), so it is dropped.
+///
+/// Cost: one initial `roundtrip(old)` call plus one extra `roundtrip` call per candidate path
+/// (usually zero candidates).
+pub fn unknown_keys<F>(old: &Table, roundtrip: F) -> Result<Table>
+where
+    F: Fn(&Table) -> Result<Table>,
+{
+    let known = roundtrip(old)?;
+    let mut candidates = Vec::new();
+    let mut prefix = Vec::new();
+    collect_candidates(old, &known, &mut prefix, &mut candidates);
+
+    let mut kept = Table::new();
+    for (path, val) in candidates {
+        let mut probe = old.clone();
+        remove_path(&mut probe, &path);
+        if matches!(roundtrip(&probe), Ok(ref probed) if probed == &known) {
+            insert_path(&mut kept, &path, val.clone());
+        }
+    }
+    Ok(kept)
+}
+
+fn collect_candidates<'a>(
+    old: &'a Table,
+    known: &Table,
+    prefix: &mut Vec<&'a str>,
+    out: &mut Vec<(Vec<&'a str>, &'a Value)>,
+) {
+    for (k, old_val) in old {
+        prefix.push(k.as_str());
+        match (old_val, known.get(k)) {
+            (_, None) => {
+                out.push((prefix.clone(), old_val));
+            }
+            (Value::Table(old_sub), Some(Value::Table(known_sub))) => {
+                collect_candidates(old_sub, known_sub, prefix, out);
+            }
+            _ => {}
+        }
+        prefix.pop();
+    }
+}
+
+fn remove_path(table: &mut Table, path: &[&str]) {
+    let Some((first, rest)) = path.split_first() else {
+        return;
+    };
+    if rest.is_empty() {
+        table.remove(*first);
+    } else if let Some(Value::Table(sub)) = table.get_mut(*first) {
+        remove_path(sub, rest);
+    }
+}
+
+fn insert_path(table: &mut Table, path: &[&str], value: Value) {
+    let Some((first, rest)) = path.split_first() else {
+        return;
+    };
+    if rest.is_empty() {
+        table.insert((*first).to_string(), value);
+    } else {
+        let entry = table
+            .entry((*first).to_string())
+            .or_insert_with(|| Value::Table(Table::new()));
+        if let Value::Table(sub) = entry {
+            insert_path(sub, rest, value);
+        }
+    }
+}
+
 /// Stamps or removes `schema_version` on `table`.
 ///
 /// Sets `schema_version = version` when `version > 1 || old_had_key`;
@@ -84,10 +167,71 @@ pub fn migrate(table: Table, from: u32, to: u32) -> Result<Table> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
+
+    #[derive(Serialize, Deserialize, Default)]
+    struct Inner {
+        x: u32,
+    }
+
+    #[derive(Serialize, Deserialize, Default)]
+    struct S {
+        a: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        b: Option<String>,
+        #[serde(default, alias = "old_c")]
+        c: Vec<u32>,
+        #[serde(default)]
+        n: Inner,
+    }
+
+    fn roundtrip_s(t: &Table) -> Result<Table> {
+        let s = S::deserialize(Value::Table(t.clone()))?;
+        Ok(Table::try_from(s)?)
+    }
 
     fn parse_table(src: &str) -> Table {
         toml::from_str(src).expect("valid toml table")
+    }
+
+    #[test]
+    fn unknown_keys_filters_known_aliases_and_keeps_unknowns() {
+        let old = parse_table(
+            r#"
+            a = 1
+            b = "x"
+            zz = true
+            "#,
+        );
+        assert_eq!(
+            unknown_keys(&old, roundtrip_s).unwrap(),
+            parse_table("zz = true")
+        );
+
+        let old_alias = parse_table(
+            r#"
+            a = 1
+            old_c = [1]
+            "#,
+        );
+        assert_eq!(unknown_keys(&old_alias, roundtrip_s).unwrap(), Table::new());
+
+        let old_nested = parse_table(
+            r#"
+            a = 1
+            [n]
+            x = 1
+            yy = 2
+            "#,
+        );
+        assert_eq!(
+            unknown_keys(&old_nested, roundtrip_s).unwrap(),
+            parse_table("[n]\nyy = 2")
+        );
+
+        let old_clean = parse_table("a = 1");
+        assert_eq!(unknown_keys(&old_clean, roundtrip_s).unwrap(), Table::new());
     }
 
     #[test]

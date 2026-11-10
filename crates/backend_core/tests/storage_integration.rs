@@ -2413,3 +2413,71 @@ fn versioned_reads_and_writes_preserve_unknown_keys_and_layout() {
         "item.toml with unsupported schema must remain byte-identical after rejected write"
     );
 }
+
+#[test]
+fn versioned_writes_do_not_resurrect_cleared_fields_or_legacy_aliases() {
+    let temp = TempTrackerDir::new("versioned_clear_and_alias");
+    let storage = TrackerStorage::init_standard(temp.path(), "ClearAndAliasTest").unwrap();
+
+    // 1. Clearing an optional/skipped field on scope.toml is not undone
+    let scope_path = storage.scope_toml_path("pre_production", "inbox").unwrap();
+    let mut scope = storage.read_scope("pre_production", "inbox").unwrap();
+    scope.scope.bound_component = Some("x".to_string());
+    storage
+        .write_scope("pre_production", "inbox", &scope)
+        .unwrap();
+    assert_eq!(
+        storage
+            .read_scope("pre_production", "inbox")
+            .unwrap()
+            .scope
+            .bound_component
+            .as_deref(),
+        Some("x")
+    );
+
+    scope.scope.bound_component = None;
+    storage
+        .write_scope("pre_production", "inbox", &scope)
+        .unwrap();
+    let scope_text = fs::read_to_string(&scope_path).unwrap();
+    assert!(
+        !scope_text.contains("bound_component"),
+        "cleared bound_component must not remain in scope.toml: {scope_text}"
+    );
+    assert_eq!(
+        storage
+            .read_scope("pre_production", "inbox")
+            .unwrap()
+            .scope
+            .bound_component,
+        None
+    );
+
+    // 2. Legacy alias keys (e.g. `[components] manifest = [...]` or `[counters] feat = ...`) are not kept alongside canonical keys
+    let project_path = storage.project_toml_path();
+    let project_text = fs::read_to_string(&project_path).unwrap();
+    let legacy_project_toml = format!(
+        "{}\n[[components.manifest]]\nid = \"core\"\nname = \"Core\"\nrelative_path = \"crates/core\"\ncomponent_type = \"rust_crate\"\n",
+        project_text.replace("feature = 0", "feat = 3")
+    );
+    fs::write(&project_path, &legacy_project_toml).unwrap();
+
+    let loaded_project = storage.read_project().unwrap();
+    assert_eq!(loaded_project.counters.feature, 3);
+    assert_eq!(loaded_project.components.len(), 1);
+
+    storage.write_project(&loaded_project).unwrap();
+    let rewritten_project_text = fs::read_to_string(&project_path).unwrap();
+    assert!(
+        !rewritten_project_text.contains("feat ="),
+        "legacy alias `feat` must not be resurrected alongside `feature`: {rewritten_project_text}"
+    );
+    assert!(
+        !rewritten_project_text.contains("components.manifest"),
+        "legacy alias `components.manifest` must not be resurrected alongside `components.registry`: {rewritten_project_text}"
+    );
+    let reloaded_project = storage.read_project().unwrap();
+    assert_eq!(reloaded_project.counters.feature, 3);
+    assert_eq!(reloaded_project.components.len(), 1);
+}
