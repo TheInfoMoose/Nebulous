@@ -2,15 +2,49 @@ pub mod atomic;
 pub mod id;
 pub mod reconcile;
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 
 pub use atomic::{atomic_write_bytes, atomic_write_str};
 pub use id::parse_item_id_number;
 pub use reconcile::ReconcileReport;
+
+/// Advisory lock file name inside `.tracker/`.
+pub const LOCK_FILE_NAME: &str = ".lock";
+
+/// Default timeout when waiting to acquire the exclusive `.tracker/.lock` file lock.
+pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+
+thread_local! {
+    static HELD_WRITE_LOCKS: RefCell<HashSet<PathBuf>> = RefCell::new(HashSet::new());
+}
+
+struct ReentrantLockGuard {
+    path: PathBuf,
+}
+
+impl ReentrantLockGuard {
+    fn acquire(path: PathBuf) -> Self {
+        HELD_WRITE_LOCKS.with(|held| {
+            held.borrow_mut().insert(path.clone());
+        });
+        Self { path }
+    }
+}
+
+impl Drop for ReentrantLockGuard {
+    fn drop(&mut self) {
+        HELD_WRITE_LOCKS.with(|held| {
+            held.borrow_mut().remove(&self.path);
+        });
+    }
+}
 
 use crate::error::{Result, TrackerError};
 use crate::models::{
@@ -313,6 +347,10 @@ impl TrackerStorage {
         };
 
         storage.write_project(&project)?;
+        let gitignore_path = storage.tracker_dir.join(".gitignore");
+        if !gitignore_path.exists() {
+            storage.write_tracker_file(&gitignore_path, &format!("{LOCK_FILE_NAME}\n"))?;
+        }
 
         for (sid, stitle) in &stages_to_scaffold {
             let phase = PhaseManifest {
@@ -417,6 +455,89 @@ impl TrackerStorage {
     /// Returns `.tracker/.timer.toml`.
     pub fn timer_toml_path(&self) -> PathBuf {
         self.tracker_dir.join(".timer.toml")
+    }
+
+    /// Returns `.tracker/.lock`.
+    pub fn lock_path(&self) -> PathBuf {
+        self.tracker_dir.join(LOCK_FILE_NAME)
+    }
+
+    /// Acquires an exclusive, thread-reentrant advisory lock on `.tracker/.lock` with
+    /// [`DEFAULT_LOCK_TIMEOUT`] and executes `f`.
+    pub fn with_write_lock<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        self.with_write_lock_timeout(DEFAULT_LOCK_TIMEOUT, f)
+    }
+
+    /// Acquires an exclusive, thread-reentrant advisory lock on `.tracker/.lock`, waiting up to
+    /// `timeout` before returning [`TrackerError::LockTimeout`], and executes `f`.
+    pub fn with_write_lock_timeout<T>(
+        &self,
+        timeout: Duration,
+        f: impl FnOnce(&Self) -> Result<T>,
+    ) -> Result<T> {
+        let lock_path = self.lock_path();
+        if HELD_WRITE_LOCKS.with(|held| held.borrow().contains(&lock_path)) {
+            return f(self);
+        }
+
+        self.create_tracker_dir_all(&self.tracker_dir)?;
+        let guarded_lock_path = self.guard_tracker_path(&lock_path)?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&guarded_lock_path)
+            .map_err(|source| TrackerError::Io {
+                path: guarded_lock_path.clone(),
+                source,
+            })?;
+
+        let mut rw_lock = fd_lock::RwLock::new(file);
+        let start = Instant::now();
+        let _fd_guard = loop {
+            match rw_lock.try_write() {
+                Ok(guard) => break guard,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    let elapsed = start.elapsed();
+                    if elapsed >= timeout {
+                        return Err(TrackerError::LockTimeout {
+                            path: guarded_lock_path,
+                            waited_ms: elapsed.as_millis() as u64,
+                        });
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(source) => {
+                    return Err(TrackerError::Io {
+                        path: guarded_lock_path,
+                        source,
+                    });
+                }
+            }
+        };
+
+        let _reentrancy_guard = ReentrantLockGuard::acquire(lock_path);
+        self.ensure_lock_gitignore()?;
+        f(self)
+    }
+
+    fn ensure_lock_gitignore(&self) -> Result<()> {
+        let gitignore_path = self.tracker_dir.join(".gitignore");
+        if gitignore_path.is_file() {
+            let existing = self.read_tracker_file(&gitignore_path)?;
+            if existing.lines().any(|line| line == LOCK_FILE_NAME) {
+                return Ok(());
+            }
+            let mut updated = existing;
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(LOCK_FILE_NAME);
+            updated.push('\n');
+            self.write_tracker_file(&gitignore_path, &updated)
+        } else {
+            self.write_tracker_file(&gitignore_path, &format!("{LOCK_FILE_NAME}\n"))
+        }
     }
 
     /// Returns `.tracker/phases`.
@@ -1399,5 +1520,99 @@ mod identifier_tests {
         for raw in ["my.crate", "CON", "..", "C:x", "a.", &"y".repeat(80)] {
             assert!(is_valid_identifier(&normalize_identifier(raw, 64)), "{raw}");
         }
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::thread;
+
+    #[test]
+    fn write_lock_creates_lock_file_and_gitignore_entry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = TrackerStorage::init_standard(dir.path(), "t").expect("init_standard");
+        let gitignore = storage.tracker_dir().join(".gitignore");
+        assert!(gitignore.is_file());
+
+        // Also verify with_write_lock restores or appends `.lock` when .gitignore is modified.
+        fs::write(&gitignore, "# tracker ignore\n").expect("write custom gitignore");
+        let val = storage
+            .with_write_lock(|_| Ok(42))
+            .expect("with_write_lock");
+        assert_eq!(val, 42);
+        assert!(storage.lock_path().is_file());
+        let contents = fs::read_to_string(&gitignore).expect("read gitignore");
+        assert!(contents.lines().any(|line| line == LOCK_FILE_NAME));
+    }
+
+    #[test]
+    fn write_lock_is_reentrant_on_same_thread() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = TrackerStorage::init_standard(dir.path(), "t").expect("init_standard");
+        let res = storage
+            .with_write_lock(|outer| outer.with_write_lock(|_| Ok("nested_ok")))
+            .expect("nested with_write_lock");
+        assert_eq!(res, "nested_ok");
+    }
+
+    #[test]
+    fn write_lock_times_out_across_contending_threads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let storage_a = TrackerStorage::init_standard(&root, "t").expect("init_standard");
+
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let handle_a = thread::spawn(move || {
+            storage_a
+                .with_write_lock(|_| {
+                    locked_tx.send(()).expect("notify locked");
+                    release_rx.recv().expect("wait release");
+                    Ok(())
+                })
+                .expect("thread A lock");
+        });
+
+        locked_rx.recv().expect("wait for thread A to hold lock");
+
+        let root_b = root.clone();
+        let handle_b = thread::spawn(move || {
+            let storage_b = TrackerStorage::new(&root_b);
+            storage_b.with_write_lock_timeout(Duration::from_millis(200), |_| Ok(()))
+        });
+
+        let res_b = handle_b.join().expect("join B");
+        match res_b {
+            Err(TrackerError::LockTimeout { path, waited_ms }) => {
+                assert_eq!(path, TrackerStorage::new(&root).lock_path());
+                assert!(waited_ms >= 200, "waited_ms={waited_ms}");
+            }
+            other => panic!("expected LockTimeout, got {other:?}"),
+        }
+
+        release_tx.send(()).expect("release thread A");
+        handle_a.join().expect("join A");
+    }
+
+    #[test]
+    fn write_lock_propagates_error_and_releases_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = TrackerStorage::init_standard(dir.path(), "t").expect("init_standard");
+
+        let err = storage
+            .with_write_lock::<()>(|_| Err(TrackerError::ValidationError("boom".to_string())))
+            .expect_err("expected error from closure");
+        match err {
+            TrackerError::ValidationError(msg) => assert_eq!(msg, "boom"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let after = storage
+            .with_write_lock(|_| Ok("recovered"))
+            .expect("subsequent lock after error");
+        assert_eq!(after, "recovered");
     }
 }

@@ -81,6 +81,9 @@ pub enum TrackerError {
 
     #[error("Validation error: {0}")]
     ValidationError(String),
+
+    #[error("timed out after {waited_ms} ms waiting for tracker lock {path}")]
+    LockTimeout { path: PathBuf, waited_ms: u64 },
 }
 
 impl From<toml::de::Error> for TrackerError {
