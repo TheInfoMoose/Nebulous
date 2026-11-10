@@ -21,6 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 ssh-key = { version = "0.7.0-rc.11", features = ["ed25519", "rand_core", "encryption"] }
+tempfile = "3"
 thiserror.workspace = true
 toml.workspace = true
 zeroize = "1"
@@ -33,9 +34,3 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
-
-[dev-dependencies]
-tempfile = "3"
-
-
-

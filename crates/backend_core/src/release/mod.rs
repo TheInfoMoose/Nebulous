@@ -4,6 +4,7 @@ pub mod config;
 pub mod debver;
 pub mod gate;
 pub mod inventory;
+pub mod iso;
 pub mod rootfs;
 
 use serde::{Deserialize, Serialize};
