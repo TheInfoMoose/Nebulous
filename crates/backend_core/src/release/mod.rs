@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod debver;
+pub mod gate;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
