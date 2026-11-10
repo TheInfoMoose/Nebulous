@@ -1,5 +1,7 @@
 //! `neb release`: replaces NovOS scripts/nebulous-ctl.py and scripts/mcp_nebulous_ci.py. Spec: /srv/devshare/NovOS/docs/NEB_RELEASE_CONTRACT.md.
 
+pub mod debver;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
