@@ -1,6 +1,7 @@
 //! `neb release`: replaces NovOS scripts/nebulous-ctl.py and scripts/mcp_nebulous_ci.py. Spec: /srv/devshare/NovOS/docs/NEB_RELEASE_CONTRACT.md.
 
 pub mod approvals;
+pub mod candidate;
 pub mod component;
 pub mod config;
 pub mod debver;
