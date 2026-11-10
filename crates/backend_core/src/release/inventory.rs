@@ -9,6 +9,8 @@ pub struct InstalledPackage {
     pub source: String,
     pub source_version: Option<String>,
     pub arch: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +82,28 @@ fn parse_source_field(raw: &str, package_name: &str) -> (String, Option<String>)
     (trimmed.to_string(), None)
 }
 
+pub fn parse_depends(raw: &str) -> Vec<String> {
+    let mut names = Vec::new();
+
+    for part in raw.split(',') {
+        for alt in part.split('|') {
+            let trimmed = alt.trim();
+            let token = trimmed
+                .split(|c: char| c.is_whitespace() || c == '(')
+                .next()
+                .unwrap_or("");
+            let name = token.split_once(':').map_or(token, |(pkg, _)| pkg);
+            if !name.is_empty() {
+                names.push(name.to_string());
+            }
+        }
+    }
+
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn flush_stanza(
     fields: &mut Vec<(String, String)>,
     packages: &mut BTreeMap<String, InstalledPackage>,
@@ -93,6 +117,7 @@ fn flush_stanza(
     let mut status: Option<String> = None;
     let mut source_raw: Option<String> = None;
     let mut arch: Option<String> = None;
+    let mut depends_raw: Option<String> = None;
 
     for (key, val) in fields.drain(..) {
         let trimmed_val = val.trim();
@@ -110,8 +135,12 @@ fn flush_stanza(
             if !trimmed_val.is_empty() {
                 source_raw = Some(trimmed_val.to_string());
             }
-        } else if key.eq_ignore_ascii_case("Architecture") && !trimmed_val.is_empty() {
-            arch = Some(trimmed_val.to_string());
+        } else if key.eq_ignore_ascii_case("Architecture") {
+            if !trimmed_val.is_empty() {
+                arch = Some(trimmed_val.to_string());
+            }
+        } else if key.eq_ignore_ascii_case("Depends") && !trimmed_val.is_empty() {
+            depends_raw = Some(trimmed_val.to_string());
         }
     }
 
@@ -121,6 +150,10 @@ fn flush_stanza(
                 Some(ref raw) => parse_source_field(raw, &name),
                 None => (name.clone(), None),
             };
+            let depends = depends_raw
+                .as_deref()
+                .map(parse_depends)
+                .unwrap_or_default();
             packages.insert(
                 name.clone(),
                 InstalledPackage {
@@ -129,6 +162,7 @@ fn flush_stanza(
                     source,
                     source_version,
                     arch,
+                    depends,
                 },
             );
         }
@@ -240,6 +274,7 @@ Version: 3.4.5-1
                 source: "foo".to_string(),
                 source_version: Some("1.2-1".to_string()),
                 arch: Some("amd64".to_string()),
+                depends: Vec::new(),
             })
         );
 
@@ -251,6 +286,7 @@ Version: 3.4.5-1
                 source: "bar".to_string(),
                 source_version: None,
                 arch: Some("all".to_string()),
+                depends: Vec::new(),
             })
         );
 
@@ -262,6 +298,7 @@ Version: 3.4.5-1
                 source: "plain-pkg".to_string(),
                 source_version: None,
                 arch: Some("amd64".to_string()),
+                depends: Vec::new(),
             })
         );
     }
@@ -294,7 +331,59 @@ Version: 2.0-1+b2
                 source: "dup-src".to_string(),
                 source_version: Some("2.0-1".to_string()),
                 arch: None,
+                depends: Vec::new(),
             })
+        );
+    }
+
+    #[test]
+    fn parse_depends_extracts_sorted_deduped_package_names() {
+        let raw = "linux-image-7.3.3-x64v3-xanmod1 (= 7.3.3-x64v3-xanmod1-0~20261107.g2ef8115), linux-headers-7.3.3-x64v3-xanmod1 | foo, libc6:any (>= 2.36)";
+        assert_eq!(
+            parse_depends(raw),
+            vec![
+                "foo".to_string(),
+                "libc6".to_string(),
+                "linux-headers-7.3.3-x64v3-xanmod1".to_string(),
+                "linux-image-7.3.3-x64v3-xanmod1".to_string(),
+            ]
+        );
+        assert!(parse_depends("").is_empty());
+    }
+
+    #[test]
+    fn parse_dpkg_status_captures_multiline_depends_and_omits_empty_in_json() {
+        let text = "\
+Package: linux-xanmod-x64v3
+Status: install ok installed
+Architecture: amd64
+Version: 7.3.3-xanmod1-0
+Depends: linux-image-7.3.3-x64v3-xanmod1 (= 7.3.3-x64v3-xanmod1-0~20261107.g2ef8115),
+ linux-headers-7.3.3-x64v3-xanmod1 (= 7.3.3-x64v3-xanmod1-0~20261107.g2ef8115)
+
+Package: standalone-pkg
+Status: install ok installed
+Architecture: amd64
+Version: 1.0-1
+";
+
+        let pkgs = parse_dpkg_status(text);
+        let kernel = pkgs.get("linux-xanmod-x64v3").expect("kernel meta present");
+        assert_eq!(
+            kernel.depends,
+            vec![
+                "linux-headers-7.3.3-x64v3-xanmod1".to_string(),
+                "linux-image-7.3.3-x64v3-xanmod1".to_string(),
+            ]
+        );
+
+        let standalone = pkgs.get("standalone-pkg").expect("standalone-pkg present");
+        assert!(standalone.depends.is_empty());
+
+        let json_val = serde_json::to_value(standalone).expect("serialize standalone-pkg");
+        assert!(
+            json_val.get("depends").is_none(),
+            "empty depends should be skipped in JSON: {json_val}"
         );
     }
 

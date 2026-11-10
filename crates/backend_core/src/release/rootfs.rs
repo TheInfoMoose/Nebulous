@@ -389,6 +389,7 @@ pub fn inventory_from_root(root: &Path, iso: IsoMeta, project_root: &Path) -> Re
                                 source: "live-boot".to_string(),
                                 source_version: None,
                                 arch: None,
+                                depends: Vec::new(),
                             },
                         );
                     }
@@ -415,6 +416,7 @@ pub fn inventory_from_root(root: &Path, iso: IsoMeta, project_root: &Path) -> Re
                             source: "cosmic-epoch-monorepo".to_string(),
                             source_version: Some(epoch_ver.clone()),
                             arch: None,
+                            depends: Vec::new(),
                         },
                     );
                 }
@@ -791,6 +793,7 @@ version.workspace = true
                 source: "foo".to_string(),
                 source_version: Some("1.2-1".to_string()),
                 arch: Some("amd64".to_string()),
+                depends: Vec::new(),
             })
         );
         assert_eq!(
@@ -805,6 +808,7 @@ version.workspace = true
                 source: "live-boot".to_string(),
                 source_version: None,
                 arch: None,
+                depends: Vec::new(),
             })
         );
         for comp in ["cosmic-comp", "cosmic-term", "cosmic-panel"] {
@@ -816,6 +820,7 @@ version.workspace = true
                     source: "cosmic-epoch-monorepo".to_string(),
                     source_version: Some("1.0.0~alpha7-1".to_string()),
                     arch: None,
+                    depends: Vec::new(),
                 })
             );
         }
