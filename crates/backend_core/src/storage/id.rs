@@ -67,31 +67,35 @@ impl TrackerStorage {
     /// `project.toml` `[counters]` against a directory scan safety check and persisting the
     /// updated counter atomically to `project.toml`.
     pub fn allocate_next_id(&self, item_type: ItemType) -> Result<String> {
-        let mut project = self.read_project()?;
-        let scanned = self.scan_max_counters()?;
+        self.with_write_lock(|_| {
+            let mut project = self.read_project()?;
+            let scanned = self.scan_max_counters()?;
 
-        project.counters.bug = project.counters.bug.max(scanned.bug);
-        project.counters.feature = project.counters.feature.max(scanned.feature);
+            project.counters.bug = project.counters.bug.max(scanned.bug);
+            project.counters.feature = project.counters.feature.max(scanned.feature);
 
-        let next_num = match item_type {
-            ItemType::Bug => {
-                let next = project.counters.bug.checked_add(1).ok_or_else(|| {
-                    TrackerError::ValidationError("BUG counter overflowed u32::MAX".to_string())
-                })?;
-                project.counters.bug = next;
-                next
-            }
-            ItemType::Feature => {
-                let next = project.counters.feature.checked_add(1).ok_or_else(|| {
-                    TrackerError::ValidationError("FEAT counter overflowed u32::MAX".to_string())
-                })?;
-                project.counters.feature = next;
-                next
-            }
-        };
+            let next_num = match item_type {
+                ItemType::Bug => {
+                    let next = project.counters.bug.checked_add(1).ok_or_else(|| {
+                        TrackerError::ValidationError("BUG counter overflowed u32::MAX".to_string())
+                    })?;
+                    project.counters.bug = next;
+                    next
+                }
+                ItemType::Feature => {
+                    let next = project.counters.feature.checked_add(1).ok_or_else(|| {
+                        TrackerError::ValidationError(
+                            "FEAT counter overflowed u32::MAX".to_string(),
+                        )
+                    })?;
+                    project.counters.feature = next;
+                    next
+                }
+            };
 
-        self.write_project(&project)?;
-        Ok(item_type.format_id(next_num))
+            self.write_project(&project)?;
+            Ok(item_type.format_id(next_num))
+        })
     }
 
     fn scan_phase_dir(&self, phase_dir: &Path, counters: &mut ProjectCounters) {

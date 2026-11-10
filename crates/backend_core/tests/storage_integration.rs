@@ -2192,3 +2192,56 @@ fn test_canonical_phase_aliases_and_three_stage_scaffolding() {
         PhaseStatus::Planned
     );
 }
+
+#[test]
+fn concurrent_creators_get_unique_ids() {
+    use std::collections::HashSet;
+    use std::thread;
+
+    let temp = TempTrackerDir::new("concurrent_creators");
+    let root = temp.path().to_path_buf();
+    let storage = TrackerStorage::init_standard(&root, "ConcurrentTest").unwrap();
+
+    let root_a = root.clone();
+    let handle_a = thread::spawn(move || {
+        let s = TrackerStorage::new(&root_a);
+        let mut ids = Vec::with_capacity(50);
+        for i in 0..50 {
+            let (_, detail) = s
+                .create_bug(format!("a{i}"), None, None, Severity::Medium, None)
+                .expect("thread A should create bug");
+            ids.push(detail.manifest.item.id);
+        }
+        ids
+    });
+
+    let root_b = root.clone();
+    let handle_b = thread::spawn(move || {
+        let s = TrackerStorage::new(&root_b);
+        let mut ids = Vec::with_capacity(50);
+        for i in 0..50 {
+            let (_, detail) = s
+                .create_bug(format!("b{i}"), None, None, Severity::Medium, None)
+                .expect("thread B should create bug");
+            ids.push(detail.manifest.item.id);
+        }
+        ids
+    });
+
+    let ids_a = handle_a.join().expect("thread A should not panic");
+    let ids_b = handle_b.join().expect("thread B should not panic");
+
+    let mut distinct_ids: HashSet<String> = HashSet::with_capacity(100);
+    distinct_ids.extend(ids_a);
+    distinct_ids.extend(ids_b);
+    assert_eq!(distinct_ids.len(), 100);
+
+    let active_phase = storage.read_project().unwrap().project.active_phase;
+    let items_dir = storage.items_dir(&active_phase, "inbox").unwrap();
+    let dir_count = fs::read_dir(&items_dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .count();
+    assert_eq!(dir_count, 100);
+}

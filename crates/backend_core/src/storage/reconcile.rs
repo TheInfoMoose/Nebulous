@@ -30,172 +30,180 @@ impl TrackerStorage {
     /// - Recomputes `phase.toml` `[summary]` (`total_items` and `completed_items`).
     /// - Reconciles `project.toml` `[counters]` so monotonic IDs never collide with existing items.
     pub fn reconcile_indexes(&self) -> Result<ReconcileReport> {
-        let mut project = self.read_project()?;
-        let original_project = project.clone();
-        let mut max_counters = project.counters.clone();
+        self.with_write_lock(|_| {
+            let mut project = self.read_project()?;
+            let original_project = project.clone();
+            let mut max_counters = project.counters.clone();
 
-        // Discover any phase directories on disk not yet listed in `project.phases.registry`
-        let phases_root = self.phases_dir();
-        if phases_root.is_dir() {
-            let mut known_phase_ids: HashSet<String> = project
-                .phases
-                .registry
-                .iter()
-                .map(|p| p.id.clone())
-                .collect();
-
-            let mut dir_names: Vec<String> = fs::read_dir(&phases_root)
-                .map_err(|source| crate::error::TrackerError::Io {
-                    path: phases_root.clone(),
-                    source,
-                })?
-                .flatten()
-                .filter(|e| e.path().is_dir() && e.path().join("phase.toml").is_file())
-                .filter_map(|e| e.file_name().into_string().ok())
-                .collect();
-            dir_names.sort();
-
-            for dir_name in dir_names {
-                let phase_toml_path = phases_root.join(&dir_name).join("phase.toml");
-                let phase_manifest = self.read_phase_from_path(&phase_toml_path)?;
-                if !known_phase_ids.contains(&phase_manifest.phase.id) {
-                    known_phase_ids.insert(phase_manifest.phase.id.clone());
-                    project.phases.registry.push(PhaseRegistryEntry {
-                        id: phase_manifest.phase.id,
-                        title: phase_manifest.phase.title,
-                        path: format!("phases/{dir_name}"),
-                    });
-                }
-            }
-        }
-
-        let mut report = ReconcileReport::default();
-        let mut valid_phases = Vec::with_capacity(project.phases.registry.len());
-
-        for mut phase_entry in project.phases.registry.drain(..) {
-            let phase_dir = self.resolve_phase_path(&phase_entry.id, Some(&phase_entry.path))?;
-            let phase_toml_path = phase_dir.join("phase.toml");
-            if !phase_toml_path.is_file() {
-                continue;
-            }
-
-            let mut phase_manifest = self.read_phase_from_path(&phase_toml_path)?;
-            let original_phase_manifest = phase_manifest.clone();
-            // Keep project phase title in sync with authoritative phase.toml title
-            phase_entry.title = phase_manifest.phase.title.clone();
-
-            // Discover any domain scope directories on disk not yet in `phase.scopes.manifest`
-            let domains_dir = phase_dir.join("domains");
-            if domains_dir.is_dir() {
-                let mut known_scope_ids: HashSet<String> = phase_manifest
-                    .scopes
-                    .manifest
+            // Discover any phase directories on disk not yet listed in `project.phases.registry`
+            let phases_root = self.phases_dir();
+            if phases_root.is_dir() {
+                let mut known_phase_ids: HashSet<String> = project
+                    .phases
+                    .registry
                     .iter()
-                    .map(|s| s.id.clone())
+                    .map(|p| p.id.clone())
                     .collect();
 
-                let mut scope_dirs: Vec<String> = fs::read_dir(&domains_dir)
+                let mut dir_names: Vec<String> = fs::read_dir(&phases_root)
                     .map_err(|source| crate::error::TrackerError::Io {
-                        path: domains_dir.clone(),
+                        path: phases_root.clone(),
                         source,
                     })?
                     .flatten()
-                    .filter(|e| e.path().is_dir() && e.path().join("scope.toml").is_file())
+                    .filter(|e| e.path().is_dir() && e.path().join("phase.toml").is_file())
                     .filter_map(|e| e.file_name().into_string().ok())
                     .collect();
-                scope_dirs.sort();
+                dir_names.sort();
 
-                for dir_name in scope_dirs {
-                    let scope_toml_path = domains_dir.join(&dir_name).join("scope.toml");
-                    let scope_manifest = self.read_scope_from_path(&scope_toml_path)?;
-                    if !known_scope_ids.contains(&scope_manifest.scope.id) {
-                        known_scope_ids.insert(scope_manifest.scope.id.clone());
-                        let scope_type = scope_manifest
-                            .scope
-                            .bound_component
-                            .as_deref()
-                            .and_then(|cid| project.components.find(cid))
-                            .or_else(|| project.components.find(&scope_manifest.scope.id))
-                            .or_else(|| project.components.find(&scope_manifest.scope.target))
-                            .map(|c| c.component_type.clone())
-                            .unwrap_or_else(|| infer_default_scope_type(&scope_manifest.scope.id));
-                        phase_manifest.scopes.manifest.push(ScopeRegistryEntry {
-                            id: scope_manifest.scope.id.clone(),
-                            scope_type,
-                            path: format!("domains/{dir_name}"),
+                for dir_name in dir_names {
+                    let phase_toml_path = phases_root.join(&dir_name).join("phase.toml");
+                    let phase_manifest = self.read_phase_from_path(&phase_toml_path)?;
+                    if !known_phase_ids.contains(&phase_manifest.phase.id) {
+                        known_phase_ids.insert(phase_manifest.phase.id.clone());
+                        project.phases.registry.push(PhaseRegistryEntry {
+                            id: phase_manifest.phase.id,
+                            title: phase_manifest.phase.title,
+                            path: format!("phases/{dir_name}"),
                         });
                     }
                 }
             }
 
-            let mut phase_total_items: u32 = 0;
-            let mut phase_completed_items: u32 = 0;
-            let mut valid_scopes = Vec::with_capacity(phase_manifest.scopes.manifest.len());
+            let mut report = ReconcileReport::default();
+            let mut valid_phases = Vec::with_capacity(project.phases.registry.len());
 
-            for scope_entry in phase_manifest.scopes.manifest.drain(..) {
-                let scope_dir =
-                    self.resolve_scope_path(&phase_dir, &scope_entry.id, Some(&scope_entry.path))?;
-                let scope_toml_path = scope_dir.join("scope.toml");
-                if !scope_toml_path.is_file() {
+            for mut phase_entry in project.phases.registry.drain(..) {
+                let phase_dir =
+                    self.resolve_phase_path(&phase_entry.id, Some(&phase_entry.path))?;
+                let phase_toml_path = phase_dir.join("phase.toml");
+                if !phase_toml_path.is_file() {
                     continue;
                 }
 
-                let mut scope_manifest = self.read_scope_from_path(&scope_toml_path)?;
-                let original_scope_manifest = scope_manifest.clone();
-                let items_dir = scope_dir.join("items");
+                let mut phase_manifest = self.read_phase_from_path(&phase_toml_path)?;
+                let original_phase_manifest = phase_manifest.clone();
+                // Keep project phase title in sync with authoritative phase.toml title
+                phase_entry.title = phase_manifest.phase.title.clone();
 
-                let (bugs, features, scope_completed) =
-                    collect_authoritative_items(self, &items_dir, &mut max_counters)?;
+                // Discover any domain scope directories on disk not yet in `phase.scopes.manifest`
+                let domains_dir = phase_dir.join("domains");
+                if domains_dir.is_dir() {
+                    let mut known_scope_ids: HashSet<String> = phase_manifest
+                        .scopes
+                        .manifest
+                        .iter()
+                        .map(|s| s.id.clone())
+                        .collect();
 
-                let scope_item_count = (bugs.len() + features.len()) as u32;
-                phase_total_items += scope_item_count;
-                phase_completed_items += scope_completed;
+                    let mut scope_dirs: Vec<String> = fs::read_dir(&domains_dir)
+                        .map_err(|source| crate::error::TrackerError::Io {
+                            path: domains_dir.clone(),
+                            source,
+                        })?
+                        .flatten()
+                        .filter(|e| e.path().is_dir() && e.path().join("scope.toml").is_file())
+                        .filter_map(|e| e.file_name().into_string().ok())
+                        .collect();
+                    scope_dirs.sort();
 
-                scope_manifest.items.bugs = bugs;
-                scope_manifest.items.features = features;
-
-                if scope_manifest != original_scope_manifest {
-                    self.write_scope_to_path(&scope_toml_path, &scope_manifest)?;
+                    for dir_name in scope_dirs {
+                        let scope_toml_path = domains_dir.join(&dir_name).join("scope.toml");
+                        let scope_manifest = self.read_scope_from_path(&scope_toml_path)?;
+                        if !known_scope_ids.contains(&scope_manifest.scope.id) {
+                            known_scope_ids.insert(scope_manifest.scope.id.clone());
+                            let scope_type = scope_manifest
+                                .scope
+                                .bound_component
+                                .as_deref()
+                                .and_then(|cid| project.components.find(cid))
+                                .or_else(|| project.components.find(&scope_manifest.scope.id))
+                                .or_else(|| project.components.find(&scope_manifest.scope.target))
+                                .map(|c| c.component_type.clone())
+                                .unwrap_or_else(|| {
+                                    infer_default_scope_type(&scope_manifest.scope.id)
+                                });
+                            phase_manifest.scopes.manifest.push(ScopeRegistryEntry {
+                                id: scope_manifest.scope.id.clone(),
+                                scope_type,
+                                path: format!("domains/{dir_name}"),
+                            });
+                        }
+                    }
                 }
-                report.scopes_reconciled += 1;
-                valid_scopes.push(scope_entry);
+
+                let mut phase_total_items: u32 = 0;
+                let mut phase_completed_items: u32 = 0;
+                let mut valid_scopes = Vec::with_capacity(phase_manifest.scopes.manifest.len());
+
+                for scope_entry in phase_manifest.scopes.manifest.drain(..) {
+                    let scope_dir = self.resolve_scope_path(
+                        &phase_dir,
+                        &scope_entry.id,
+                        Some(&scope_entry.path),
+                    )?;
+                    let scope_toml_path = scope_dir.join("scope.toml");
+                    if !scope_toml_path.is_file() {
+                        continue;
+                    }
+
+                    let mut scope_manifest = self.read_scope_from_path(&scope_toml_path)?;
+                    let original_scope_manifest = scope_manifest.clone();
+                    let items_dir = scope_dir.join("items");
+
+                    let (bugs, features, scope_completed) =
+                        collect_authoritative_items(self, &items_dir, &mut max_counters)?;
+
+                    let scope_item_count = (bugs.len() + features.len()) as u32;
+                    phase_total_items += scope_item_count;
+                    phase_completed_items += scope_completed;
+
+                    scope_manifest.items.bugs = bugs;
+                    scope_manifest.items.features = features;
+
+                    if scope_manifest != original_scope_manifest {
+                        self.write_scope_to_path(&scope_toml_path, &scope_manifest)?;
+                    }
+                    report.scopes_reconciled += 1;
+                    valid_scopes.push(scope_entry);
+                }
+
+                phase_manifest.scopes.manifest = valid_scopes;
+                phase_manifest.summary.total_items = phase_total_items;
+                phase_manifest.summary.completed_items = phase_completed_items;
+
+                if phase_manifest != original_phase_manifest {
+                    self.write_phase_to_path(&phase_toml_path, &phase_manifest)?;
+                }
+
+                report.phases_reconciled += 1;
+                report.total_items += phase_total_items;
+                report.completed_items += phase_completed_items;
+                valid_phases.push(phase_entry);
             }
 
-            phase_manifest.scopes.manifest = valid_scopes;
-            phase_manifest.summary.total_items = phase_total_items;
-            phase_manifest.summary.completed_items = phase_completed_items;
-
-            if phase_manifest != original_phase_manifest {
-                self.write_phase_to_path(&phase_toml_path, &phase_manifest)?;
+            project.phases.registry = valid_phases;
+            if !project
+                .phases
+                .registry
+                .iter()
+                .any(|p| p.id == project.project.active_phase)
+            {
+                if let Some(first) = project.phases.registry.first() {
+                    project.project.active_phase = first.id.clone();
+                }
             }
 
-            report.phases_reconciled += 1;
-            report.total_items += phase_total_items;
-            report.completed_items += phase_completed_items;
-            valid_phases.push(phase_entry);
-        }
+            project.counters.bug = project.counters.bug.max(max_counters.bug);
+            project.counters.feature = project.counters.feature.max(max_counters.feature);
+            report.counters = project.counters.clone();
 
-        project.phases.registry = valid_phases;
-        if !project
-            .phases
-            .registry
-            .iter()
-            .any(|p| p.id == project.project.active_phase)
-        {
-            if let Some(first) = project.phases.registry.first() {
-                project.project.active_phase = first.id.clone();
+            if project != original_project {
+                self.write_project(&project)?;
             }
-        }
 
-        project.counters.bug = project.counters.bug.max(max_counters.bug);
-        project.counters.feature = project.counters.feature.max(max_counters.feature);
-        report.counters = project.counters.clone();
-
-        if project != original_project {
-            self.write_project(&project)?;
-        }
-
-        Ok(report)
+            Ok(report)
+        })
     }
 }
 
