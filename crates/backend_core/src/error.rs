@@ -84,6 +84,15 @@ pub enum TrackerError {
 
     #[error("timed out after {waited_ms} ms waiting for tracker lock {path}")]
     LockTimeout { path: PathBuf, waited_ms: u64 },
+
+    #[error(
+        "{path} has schema_version {found}; this neb supports up to {supported}. Upgrade neb."
+    )]
+    UnsupportedSchema {
+        path: PathBuf,
+        found: u32,
+        supported: u32,
+    },
 }
 
 impl From<toml::de::Error> for TrackerError {

@@ -1,4 +1,5 @@
 pub mod atomic;
+pub mod compat;
 pub mod id;
 pub mod reconcile;
 
