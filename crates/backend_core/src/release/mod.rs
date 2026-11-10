@@ -8,6 +8,8 @@ pub mod gate;
 pub mod golden;
 pub mod inventory;
 pub mod iso;
+pub mod manifest;
+pub mod repo_invariants;
 pub mod rootfs;
 pub mod variance;
 
