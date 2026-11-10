@@ -10,6 +10,7 @@ aes-gcm = "0.10"
 base64 = "0.22"
 chrono.workspace = true
 fd-lock = "4"
+flate2 = "1"
 git2 = { version = "0.21", default-features = false, features = ["https", "ssh"] }
 ignore = "0.4"
 keyring = "3"

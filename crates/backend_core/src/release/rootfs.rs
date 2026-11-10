@@ -1,13 +1,28 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 
+use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 
 use crate::error::{Result, TrackerError};
-use crate::release::inventory::CustomBinary;
+use crate::release::inventory::{
+    parse_dpkg_status, parse_os_release, BootInfo, CalamaresModules, CustomBinary,
+    InstalledPackage, IsoInventory, IsoMeta,
+};
+
+pub const COSMIC_EPOCH_COMPONENTS: [&str; 8] = [
+    "cosmic-comp",
+    "cosmic-session",
+    "cosmic-greeter",
+    "cosmic-panel",
+    "cosmic-applets",
+    "cosmic-files",
+    "cosmic-term",
+    "cosmic-settings",
+];
 
 fn normalize_lexically(path: &Path) -> PathBuf {
     let mut prefix: Option<std::ffi::OsString> = None;
@@ -302,6 +317,270 @@ pub fn scan_custom_binaries(
     Ok(custom_binaries)
 }
 
+fn is_file_or_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_file() || m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// Build an [`IsoInventory`] from an already-extracted ISO root directory.
+///
+/// Synthetic COSMIC component entries (`COSMIC_EPOCH_COMPONENTS`) record
+/// `source = "cosmic-epoch-monorepo"` and `source_version = Some(V)` because the monorepo
+/// package ships those binaries; under contract §4.1, component identity and version come
+/// from `Source`, grouping all monorepo-provided binaries into the `cosmic-epoch-monorepo`
+/// component.
+pub fn inventory_from_root(root: &Path, iso: IsoMeta, project_root: &Path) -> Result<IsoInventory> {
+    let status_file = root.join("var/lib/dpkg/status");
+    if !status_file.is_file() {
+        return Err(TrackerError::ValidationError(format!(
+            "var/lib/dpkg/status is missing from the extracted ISO root {}",
+            root.display()
+        )));
+    }
+
+    let mut os_release_entry = resolve_in_root(root, &root.join("etc/os-release"));
+    if !os_release_entry.is_file() {
+        os_release_entry = root.join("usr/lib/os-release");
+    }
+    let os_release = if os_release_entry.is_file() {
+        let raw = fs::read(&os_release_entry).map_err(|source| TrackerError::Io {
+            path: os_release_entry,
+            source,
+        })?;
+        parse_os_release(&String::from_utf8_lossy(&raw))
+    } else {
+        BTreeMap::new()
+    };
+
+    let status_raw = fs::read(&status_file).map_err(|source| TrackerError::Io {
+        path: status_file,
+        source,
+    })?;
+    let mut packages = parse_dpkg_status(&String::from_utf8_lossy(&status_raw));
+
+    if !packages.contains_key("live-boot") {
+        let lb_changelog = root.join("usr/share/doc/live-boot/changelog.gz");
+        let lb_bin = root.join("usr/bin/live-boot");
+        if lb_changelog.is_file() && is_file_or_symlink(&lb_bin) {
+            let gz_file = File::open(&lb_changelog).map_err(|source| TrackerError::Io {
+                path: lb_changelog.clone(),
+                source,
+            })?;
+            let mut reader = BufReader::new(GzDecoder::new(gz_file));
+            let mut first_line_bytes = Vec::new();
+            reader
+                .read_until(b'\n', &mut first_line_bytes)
+                .map_err(|source| TrackerError::Io {
+                    path: lb_changelog,
+                    source,
+                })?;
+            let first_line_cow = String::from_utf8_lossy(&first_line_bytes);
+            let first_line = first_line_cow.trim();
+            if let Some((_, after_open)) = first_line.split_once('(') {
+                if let Some((inside, _)) = after_open.split_once(')') {
+                    let version = inside.trim();
+                    if !version.is_empty() {
+                        packages.insert(
+                            "live-boot".to_string(),
+                            InstalledPackage {
+                                name: "live-boot".to_string(),
+                                version: version.to_string(),
+                                source: "live-boot".to_string(),
+                                source_version: None,
+                                arch: None,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Source is the monorepo because `cosmic-epoch-monorepo` ships these binaries; setting
+    // `source = "cosmic-epoch-monorepo"` makes them members of the monorepo component under §4.1.
+    if let Some(epoch_ver) = packages
+        .get("cosmic-epoch-monorepo")
+        .map(|pkg| pkg.version.clone())
+    {
+        for comp in COSMIC_EPOCH_COMPONENTS {
+            if !packages.contains_key(comp) {
+                let comp_bin = root.join("usr/bin").join(comp);
+                if is_file_or_symlink(&comp_bin) {
+                    packages.insert(
+                        comp.to_string(),
+                        InstalledPackage {
+                            name: comp.to_string(),
+                            version: epoch_ver.clone(),
+                            source: "cosmic-epoch-monorepo".to_string(),
+                            source_version: Some(epoch_ver.clone()),
+                            arch: None,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    let custom_binaries = scan_custom_binaries(root, &workspace_crate_versions(project_root))?;
+
+    let mut calamares_configs = Vec::new();
+    let mut calamares_presence = BTreeMap::new();
+    let cal_mod_dir = root.join("etc/calamares/modules");
+    if cal_mod_dir.is_dir() {
+        let read_dir = fs::read_dir(&cal_mod_dir).map_err(|source| TrackerError::Io {
+            path: cal_mod_dir.clone(),
+            source,
+        })?;
+        for entry_res in read_dir {
+            let entry = entry_res.map_err(|source| TrackerError::Io {
+                path: cal_mod_dir.clone(),
+                source,
+            })?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            calamares_configs.push(name);
+        }
+        calamares_configs.sort();
+        for name in &calamares_configs {
+            calamares_presence.insert(name.clone(), true);
+        }
+    }
+
+    let mut custom_calamares_modules = Vec::new();
+    let usr_cal_dir = root.join("usr/lib/calamares/modules");
+    if usr_cal_dir.is_dir() {
+        let read_dir = fs::read_dir(&usr_cal_dir).map_err(|source| TrackerError::Io {
+            path: usr_cal_dir.clone(),
+            source,
+        })?;
+        for entry_res in read_dir {
+            let entry = entry_res.map_err(|source| TrackerError::Io {
+                path: usr_cal_dir.clone(),
+                source,
+            })?;
+            if entry.path().is_dir() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                custom_calamares_modules.push(name);
+            }
+        }
+        custom_calamares_modules.sort();
+        for name in &custom_calamares_modules {
+            calamares_presence.insert(name.clone(), true);
+        }
+    }
+
+    let mut boot_files = Vec::new();
+    let boot_dir = root.join("boot");
+    if boot_dir.is_dir() {
+        let read_dir = fs::read_dir(&boot_dir).map_err(|source| TrackerError::Io {
+            path: boot_dir.clone(),
+            source,
+        })?;
+        for entry_res in read_dir {
+            let entry = entry_res.map_err(|source| TrackerError::Io {
+                path: boot_dir.clone(),
+                source,
+            })?;
+            if is_file_or_symlink(&entry.path()) {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                boot_files.push(name);
+            }
+        }
+        boot_files.sort();
+    }
+
+    Ok(IsoInventory {
+        iso,
+        os_release,
+        boot: BootInfo { files: boot_files },
+        calamares_modules: CalamaresModules {
+            configs: calamares_configs,
+            custom_modules: custom_calamares_modules,
+            presence: calamares_presence,
+        },
+        custom_binaries,
+        packages,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn write_fixture_root(dir: &Path) {
+    use std::io::Write;
+    use std::os::unix::fs::symlink;
+
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+
+    let dpkg_dir = dir.join("var/lib/dpkg");
+    fs::create_dir_all(&dpkg_dir).expect("create var/lib/dpkg");
+    fs::write(
+        dpkg_dir.join("status"),
+        "\
+Package: cosmic-epoch-monorepo
+Status: install ok installed
+Architecture: amd64
+Version: 1.0.0~alpha7-1
+
+Package: libfoo1
+Status: install ok installed
+Architecture: amd64
+Source: foo (1.2-1)
+Version: 1.2-1
+
+Package: base-files
+Status: install ok installed
+Architecture: amd64
+Version: 14
+",
+    )
+    .expect("write dpkg status");
+
+    let usr_bin = dir.join("usr/bin");
+    fs::create_dir_all(&usr_bin).expect("create usr/bin");
+    fs::write(usr_bin.join("cosmic-comp"), b"ELF cosmic-comp").expect("write cosmic-comp");
+    fs::write(usr_bin.join("cosmic-term"), b"ELF cosmic-term").expect("write cosmic-term");
+    symlink("cosmic-comp", usr_bin.join("cosmic-panel")).expect("symlink cosmic-panel");
+    fs::write(usr_bin.join("live-boot"), b"#!/bin/sh\n").expect("write live-boot");
+
+    let lb_doc_dir = dir.join("usr/share/doc/live-boot");
+    fs::create_dir_all(&lb_doc_dir).expect("create live-boot doc dir");
+    let gz_file = File::create(lb_doc_dir.join("changelog.gz")).expect("create changelog.gz");
+    let mut encoder = GzEncoder::new(gz_file, Compression::default());
+    encoder
+        .write_all(b"live-boot (1:20250815) unstable; urgency=medium\n\n  * Initial release.\n")
+        .expect("write changelog.gz body");
+    encoder.finish().expect("finish changelog.gz");
+
+    let usr_lib = dir.join("usr/lib");
+    fs::create_dir_all(&usr_lib).expect("create usr/lib");
+    fs::write(usr_lib.join("os-release"), "NAME=\"NovOS\"\nID=novos\n")
+        .expect("write usr/lib/os-release");
+    let etc_dir = dir.join("etc");
+    fs::create_dir_all(&etc_dir).expect("create etc");
+    symlink("../usr/lib/os-release", etc_dir.join("os-release")).expect("symlink etc/os-release");
+
+    let usr_local_bin = dir.join("usr/local/bin");
+    fs::create_dir_all(&usr_local_bin).expect("create usr/local/bin");
+    fs::write(usr_local_bin.join("tool-a"), b"tool-a v1.2.3").expect("write tool-a");
+
+    let cal_etc = dir.join("etc/calamares/modules");
+    fs::create_dir_all(&cal_etc).expect("create etc/calamares/modules");
+    fs::write(cal_etc.join("welcome.conf"), b"---\n").expect("write welcome.conf");
+    fs::write(cal_etc.join("users.conf"), b"---\n").expect("write users.conf");
+
+    let cal_usr = dir.join("usr/lib/calamares/modules/limine-bootloader");
+    fs::create_dir_all(&cal_usr).expect("create limine-bootloader dir");
+
+    let boot_dir = dir.join("boot");
+    fs::create_dir_all(&boot_dir).expect("create boot");
+    fs::write(
+        boot_dir.join("vmlinuz-7.3.3-x64v3-xanmod1"),
+        b"kernel-image",
+    )
+    .expect("write vmlinuz-7.3.3-x64v3-xanmod1");
+    symlink("vmlinuz-7.3.3-x64v3-xanmod1", boot_dir.join("vmlinuz")).expect("symlink vmlinuz");
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::symlink;
@@ -476,5 +755,148 @@ version.workspace = true
             versions.get("inherited-tool").map(String::as_str),
             Some("2.0.0")
         );
+    }
+
+    fn dummy_iso_meta() -> IsoMeta {
+        IsoMeta {
+            path: "/tmp/novos.iso".to_string(),
+            size_bytes: 1024,
+            vmlinuz_sha256: String::new(),
+            initrd_sha256: String::new(),
+            extracted_at: "2026-11-10T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn inventory_from_root_builds_full_inventory_from_fixture() {
+        let tmp = tempdir().expect("create tempdir");
+        let root = tmp.path();
+        write_fixture_root(root);
+
+        let inv = inventory_from_root(root, dummy_iso_meta(), root).expect("inventory_from_root");
+
+        // 3 dpkg packages + live-boot + 3 COSMIC components (comp, term, panel) = 7 packages
+        assert_eq!(inv.packages.len(), 7);
+        assert_eq!(
+            inv.packages
+                .get("cosmic-epoch-monorepo")
+                .map(|p| p.version.as_str()),
+            Some("1.0.0~alpha7-1")
+        );
+        assert_eq!(
+            inv.packages.get("libfoo1"),
+            Some(&InstalledPackage {
+                name: "libfoo1".to_string(),
+                version: "1.2-1".to_string(),
+                source: "foo".to_string(),
+                source_version: Some("1.2-1".to_string()),
+                arch: Some("amd64".to_string()),
+            })
+        );
+        assert_eq!(
+            inv.packages.get("base-files").map(|p| p.version.as_str()),
+            Some("14")
+        );
+        assert_eq!(
+            inv.packages.get("live-boot"),
+            Some(&InstalledPackage {
+                name: "live-boot".to_string(),
+                version: "1:20250815".to_string(),
+                source: "live-boot".to_string(),
+                source_version: None,
+                arch: None,
+            })
+        );
+        for comp in ["cosmic-comp", "cosmic-term", "cosmic-panel"] {
+            assert_eq!(
+                inv.packages.get(comp),
+                Some(&InstalledPackage {
+                    name: comp.to_string(),
+                    version: "1.0.0~alpha7-1".to_string(),
+                    source: "cosmic-epoch-monorepo".to_string(),
+                    source_version: Some("1.0.0~alpha7-1".to_string()),
+                    arch: None,
+                })
+            );
+        }
+        assert!(!inv.packages.contains_key("cosmic-files"));
+
+        assert_eq!(
+            inv.os_release.get("NAME").map(String::as_str),
+            Some("NovOS")
+        );
+        assert_eq!(inv.os_release.get("ID").map(String::as_str), Some("novos"));
+
+        assert_eq!(
+            inv.calamares_modules.configs,
+            vec!["users.conf".to_string(), "welcome.conf".to_string()]
+        );
+        assert_eq!(
+            inv.calamares_modules.custom_modules,
+            vec!["limine-bootloader".to_string()]
+        );
+        assert_eq!(inv.calamares_modules.presence.len(), 3);
+        assert_eq!(
+            inv.calamares_modules.presence.get("users.conf"),
+            Some(&true)
+        );
+        assert_eq!(
+            inv.calamares_modules.presence.get("welcome.conf"),
+            Some(&true)
+        );
+        assert_eq!(
+            inv.calamares_modules.presence.get("limine-bootloader"),
+            Some(&true)
+        );
+
+        assert_eq!(
+            inv.boot.files,
+            vec![
+                "vmlinuz".to_string(),
+                "vmlinuz-7.3.3-x64v3-xanmod1".to_string()
+            ]
+        );
+        assert_eq!(
+            inv.custom_binaries
+                .get("tool-a")
+                .map(|b| b.version.as_str()),
+            Some("1.2.3")
+        );
+    }
+
+    #[test]
+    fn inventory_from_root_preserves_dpkg_registered_live_boot() {
+        let tmp = tempdir().expect("create tempdir");
+        let root = tmp.path();
+        write_fixture_root(root);
+
+        let status_path = root.join("var/lib/dpkg/status");
+        let mut status_text = fs::read_to_string(&status_path).expect("read status");
+        status_text.push_str(
+            "\nPackage: live-boot\nStatus: install ok installed\nArchitecture: all\nVersion: 1:20240101\n",
+        );
+        fs::write(&status_path, status_text).expect("update status");
+
+        let inv = inventory_from_root(root, dummy_iso_meta(), root).expect("inventory_from_root");
+        let lb = inv.packages.get("live-boot").expect("live-boot present");
+        assert_eq!(lb.version, "1:20240101");
+        assert_eq!(lb.arch.as_deref(), Some("all"));
+    }
+
+    #[test]
+    fn inventory_from_root_errors_when_dpkg_status_is_missing() {
+        let tmp = tempdir().expect("create tempdir");
+        let root = tmp.path();
+        let err = inventory_from_root(root, dummy_iso_meta(), root)
+            .expect_err("missing dpkg status should error");
+        match err {
+            TrackerError::ValidationError(msg) => {
+                assert!(
+                    msg.contains("var/lib/dpkg/status is missing from the extracted ISO root"),
+                    "unexpected validation error message: {msg}"
+                );
+            }
+            other => panic!("expected ValidationError, got: {other:?}"),
+        }
     }
 }
