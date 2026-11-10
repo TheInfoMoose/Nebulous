@@ -2481,3 +2481,50 @@ fn versioned_writes_do_not_resurrect_cleared_fields_or_legacy_aliases() {
     assert_eq!(reloaded_project.counters.feature, 3);
     assert_eq!(reloaded_project.components.len(), 1);
 }
+
+#[test]
+fn reconcile_skips_and_reports_unsupported_item_schema() {
+    let temp = TempTrackerDir::new("reconcile_skip_unsupported_schema");
+    let storage = TrackerStorage::init_standard(temp.path(), "ReconcileSkipUnsupported").unwrap();
+
+    let (loc1, bug1) = storage
+        .create_bug("First bug", None, None, Severity::Medium, None)
+        .unwrap();
+    let (loc2, bug2) = storage
+        .create_bug("Second bug", None, None, Severity::Medium, None)
+        .unwrap();
+
+    let bug2_path = storage
+        .item_toml_path(&loc2.phase_id, &loc2.scope_id, &bug2.manifest.item.id)
+        .unwrap();
+    let bug2_original = fs::read_to_string(&bug2_path).unwrap();
+    let bug2_v9 = format!("schema_version = 9\n{bug2_original}");
+    fs::write(&bug2_path, &bug2_v9).unwrap();
+
+    let report = storage
+        .reconcile_indexes()
+        .expect("reconcile_indexes should skip unsupported item schema");
+
+    let expected_rel = format!(
+        "phases/{}/domains/{}/items/{}/item.toml",
+        loc2.phase_id, loc2.scope_id, bug2.manifest.item.id
+    );
+    assert_eq!(report.skipped_unsupported, vec![expected_rel]);
+    assert_eq!(report.total_items, 1);
+
+    let scope = storage.read_scope(&loc1.phase_id, &loc1.scope_id).unwrap();
+    assert_eq!(scope.items.bugs.len(), 1);
+    assert_eq!(scope.items.bugs[0].id, bug1.manifest.item.id);
+
+    let phase = storage.read_phase(&loc1.phase_id).unwrap();
+    assert_eq!(phase.summary.total_items, 1);
+
+    assert!(report.counters.bug >= 2);
+    assert!(storage.read_project().unwrap().counters.bug >= 2);
+
+    assert_eq!(
+        fs::read_to_string(&bug2_path).unwrap(),
+        bug2_v9,
+        "skipped item.toml must remain byte-identical after reconcile_indexes"
+    );
+}

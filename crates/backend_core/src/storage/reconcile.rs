@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use crate::error::Result;
+use crate::error::{Result, TrackerError};
 use crate::models::{
     ItemManifest, ItemStub, ItemType, PhaseRegistryEntry, ProjectCounters, ScopeRegistryEntry,
 };
@@ -18,6 +18,7 @@ pub struct ReconcileReport {
     pub total_items: u32,
     pub completed_items: u32,
     pub counters: ProjectCounters,
+    pub skipped_unsupported: Vec<String>,
 }
 
 impl TrackerStorage {
@@ -151,8 +152,12 @@ impl TrackerStorage {
                     let original_scope_manifest = scope_manifest.clone();
                     let items_dir = scope_dir.join("items");
 
-                    let (bugs, features, scope_completed) =
-                        collect_authoritative_items(self, &items_dir, &mut max_counters)?;
+                    let (bugs, features, scope_completed) = collect_authoritative_items(
+                        self,
+                        &items_dir,
+                        &mut max_counters,
+                        &mut report.skipped_unsupported,
+                    )?;
 
                     let scope_item_count = (bugs.len() + features.len()) as u32;
                     phase_total_items += scope_item_count;
@@ -197,6 +202,7 @@ impl TrackerStorage {
             project.counters.bug = project.counters.bug.max(max_counters.bug);
             project.counters.feature = project.counters.feature.max(max_counters.feature);
             report.counters = project.counters.clone();
+            report.skipped_unsupported.sort();
 
             if project != original_project {
                 self.write_project(&project)?;
@@ -211,6 +217,7 @@ fn collect_authoritative_items(
     storage: &TrackerStorage,
     items_dir: &Path,
     max_counters: &mut ProjectCounters,
+    skipped: &mut Vec<String>,
 ) -> Result<(Vec<ItemStub>, Vec<ItemStub>, u32)> {
     let mut bugs = Vec::new();
     let mut features = Vec::new();
@@ -220,7 +227,7 @@ fn collect_authoritative_items(
         return Ok((bugs, features, completed_count));
     }
 
-    let entries = fs::read_dir(items_dir).map_err(|source| crate::error::TrackerError::Io {
+    let entries = fs::read_dir(items_dir).map_err(|source| TrackerError::Io {
         path: items_dir.to_path_buf(),
         source,
     })?;
@@ -253,16 +260,21 @@ fn collect_authoritative_items(
             continue;
         }
 
-        let raw = storage.read_tracker_file(&item_toml_path)?;
-        let manifest = ItemManifest::from_toml_str(&raw).map_err(|err| match err {
-            crate::error::TrackerError::TomlDeserialize { source, .. } => {
-                crate::error::TrackerError::TomlDeserialize {
-                    path: Some(item_toml_path),
-                    source,
-                }
+        let manifest = match storage.read_versioned::<ItemManifest>(&item_toml_path) {
+            Ok(manifest) => manifest,
+            Err(TrackerError::UnsupportedSchema { .. }) => {
+                let rel = item_toml_path
+                    .strip_prefix(storage.tracker_dir())
+                    .unwrap_or(&item_toml_path)
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                skipped.push(rel);
+                continue;
             }
-            other => other,
-        })?;
+            Err(err) => return Err(err),
+        };
 
         if let Some((kind, num)) = parse_item_id_number(&manifest.item.id) {
             match kind {
