@@ -5,7 +5,6 @@ pub mod git_sync;
 pub mod ingestion;
 pub mod mcp;
 pub mod models;
-pub mod release;
 pub mod storage;
 pub mod watcher;
 pub mod workflow;

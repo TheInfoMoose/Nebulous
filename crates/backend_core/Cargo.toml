@@ -10,18 +10,15 @@ aes-gcm = "0.10"
 base64 = "0.22"
 chrono.workspace = true
 fd-lock = "4"
-flate2 = "1"
 git2 = { version = "0.21", default-features = false, features = ["https", "ssh"] }
 ignore = "0.4"
 keyring = "3"
 notify = "6"
 rand = "0.8"
-regex = "1"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 ssh-key = { version = "0.7.0-rc.11", features = ["ed25519", "rand_core", "encryption"] }
-tempfile = "3"
 thiserror.workspace = true
 toml.workspace = true
 zeroize = "1"
@@ -34,3 +31,9 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+
+
