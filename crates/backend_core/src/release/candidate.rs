@@ -13,6 +13,7 @@ use crate::release::component::find_match;
 use crate::release::debver;
 use crate::release::golden::{Golden, Origin};
 use crate::release::holds::{ledger_holds, HoldReason};
+use crate::release::iso::IsoIdentity;
 use crate::release::ledger::{Ledger, Phase, COMPONENT_CLASS};
 use crate::release::manifest::Manifest;
 use crate::release::records::ReleaseRecord;
@@ -104,6 +105,42 @@ impl PhaseResult {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VerdictOverlay {
+    pub production_filesystem_squashfs_sha256: Option<String>,
+    pub matches_manifest: Option<bool>,
+}
+
+/// Parses the `test_overlay` section of a VM verdict JSON document.
+pub fn parse_verdict_overlay(json: &str) -> Result<VerdictOverlay> {
+    let val: serde_json::Value = serde_json::from_str(json).map_err(|err| {
+        TrackerError::ValidationError(format!("verdict is not a JSON object: {err}"))
+    })?;
+    let Some(root) = val.as_object() else {
+        return Err(TrackerError::ValidationError(
+            "verdict is not a JSON object: top-level value is not an object".to_string(),
+        ));
+    };
+    let Some(overlay_obj) = root
+        .get("test_overlay")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Ok(VerdictOverlay::default());
+    };
+    let production_filesystem_squashfs_sha256 = overlay_obj
+        .get("production_filesystem_squashfs_sha256")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    let matches_manifest = overlay_obj
+        .get("matches_manifest")
+        .and_then(serde_json::Value::as_bool);
+    Ok(VerdictOverlay {
+        production_filesystem_squashfs_sha256,
+        matches_manifest,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhaseRecord {
     pub phase: Phase,
@@ -117,6 +154,10 @@ pub struct PhaseRecord {
     pub logs: Vec<String>,
     #[serde(default)]
     pub iso_sha256: String,
+    #[serde(default)]
+    pub overlay_claim: String,
+    #[serde(default)]
+    pub squashfs_sha256: String,
     #[serde(default)]
     pub verdict: String,
     #[serde(default)]
@@ -134,6 +175,7 @@ pub struct Candidate {
     pub created_at: String,
     pub iso_path: String,
     pub iso_sha256: String,
+    pub squashfs_sha256: String,
     pub snapshot: String,
     #[serde(default)]
     pub artifact_cache: String,
@@ -156,6 +198,7 @@ pub struct Candidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateInput<'a> {
     pub live: &'a Golden,
+    pub identity: &'a IsoIdentity,
     pub iso_path: &'a str,
     pub iso_sha256: &'a str,
     pub snapshot: &'a str,
@@ -171,7 +214,10 @@ pub struct PhaseInput {
     pub phase: Phase,
     pub result: PhaseResult,
     pub logs: Vec<String>,
+    /// The production ISO for build; the test ISO for VM phases (recorded, not compared).
     pub iso_sha256: Option<String>,
+    pub overlay_claim: Option<String>,
+    pub verdict_overlay: VerdictOverlay,
     pub hold_file_sha256: String,
     pub snapshot: String,
     pub repo_head: String,
@@ -253,6 +299,20 @@ pub fn build_candidate(
     ledger: &Ledger,
     records: &[(PathBuf, ReleaseRecord)],
 ) -> Result<CandidateOutcome> {
+    if !input.identity.extra_live_layers.is_empty() {
+        return Err(TrackerError::ValidationError(format!(
+            "{} is a test ISO (extra live layers: {}); make the candidate from the production ISO",
+            input.iso_path,
+            input.identity.extra_live_layers.join(", ")
+        )));
+    }
+    if input.identity.squashfs_sha256.is_empty() {
+        return Err(TrackerError::ValidationError(format!(
+            "{}: production filesystem.squashfs sha256 is missing; extract the ISO with extract_iso",
+            input.iso_path
+        )));
+    }
+
     let report = evaluate_variance(input.live, manifest, golden, approvals)?;
 
     // Map each matched live component ID to its golden version (keeping the first match in golden ID order).
@@ -337,6 +397,7 @@ pub fn build_candidate(
         created_at: input.now.to_rfc3339_opts(SecondsFormat::Secs, true),
         iso_path: input.iso_path.to_string(),
         iso_sha256: input.iso_sha256.to_string(),
+        squashfs_sha256: input.identity.squashfs_sha256.clone(),
         snapshot: input.snapshot.to_string(),
         artifact_cache: input.artifact_cache.to_string(),
         hold_file: input.hold_file.to_string(),
@@ -596,28 +657,69 @@ pub fn apply_phase(c: &mut Candidate, input: PhaseInput) -> Result<RecordPhaseRe
     }
 
     match input.phase {
-        Phase::VmLiveBoot | Phase::VmInstallE2e => match input.iso_sha256.as_deref() {
-            Some(sha) if sha == c.iso_sha256 => {}
-            Some(sha) => {
+        Phase::VmLiveBoot | Phase::VmInstallE2e => {
+            let p = input.phase.as_str();
+            match input.overlay_claim.as_deref().filter(|s| !s.is_empty()) {
+                None => {
+                    return Ok(RecordPhaseResult::Refused {
+                        reason: RefusalReason::IsoMismatch,
+                        detail: format!(
+                            "VM phase '{p}' needs the test ISO's overlay claim (overlay.json production_filesystem_squashfs_sha256)"
+                        ),
+                    });
+                }
+                Some(claim) if claim != c.squashfs_sha256 => {
+                    return Ok(RecordPhaseResult::Refused {
+                        reason: RefusalReason::IsoMismatch,
+                        detail: format!(
+                            "VM phase '{p}': test ISO was derived from production squashfs '{claim}', candidate is '{}'",
+                            c.squashfs_sha256
+                        ),
+                    });
+                }
+                Some(_) => {}
+            }
+
+            if input.verdict_overlay.matches_manifest == Some(false) {
                 return Ok(RecordPhaseResult::Refused {
                     reason: RefusalReason::IsoMismatch,
                     detail: format!(
-                        "iso_sha256 mismatch for phase '{}': input '{sha}' != candidate '{}'",
-                        input.phase.as_str(),
-                        c.iso_sha256
+                        "VM phase '{p}': guest measured a production squashfs that does not match the test ISO's overlay.json"
                     ),
                 });
             }
-            None => {
+
+            if let Some(m) = input
+                .verdict_overlay
+                .production_filesystem_squashfs_sha256
+                .as_deref()
+            {
+                if m != c.squashfs_sha256 {
+                    return Ok(RecordPhaseResult::Refused {
+                        reason: RefusalReason::IsoMismatch,
+                        detail: format!(
+                            "VM phase '{p}': guest measured production squashfs '{m}', candidate is '{}'",
+                            c.squashfs_sha256
+                        ),
+                    });
+                }
+            }
+
+            if input.result == PhaseResult::Pass
+                && (input
+                    .verdict_overlay
+                    .production_filesystem_squashfs_sha256
+                    .is_none()
+                    || input.verdict_overlay.matches_manifest != Some(true))
+            {
                 return Ok(RecordPhaseResult::Refused {
                     reason: RefusalReason::IsoMismatch,
                     detail: format!(
-                        "iso_sha256 is required for VM phase '{}'",
-                        input.phase.as_str()
+                        "VM pass for '{p}' needs the guest measurement and matches_manifest = true in the verdict"
                     ),
                 });
             }
-        },
+        }
         Phase::Build => {
             if input.result == PhaseResult::Pass {
                 if let Some(sha) = input.iso_sha256.as_deref() {
@@ -682,6 +784,11 @@ pub fn apply_phase(c: &mut Candidate, input: PhaseInput) -> Result<RecordPhaseRe
         classifier_rule: record_rule,
         logs: input.logs,
         iso_sha256: input.iso_sha256.unwrap_or_default(),
+        overlay_claim: input.overlay_claim.unwrap_or_default(),
+        squashfs_sha256: input
+            .verdict_overlay
+            .production_filesystem_squashfs_sha256
+            .unwrap_or_default(),
         verdict: input.verdict.unwrap_or_default(),
         flaked,
         recorded_at: input.recorded_at,
@@ -721,6 +828,8 @@ pub fn record_phase(path: &Path, input: PhaseInput) -> Result<RecordPhaseResult>
 
 #[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
+
     use chrono::TimeZone;
     use tempfile::tempdir;
 
@@ -772,10 +881,21 @@ mod tests {
 
     const SAMPLE_HOLD_SHA: &str =
         "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const SAMPLE_SQUASHFS_SHA: &str =
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+    fn sample_identity() -> &'static IsoIdentity {
+        static ID: OnceLock<IsoIdentity> = OnceLock::new();
+        ID.get_or_init(|| IsoIdentity {
+            squashfs_sha256: "d".repeat(64),
+            extra_live_layers: Vec::new(),
+        })
+    }
 
     fn sample_input<'a>(live: &'a Golden, sha: &'a str) -> CandidateInput<'a> {
         CandidateInput {
             live,
+            identity: sample_identity(),
             iso_path: "build/novos.iso",
             iso_sha256: sha,
             snapshot: "20261101T000000Z",
@@ -788,11 +908,23 @@ mod tests {
     }
 
     fn pass_phase_input(phase: Phase, iso_sha: Option<String>, hold_sha: &str) -> PhaseInput {
+        let (overlay_claim, verdict_overlay) = match phase {
+            Phase::Build => (None, VerdictOverlay::default()),
+            Phase::VmLiveBoot | Phase::VmInstallE2e => (
+                Some(SAMPLE_SQUASHFS_SHA.to_string()),
+                VerdictOverlay {
+                    production_filesystem_squashfs_sha256: Some(SAMPLE_SQUASHFS_SHA.to_string()),
+                    matches_manifest: Some(true),
+                },
+            ),
+        };
         PhaseInput {
             phase,
             result: PhaseResult::Pass,
             logs: vec![format!("logs/{}.log", phase.as_str())],
             iso_sha256: iso_sha,
+            overlay_claim,
+            verdict_overlay,
             hold_file_sha256: hold_sha.to_string(),
             snapshot: "20261101T000000Z".to_string(),
             repo_head: "deadbeef1234567890".to_string(),
@@ -810,11 +942,23 @@ mod tests {
         class: Option<&str>,
         rule: Option<&str>,
     ) -> PhaseInput {
+        let (overlay_claim, verdict_overlay) = match phase {
+            Phase::Build => (None, VerdictOverlay::default()),
+            Phase::VmLiveBoot | Phase::VmInstallE2e => (
+                Some(SAMPLE_SQUASHFS_SHA.to_string()),
+                VerdictOverlay {
+                    production_filesystem_squashfs_sha256: Some(SAMPLE_SQUASHFS_SHA.to_string()),
+                    matches_manifest: Some(true),
+                },
+            ),
+        };
         PhaseInput {
             phase,
             result: PhaseResult::Fail,
             logs: vec![format!("logs/{}-fail.log", phase.as_str())],
             iso_sha256: iso_sha,
+            overlay_claim,
+            verdict_overlay,
             hold_file_sha256: hold_sha.to_string(),
             snapshot: "20261101T000000Z".to_string(),
             repo_head: "deadbeef1234567890".to_string(),
@@ -835,6 +979,7 @@ mod tests {
         let live = empty_golden();
         let input = CandidateInput {
             live: &live,
+            identity: sample_identity(),
             iso_path: "build/test.iso",
             iso_sha256: sha,
             snapshot: "20261101T000000Z",
@@ -1355,6 +1500,8 @@ mod tests {
             panic!("expected Created");
         };
 
+        assert_eq!(candidate.squashfs_sha256, "d".repeat(64));
+
         candidate.holds_in_force.push(HoldInForce {
             component: "example-lib".to_string(),
             held_version: "1.0-1".to_string(),
@@ -1378,6 +1525,7 @@ mod tests {
             .expect("read_candidate")
             .expect("Some(candidate)");
         assert_eq!(loaded, *candidate);
+        assert_eq!(loaded.squashfs_sha256, "d".repeat(64));
 
         // Schema version 2 -> UnsupportedSchema.
         let mut v2 = (*candidate).clone();
@@ -1406,6 +1554,137 @@ mod tests {
             read_candidate(&path).expect_err("corrupt toml"),
             TrackerError::TomlDeserialize { path: Some(_), .. }
         ));
+    }
+
+    #[test]
+    fn build_candidate_refuses_test_iso_and_missing_squashfs_sha256() {
+        let live = empty_golden();
+        let sha = "a".repeat(64);
+
+        // Extra live layers -> ValidationError containing the layer path, even when variance passes.
+        let test_identity = IsoIdentity {
+            squashfs_sha256: "d".repeat(64),
+            extra_live_layers: vec!["/live/zz-novos-test.squashfs".to_string()],
+        };
+        let mut input = sample_input(&live, &sha);
+        input.identity = &test_identity;
+        let err = build_candidate(
+            &input,
+            &Manifest::default(),
+            None,
+            &Approvals::default(),
+            &Ledger::default(),
+            &[],
+        )
+        .expect_err("test ISO must be rejected");
+        match err {
+            TrackerError::ValidationError(msg) => {
+                assert!(msg.contains("is a test ISO"), "unexpected msg: {msg}");
+                assert!(
+                    msg.contains("/live/zz-novos-test.squashfs"),
+                    "unexpected msg: {msg}"
+                );
+            }
+            other => panic!("expected ValidationError, got {other:?}"),
+        }
+
+        // Empty squashfs_sha256 -> ValidationError.
+        let empty_sha_identity = IsoIdentity {
+            squashfs_sha256: String::new(),
+            extra_live_layers: Vec::new(),
+        };
+        input.identity = &empty_sha_identity;
+        let err = build_candidate(
+            &input,
+            &Manifest::default(),
+            None,
+            &Approvals::default(),
+            &Ledger::default(),
+            &[],
+        )
+        .expect_err("empty squashfs_sha256 must be rejected");
+        match err {
+            TrackerError::ValidationError(msg) => {
+                assert!(
+                    msg.contains("production filesystem.squashfs sha256 is missing"),
+                    "unexpected msg: {msg}"
+                );
+            }
+            other => panic!("expected ValidationError, got {other:?}"),
+        }
+
+        // Valid production identity -> Created with squashfs_sha256 == "d".repeat(64) surviving write -> read round-trip.
+        input.identity = sample_identity();
+        let CandidateOutcome::Created { candidate, .. } = build_candidate(
+            &input,
+            &Manifest::default(),
+            None,
+            &Approvals::default(),
+            &Ledger::default(),
+            &[],
+        )
+        .expect("production ISO must succeed") else {
+            panic!("expected Created");
+        };
+        assert_eq!(candidate.squashfs_sha256, "d".repeat(64));
+        let tmp = tempdir().expect("tempdir");
+        let cand_path = tmp.path().join("candidate.toml");
+        write_candidate(&cand_path, &candidate).expect("write_candidate");
+        let loaded = read_candidate(&cand_path)
+            .expect("read_candidate")
+            .expect("Some(candidate)");
+        assert_eq!(loaded.squashfs_sha256, "d".repeat(64));
+        assert_eq!(loaded, *candidate);
+    }
+
+    #[test]
+    fn parse_verdict_overlay_handles_valid_null_missing_and_invalid_inputs() {
+        let sha = "d".repeat(64);
+        let valid_json = format!(
+            r#"{{"test_overlay": {{"production_filesystem_squashfs_sha256": "{sha}", "matches_manifest": true}}}}"#
+        );
+        let parsed = parse_verdict_overlay(&valid_json).expect("valid verdict overlay");
+        assert_eq!(
+            parsed,
+            VerdictOverlay {
+                production_filesystem_squashfs_sha256: Some(sha),
+                matches_manifest: Some(true),
+            }
+        );
+
+        assert_eq!(
+            parse_verdict_overlay(r#"{"test_overlay": null}"#).expect("null overlay"),
+            VerdictOverlay::default()
+        );
+        assert_eq!(
+            parse_verdict_overlay(r#"{}"#).expect("missing overlay"),
+            VerdictOverlay::default()
+        );
+
+        let wrong_type = parse_verdict_overlay(
+            r#"{"test_overlay": {"production_filesystem_squashfs_sha256": "", "matches_manifest": "yes"}}"#,
+        )
+        .expect("wrong field types");
+        assert_eq!(
+            wrong_type,
+            VerdictOverlay {
+                production_filesystem_squashfs_sha256: None,
+                matches_manifest: None,
+            }
+        );
+
+        for bad in ["[]", "not json"] {
+            let err = parse_verdict_overlay(bad).expect_err("invalid top-level json");
+            match err {
+                TrackerError::ValidationError(msg) => {
+                    assert!(
+                        msg.starts_with("verdict is not a JSON object:"),
+                        "unexpected msg: {msg}"
+                    );
+                }
+                other => panic!("expected ValidationError, got {other:?}"),
+            }
+        }
     }
 
     fn make_candidate_with_changed(changed_count: usize) -> (Candidate, String, String) {
@@ -1655,14 +1934,16 @@ mod tests {
     #[test]
     fn identity_and_iso_mismatch_checks() {
         let (mut cand, sha, hold_sha) = make_candidate_with_changed(1);
-        let wrong_sha = "b".repeat(64);
+        let wrong_iso_sha = "b".repeat(64);
+        let test_iso_sha = "e".repeat(64);
+        let other_squashfs_sha = "f".repeat(64);
 
         // Build fail with a different iso sha -> accepted.
         let res = apply_phase(
             &mut cand,
             fail_phase_input(
                 Phase::Build,
-                Some(wrong_sha.clone()),
+                Some(wrong_iso_sha.clone()),
                 &hold_sha,
                 Some("component"),
                 Some("build-err"),
@@ -1674,7 +1955,7 @@ mod tests {
         // Build pass with a different iso sha -> IsoMismatch.
         let res = apply_phase(
             &mut cand,
-            pass_phase_input(Phase::Build, Some(wrong_sha.clone()), &hold_sha),
+            pass_phase_input(Phase::Build, Some(wrong_iso_sha), &hold_sha),
         )
         .expect("build pass different iso sha");
         assert!(matches!(
@@ -1685,43 +1966,180 @@ mod tests {
             }
         ));
 
-        // Build pass with None iso sha -> accepted.
+        // Build pass with None iso sha -> accepted (advances build to Pass).
         let res = apply_phase(&mut cand, pass_phase_input(Phase::Build, None, &hold_sha))
             .expect("build pass None iso sha");
         assert!(matches!(res, RecordPhaseResult::Recorded(_)));
 
-        // VM phase with missing iso sha -> IsoMismatch.
-        let res = apply_phase(
-            &mut cand,
-            pass_phase_input(Phase::VmLiveBoot, None, &hold_sha),
-        )
-        .expect("vm phase missing iso sha");
-        assert!(matches!(
-            res,
-            RecordPhaseResult::Refused {
-                reason: RefusalReason::IsoMismatch,
-                ..
+        // VM phase with no claim (None or empty) -> IsoMismatch.
+        for empty_claim in [None, Some(String::new())] {
+            let mut no_claim =
+                pass_phase_input(Phase::VmLiveBoot, Some(test_iso_sha.clone()), &hold_sha);
+            no_claim.overlay_claim = empty_claim;
+            match apply_phase(&mut cand, no_claim).expect("vm phase no claim") {
+                RecordPhaseResult::Refused {
+                    reason: RefusalReason::IsoMismatch,
+                    detail,
+                } => assert!(
+                    detail.contains("overlay claim"),
+                    "unexpected detail: {detail}"
+                ),
+                other => panic!("expected IsoMismatch, got {other:?}"),
             }
-        ));
+        }
 
-        // VM phase with different iso sha -> IsoMismatch.
-        let res = apply_phase(
-            &mut cand,
-            pass_phase_input(Phase::VmLiveBoot, Some(wrong_sha), &hold_sha),
-        )
-        .expect("vm phase wrong iso sha");
-        assert!(matches!(
-            res,
+        // VM phase with a claim for another squashfs -> IsoMismatch.
+        let mut wrong_claim =
+            pass_phase_input(Phase::VmLiveBoot, Some(test_iso_sha.clone()), &hold_sha);
+        wrong_claim.overlay_claim = Some(other_squashfs_sha.clone());
+        match apply_phase(&mut cand, wrong_claim).expect("vm phase wrong claim") {
             RecordPhaseResult::Refused {
                 reason: RefusalReason::IsoMismatch,
-                ..
+                detail,
+            } => assert!(
+                detail.contains("test ISO was derived from production squashfs"),
+                "unexpected detail: {detail}"
+            ),
+            other => panic!("expected IsoMismatch, got {other:?}"),
+        }
+
+        // VM pass with no measurement -> IsoMismatch.
+        let mut pass_no_meas =
+            pass_phase_input(Phase::VmLiveBoot, Some(test_iso_sha.clone()), &hold_sha);
+        pass_no_meas
+            .verdict_overlay
+            .production_filesystem_squashfs_sha256 = None;
+        match apply_phase(&mut cand, pass_no_meas).expect("vm pass no measurement") {
+            RecordPhaseResult::Refused {
+                reason: RefusalReason::IsoMismatch,
+                detail,
+            } => assert!(
+                detail.contains("needs the guest measurement"),
+                "unexpected detail: {detail}"
+            ),
+            other => panic!("expected IsoMismatch, got {other:?}"),
+        }
+
+        // VM pass with matches_manifest: Some(false) -> IsoMismatch.
+        let mut pass_false_manifest =
+            pass_phase_input(Phase::VmLiveBoot, Some(test_iso_sha.clone()), &hold_sha);
+        pass_false_manifest.verdict_overlay.matches_manifest = Some(false);
+        match apply_phase(&mut cand, pass_false_manifest).expect("vm pass false manifest") {
+            RecordPhaseResult::Refused {
+                reason: RefusalReason::IsoMismatch,
+                detail,
+            } => assert!(
+                detail.contains("does not match the test ISO's overlay.json"),
+                "unexpected detail: {detail}"
+            ),
+            other => panic!("expected IsoMismatch, got {other:?}"),
+        }
+
+        // VM fail with matches_manifest: Some(false) (even without measurement) -> IsoMismatch.
+        let mut fail_false_manifest = fail_phase_input(
+            Phase::VmLiveBoot,
+            Some(test_iso_sha.clone()),
+            &hold_sha,
+            Some("component"),
+            Some("boot-fail"),
+        );
+        fail_false_manifest.verdict_overlay = VerdictOverlay {
+            production_filesystem_squashfs_sha256: None,
+            matches_manifest: Some(false),
+        };
+        match apply_phase(&mut cand, fail_false_manifest).expect("vm fail false manifest") {
+            RecordPhaseResult::Refused {
+                reason: RefusalReason::IsoMismatch,
+                detail,
+            } => assert!(
+                detail.contains("does not match the test ISO's overlay.json"),
+                "unexpected detail: {detail}"
+            ),
+            other => panic!("expected IsoMismatch, got {other:?}"),
+        }
+
+        // VM pass with matches_manifest: None -> IsoMismatch.
+        let mut pass_none_manifest =
+            pass_phase_input(Phase::VmLiveBoot, Some(test_iso_sha.clone()), &hold_sha);
+        pass_none_manifest.verdict_overlay.matches_manifest = None;
+        match apply_phase(&mut cand, pass_none_manifest).expect("vm pass none manifest") {
+            RecordPhaseResult::Refused {
+                reason: RefusalReason::IsoMismatch,
+                detail,
+            } => assert!(
+                detail.contains("matches_manifest = true"),
+                "unexpected detail: {detail}"
+            ),
+            other => panic!("expected IsoMismatch, got {other:?}"),
+        }
+
+        // VM fail with a mismatched measurement -> IsoMismatch.
+        let mut fail_bad_meas = fail_phase_input(
+            Phase::VmLiveBoot,
+            Some(test_iso_sha.clone()),
+            &hold_sha,
+            Some("component"),
+            Some("boot-fail"),
+        );
+        fail_bad_meas
+            .verdict_overlay
+            .production_filesystem_squashfs_sha256 = Some(other_squashfs_sha);
+        match apply_phase(&mut cand, fail_bad_meas).expect("vm fail mismatched measurement") {
+            RecordPhaseResult::Refused {
+                reason: RefusalReason::IsoMismatch,
+                detail,
+            } => assert!(
+                detail.contains("guest measured production squashfs"),
+                "unexpected detail: {detail}"
+            ),
+            other => panic!("expected IsoMismatch, got {other:?}"),
+        }
+
+        // VM fail with the claim and no measurement -> Recorded FAIL_UNCONFIRMED.
+        let mut fail_no_meas = fail_phase_input(
+            Phase::VmLiveBoot,
+            Some(test_iso_sha.clone()),
+            &hold_sha,
+            Some("component"),
+            Some("early-boot-fail"),
+        );
+        fail_no_meas.verdict_overlay = VerdictOverlay::default();
+        let res =
+            apply_phase(&mut cand, fail_no_meas).expect("vm fail with claim and no measurement");
+        match res {
+            RecordPhaseResult::Recorded(outcome) => {
+                assert_eq!(outcome.status, "FAIL_UNCONFIRMED");
             }
-        ));
+            other => panic!("expected Recorded(FAIL_UNCONFIRMED), got {other:?}"),
+        }
+        let rec_fail = cand.history.last().expect("fail record");
+        assert_eq!(rec_fail.iso_sha256, test_iso_sha);
+        assert_eq!(rec_fail.overlay_claim, SAMPLE_SQUASHFS_SHA);
+        assert_eq!(rec_fail.squashfs_sha256, "");
+
+        // VM pass with a different test-ISO iso_sha256 but matching claim + measurement -> Recorded PASS;
+        // history keeps that iso sha, the claim and the measurement.
+        let res = apply_phase(
+            &mut cand,
+            pass_phase_input(Phase::VmLiveBoot, Some(test_iso_sha.clone()), &hold_sha),
+        )
+        .expect("vm pass with test iso sha");
+        match res {
+            RecordPhaseResult::Recorded(outcome) => {
+                assert_eq!(outcome.status, "PASS");
+                assert!(outcome.flaked);
+            }
+            other => panic!("expected Recorded(PASS), got {other:?}"),
+        }
+        let rec_pass = cand.history.last().expect("pass record");
+        assert_eq!(rec_pass.iso_sha256, test_iso_sha);
+        assert_eq!(rec_pass.overlay_claim, SAMPLE_SQUASHFS_SHA);
+        assert_eq!(rec_pass.squashfs_sha256, SAMPLE_SQUASHFS_SHA);
 
         // Different hold_file_sha256 -> InputsMismatch.
         let res = apply_phase(
             &mut cand,
-            pass_phase_input(Phase::VmLiveBoot, Some(sha.clone()), "wrong-hold-sha"),
+            pass_phase_input(Phase::VmInstallE2e, Some(sha.clone()), "wrong-hold-sha"),
         )
         .expect("wrong hold_file_sha256");
         match res {
@@ -1733,7 +2151,7 @@ mod tests {
         }
 
         // Different snapshot -> InputsMismatch.
-        let mut bad_snap = pass_phase_input(Phase::VmLiveBoot, Some(sha.clone()), &hold_sha);
+        let mut bad_snap = pass_phase_input(Phase::VmInstallE2e, Some(sha.clone()), &hold_sha);
         bad_snap.snapshot = "20261001T000000Z".to_string();
         match apply_phase(&mut cand, bad_snap).expect("wrong snapshot") {
             RecordPhaseResult::Refused {
@@ -1744,7 +2162,7 @@ mod tests {
         }
 
         // Different repo_head -> InputsMismatch.
-        let mut bad_head = pass_phase_input(Phase::VmLiveBoot, Some(sha), &hold_sha);
+        let mut bad_head = pass_phase_input(Phase::VmInstallE2e, Some(sha), &hold_sha);
         bad_head.repo_head = "00001111".to_string();
         match apply_phase(&mut cand, bad_head).expect("wrong repo_head") {
             RecordPhaseResult::Refused {
