@@ -19,6 +19,8 @@ pub mod promote;
 pub mod records;
 pub mod repo_invariants;
 pub mod rootfs;
+pub mod selftest;
+pub mod status;
 pub mod variance;
 
 use serde::{Deserialize, Serialize};
