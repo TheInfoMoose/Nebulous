@@ -13,6 +13,7 @@ pub mod iso;
 pub mod ledger;
 pub mod loopstate;
 pub mod manifest;
+pub mod promote;
 pub mod records;
 pub mod repo_invariants;
 pub mod rootfs;
