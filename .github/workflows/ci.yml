@@ -17,6 +17,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Neutrality check (no distro-specific names)
+        run: bash scripts/check-neutral.sh
+
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
