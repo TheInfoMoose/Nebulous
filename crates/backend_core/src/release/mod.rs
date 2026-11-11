@@ -9,6 +9,7 @@ pub mod debver;
 pub mod gate;
 pub mod golden;
 pub mod holds;
+pub mod import;
 pub mod inventory;
 pub mod iso;
 pub mod ledger;

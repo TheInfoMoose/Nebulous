@@ -192,7 +192,8 @@ pub fn load_config(paths: &ReleasePaths) -> Result<ReleaseConfig> {
     Ok(cfg)
 }
 
-fn validate_config(cfg: &ReleaseConfig, path: &Path) -> Result<()> {
+/// Validates that unrelaxable forward-only guardrails and agent markers have not been weakened.
+pub fn validate_config(cfg: &ReleaseConfig, path: &Path) -> Result<()> {
     let relaxed = |key: &str| {
         TrackerError::ValidationError(format!(
             "release guardrail {key} is relaxed in {}; the forward-only policy cannot be changed",
@@ -220,6 +221,17 @@ fn validate_config(cfg: &ReleaseConfig, path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Validates and renders `cfg` as a commented `.tracker/release/config.toml` document.
+pub fn render_config(cfg: &ReleaseConfig) -> Result<String> {
+    validate_config(cfg, Path::new("config.toml"))?;
+    let body = toml::to_string(cfg)?;
+    Ok(format!(
+        "# NovOS release configuration (.tracker/release/config.toml)\n\
+         # Written by neb release import; edit by hand afterwards. The forward-only guardrails cannot be relaxed.\n\n\
+         {body}"
+    ))
 }
 
 #[cfg(test)]
@@ -395,5 +407,22 @@ loop_max_retries_hard_stop = 5
                 "CI",
             ]
         );
+    }
+
+    #[test]
+    fn render_config_round_trips_and_rejects_relaxed_guardrails() {
+        let default_cfg = ReleaseConfig::default();
+        let rendered = render_config(&default_cfg).expect("render default config");
+        assert!(rendered.starts_with(
+            "# NovOS release configuration (.tracker/release/config.toml)\n\
+             # Written by neb release import; edit by hand afterwards. The forward-only guardrails cannot be relaxed.\n"
+        ));
+        let parsed: ReleaseConfig = toml::from_str(&rendered).expect("parse rendered config");
+        assert_eq!(parsed, default_cfg);
+
+        let mut relaxed = ReleaseConfig::default();
+        relaxed.guardrails.allow_package_removal = true;
+        let err = render_config(&relaxed).expect_err("allow_package_removal = true must fail");
+        assert!(matches!(err, TrackerError::ValidationError(_)));
     }
 }
