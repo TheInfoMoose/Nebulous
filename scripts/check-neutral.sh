@@ -19,8 +19,6 @@ while read -r count path; do
   ALLOWLIST["$path"]="$count"
   total_allowlisted_lines=$((total_allowlisted_lines + count))
 done <<'EOF'
-2 README.md
-14 docs/USAGE.md
 8 crates/backend_core/src/lib.rs
 7 crates/backend_core/src/mcp/mod.rs
 2 crates/backend_core/src/models/component.rs
@@ -47,6 +45,7 @@ fi
 failed=0
 
 for file in "${files[@]}"; do
+  if [[ ! -f "$file" ]]; then echo "${file}: no such file" >&2; failed=1; continue; fi
   n="$(grep -ciIE "$PATTERN" "$file" || true)"
   if [[ -v ALLOWLIST["$file"] ]]; then
     m="${ALLOWLIST["$file"]}"

@@ -82,13 +82,13 @@ Nebulous tracks registered workspaces in `<config_dir>/nebulous/projects.toml` (
 neb project list
 
 # Register a project directory (initializes .tracker/ if needed and sets it active)
-neb project add /path/to/repo --name "NovOS" --tags os,debian-sid,xanmod
+neb project add /path/to/repo --name "Orbit" --tags os,rolling,custom-kernel
 
 # Switch the active project by ID, name, or path
-neb project switch "NovOS"
+neb project switch "Orbit"
 
 # Remove a project from the global registry (does not delete its .tracker/ directory)
-neb project remove "NovOS"
+neb project remove "Orbit"
 ```
 
 ---
@@ -117,26 +117,26 @@ neb component show iso
 
 # Initialize or update a nebulous.component.toml in an un-manifested directory
 neb component init iso \
-  --id novos_iso \
-  --name "NovOS Live ISO" \
+  --id orbit_image \
+  --name "Orbit Live Image" \
   --type os_image \
-  --stack debian-sid,xanmod,live-build \
+  --stack rolling-base,custom-kernel,image-builder \
   --tags boot,iso \
-  --flags "--arch=amd64,--flavour=xanmod"
+  --flags "--arch=amd64,--flavour=rt"
 
 # Pin the current known-good Git commit, build script, flags, and package versions
-neb component pin novos_iso \
+neb component pin orbit_image \
   --script scripts/build_iso.sh \
-  --flags "--arch=amd64,--flavour=xanmod" \
-  --dep linux-xanmod-x64v3=6.11.6-x64v3-xanmod1,systemd=256.7-1
+  --flags "--arch=amd64,--flavour=rt" \
+  --dep linux-image-rt=6.11.6-rt1,systemd=256.7-1
 
-# Roll back to the last_known_good pin when an upstream Sid/XanMod update breaks the build
-neb component rollback novos_iso \
+# Roll back to the last_known_good pin when an upstream rolling update breaks the build
+neb component rollback orbit_image \
   --item BUG-0001 \
-  --reason "Kernel 6.12-rc1 broke initramfs ZFS module compile in QEMU check"
+  --reason "Kernel 6.12-rc1 broke initramfs ZFS module compile in the VM boot check"
 
 # Promote an ingested component into a Tier 3 Domain Scope (automatically mirrored across stages)
-neb component promote novos_iso --scope novos_iso
+neb component promote orbit_image --scope orbit_image
 ```
 
 ---

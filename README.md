@@ -4,7 +4,7 @@
 [![Release](https://github.com/theinfomoose/Nebulous/actions/workflows/release.yml/badge.svg)](https://github.com/theinfomoose/Nebulous/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Nebulous** is a CLI-first, local-first, Git-backed 4-tier project, bug, and release-engineering tracker built in Rust for developers, rolling-release OS builders (such as **NovOS**), and AI-assisted coding workflows. It combines an ergonomic zero-ID command-line interface (`neb`), a retro Amber-on-Black CRT phosphor terminal dashboard (`neb` / `neb tui`), and a built-in Model Context Protocol server (`neb mcp`), storing all project state in human-readable TOML manifests and Markdown files inside `.tracker/`.
+**Nebulous** is a CLI-first, local-first, Git-backed 4-tier project, bug, and release-engineering tracker built in Rust for developers, rolling-release OS builders, and AI-assisted coding workflows. It combines an ergonomic zero-ID command-line interface (`neb`), a retro Amber-on-Black CRT phosphor terminal dashboard (`neb` / `neb tui`), and a built-in Model Context Protocol server (`neb mcp`), storing all project state in human-readable TOML manifests and Markdown files inside `.tracker/`.
 
 ---
 
@@ -31,7 +31,7 @@
 - **Two-Stage Directory Ingestion & Rolling-Release Pinning (`nebulous.component.toml`)**:
   - Walks the project tree respecting `.gitignore`, auto-detects ecosystem markers (`Cargo.toml`, `package.json`, `pyproject.toml`, `CMakeLists.txt`, `Makefile`, `Dockerfile`, or `nebulous.component.toml`), snapshots `last_known_good` (`pinned_release`) configurations, and promotes components directly into domain scopes across all stages.
 - **Model Context Protocol Server (`neb mcp`) & Enforced Git Commit Policy**:
-  - Built-in JSON-RPC 2.0 `stdio` MCP server exposing 23 tools across Task & Boundary Management, Project & Component Ingestion, NovOS Self-Healing CI/CD, and Policy-Validated Git Operations.
+  - Built-in JSON-RPC 2.0 `stdio` MCP server exposing 23 tools across Task & Boundary Management, Project & Component Ingestion, Release Engineering & Self-Healing CI/CD, and Policy-Validated Git Operations.
   - Enforced `[git.commit_policy]` formats commits as `[<ITEM_ID>](<scope>) <summary>` and automatically records the commit SHA, date, changed files, and summary into `item.toml` and `desc.md`.
 
 ---
