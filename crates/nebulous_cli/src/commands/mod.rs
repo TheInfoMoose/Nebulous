@@ -18,8 +18,6 @@ use crate::args::{
     TimerCommand,
 };
 
-pub mod release;
-
 /// Executes a parsed [`Cli`] command and prints the resulting output to `stdout`
 /// (or launches the interactive Amber-on-Black TUI when invoked in an interactive terminal).
 pub fn execute(cli: &Cli) -> Result<()> {
