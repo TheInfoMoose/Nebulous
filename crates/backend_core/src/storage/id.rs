@@ -1,7 +1,11 @@
 use std::fs;
 use std::path::Path;
 
+use rand::{rngs::OsRng, RngCore};
+
 use crate::error::{Result, TrackerError};
+use crate::models::item::is_hash_item_id;
+use crate::models::project::IdScheme;
 use crate::models::{ItemManifest, ItemType, ProjectCounters, ScopeManifest};
 use crate::storage::TrackerStorage;
 
@@ -29,6 +33,8 @@ fn record_id_in_counters(counters: &mut ProjectCounters, id: &str) {
         }
     }
 }
+
+pub(crate) const MAX_HASH_ID_ATTEMPTS: u32 = 16;
 
 impl TrackerStorage {
     /// Scans all phases, domain scopes (`scope.toml`), item directory names (`items/<ID>`),
@@ -63,12 +69,40 @@ impl TrackerStorage {
         Ok(counters)
     }
 
-    /// Allocates the next global monotonic item ID (`BUG-XXXX` or `FEAT-XXXX`), reconciling
-    /// `project.toml` `[counters]` against a directory scan safety check and persisting the
-    /// updated counter atomically to `project.toml`.
+    pub(crate) fn allocate_hash_id(
+        &self,
+        item_type: ItemType,
+        mut draw: impl FnMut() -> u32,
+    ) -> Result<String> {
+        for _ in 0..MAX_HASH_ID_ATTEMPTS {
+            let id = item_type.format_hash_id(draw());
+            if !is_hash_item_id(&id) {
+                continue;
+            }
+            match self.locate_item(&id) {
+                Ok(_) => continue,
+                Err(TrackerError::NotFound { .. }) => return Ok(id),
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(TrackerError::ValidationError(format!(
+            "could not allocate a unique hash ID after {MAX_HASH_ID_ATTEMPTS} attempts"
+        )))
+    }
+
+    /// Allocates the next item ID according to the project's [`IdScheme`]:
+    /// - [`IdScheme::Sequential`]: allocates the next global monotonic ID (`BUG-XXXX` or `FEAT-XXXX`),
+    ///   reconciling `project.toml` `[counters]` against a directory scan safety check and persisting
+    ///   the updated counter atomically to `project.toml`.
+    /// - [`IdScheme::Hash`]: draws random 24-bit hash IDs (`BUG-XXXXXX` or `FEAT-XXXXXX`), redrawing
+    ///   all-digit or already-used IDs, and leaves `[counters]` untouched.
     pub fn allocate_next_id(&self, item_type: ItemType) -> Result<String> {
         self.with_write_lock(|_| {
             let mut project = self.read_project()?;
+            if project.project.id_scheme == IdScheme::Hash {
+                return self.allocate_hash_id(item_type, || OsRng.next_u32());
+            }
             let scanned = self.scan_max_counters()?;
 
             project.counters.bug = project.counters.bug.max(scanned.bug);
@@ -168,5 +202,63 @@ fn scan_scope_dir(storage: &TrackerStorage, scope_dir: &Path, counters: &mut Pro
                 record_id_in_counters(counters, &item_manifest.item.id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod hash_id_tests {
+    use super::*;
+
+    #[test]
+    fn allocate_hash_id_redraws_all_digit_and_taken_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = TrackerStorage::init_standard(dir.path(), "hash-test").unwrap();
+        let mut p = storage.read_project().unwrap();
+        p.project.id_scheme = IdScheme::Hash;
+        storage.write_project(&p).unwrap();
+
+        let taken = storage
+            .create_bug("taken", None, None, crate::models::Severity::Medium, None)
+            .unwrap()
+            .0
+            .stub
+            .id;
+        let taken_bits = u32::from_str_radix(&taken[4..], 16).unwrap();
+
+        let scripted = [0x123456, taken_bits, 0x00ABCD];
+        let mut calls = 0usize;
+        let allocated = storage
+            .allocate_hash_id(ItemType::Bug, || {
+                let val = scripted[calls];
+                calls += 1;
+                val
+            })
+            .unwrap();
+
+        assert_eq!(allocated, "BUG-00ABCD");
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn allocate_hash_id_fails_after_max_attempts_on_repeated_invalid_draws() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = TrackerStorage::init_standard(dir.path(), "hash-test").unwrap();
+        let mut p = storage.read_project().unwrap();
+        p.project.id_scheme = IdScheme::Hash;
+        storage.write_project(&p).unwrap();
+
+        let mut calls = 0u32;
+        let err = storage
+            .allocate_hash_id(ItemType::Bug, || {
+                calls += 1;
+                0x111111
+            })
+            .unwrap_err();
+
+        assert_eq!(calls, 16);
+        assert!(
+            matches!(err, TrackerError::ValidationError(ref msg) if msg.contains("16 attempts")),
+            "expected ValidationError after 16 attempts, got {err:?}"
+        );
     }
 }

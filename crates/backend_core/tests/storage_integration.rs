@@ -2528,3 +2528,78 @@ fn reconcile_skips_and_reports_unsupported_item_schema() {
         "skipped item.toml must remain byte-identical after reconcile_indexes"
     );
 }
+
+#[test]
+fn hash_scheme_allocates_unique_hash_ids_and_leaves_counters() {
+    use std::collections::HashSet;
+
+    use backend_core::models::item::is_hash_item_id;
+    use backend_core::models::project::IdScheme;
+
+    let temp = TempTrackerDir::new("hash_scheme_allocates_unique");
+    let storage = TrackerStorage::init_standard(temp.path(), "HashSchemeProject").unwrap();
+
+    let initial_counters = storage.read_project().unwrap().counters;
+    let mut project = storage.read_project().unwrap();
+    project.project.id_scheme = IdScheme::Hash;
+    storage.write_project(&project).unwrap();
+
+    let mut ids = HashSet::new();
+    for idx in 0..200 {
+        let (loc, _) = storage
+            .create_bug(format!("Bug {idx}"), None, None, Severity::Medium, None)
+            .unwrap();
+        let id = loc.stub.id;
+        assert_eq!(id.len(), 10, "expected 10-char ID, got {id}");
+        assert!(id.starts_with("BUG-"), "expected BUG- prefix, got {id}");
+        assert!(
+            id[4..]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b)),
+            "expected uppercase hex suffix, got {id}"
+        );
+        assert!(
+            is_hash_item_id(&id),
+            "expected is_hash_item_id true for {id}"
+        );
+        ids.insert(id);
+    }
+
+    assert_eq!(ids.len(), 200);
+    assert_eq!(storage.read_project().unwrap().counters, initial_counters);
+}
+
+#[test]
+fn sequential_and_hash_ids_coexist() {
+    use backend_core::models::item::is_hash_item_id;
+    use backend_core::models::project::IdScheme;
+
+    let temp = TempTrackerDir::new("sequential_and_hash_coexist");
+    let storage = TrackerStorage::init_standard(temp.path(), "CoexistProject").unwrap();
+
+    let (seq1_loc, _) = storage
+        .create_bug("First sequential bug", None, None, Severity::Medium, None)
+        .unwrap();
+    assert_eq!(seq1_loc.stub.id, "BUG-0001");
+
+    let mut project = storage.read_project().unwrap();
+    project.project.id_scheme = IdScheme::Hash;
+    storage.write_project(&project).unwrap();
+
+    let (hash_loc, _) = storage
+        .create_bug("Hash bug", None, None, Severity::Medium, None)
+        .unwrap();
+    assert!(is_hash_item_id(&hash_loc.stub.id));
+
+    assert!(storage.locate_item(&seq1_loc.stub.id).is_ok());
+    assert!(storage.locate_item(&hash_loc.stub.id).is_ok());
+
+    let mut project = storage.read_project().unwrap();
+    project.project.id_scheme = IdScheme::Sequential;
+    storage.write_project(&project).unwrap();
+
+    let (seq2_loc, _) = storage
+        .create_bug("Second sequential bug", None, None, Severity::Medium, None)
+        .unwrap();
+    assert_eq!(seq2_loc.stub.id, "BUG-0002");
+}
