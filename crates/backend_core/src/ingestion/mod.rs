@@ -1058,7 +1058,7 @@ fn infer_component_type_and_stack(
             .any(|s| s == "node" || s == "typescript" || s == "javascript")
     {
         ComponentType::NodePkg
-    } else if dir_leaf.contains("kernel") || dir_leaf.contains("xanmod") || dir_leaf == "kmod" {
+    } else if dir_leaf.contains("kernel") || dir_leaf == "kmod" {
         ComponentType::KernelModule
     } else if matches!(
         dir_leaf.as_str(),

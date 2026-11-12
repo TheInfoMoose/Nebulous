@@ -835,19 +835,19 @@ fn test_global_project_registry_lifecycle_and_edge_cases() {
     let temp = TempTrackerDir::new("global_registry");
     let cfg_dir = temp.path().join("config");
     let proj_a_dir = temp.path().join("Nebulous");
-    let proj_b_dir = temp.path().join("NovOS");
-    let proj_c_dir = temp.path().join("NovOS_Fork");
+    let proj_b_dir = temp.path().join("Orbit");
+    let proj_c_dir = temp.path().join("Orbit_Fork");
 
     fs::create_dir_all(&proj_a_dir).unwrap();
     fs::create_dir_all(&proj_b_dir).unwrap();
     fs::create_dir_all(&proj_c_dir).unwrap();
 
     TrackerStorage::init(&proj_a_dir, "Nebulous", "01_core", "Core Phase").unwrap();
-    let novos_storage =
-        TrackerStorage::init(&proj_b_dir, "NovOS", "01_sid_base", "Sid Base Phase").unwrap();
-    let mut novos_proj = novos_storage.read_project().unwrap();
-    novos_proj.git.branch = "rolling-sid".to_string();
-    novos_storage.write_project(&novos_proj).unwrap();
+    let orbit_storage =
+        TrackerStorage::init(&proj_b_dir, "Orbit", "01_sid_base", "Sid Base Phase").unwrap();
+    let mut orbit_proj = orbit_storage.read_project().unwrap();
+    orbit_proj.git.branch = "rolling-sid".to_string();
+    orbit_storage.write_project(&orbit_proj).unwrap();
 
     // 1. Loading before projects.toml exists returns an empty default registry
     let initial = load_global_registry_from(&cfg_dir).expect("should load empty default registry");
@@ -881,29 +881,29 @@ fn test_global_project_registry_lifecycle_and_edge_cases() {
     );
     assert_eq!(loaded_after_a.projects.len(), 1);
 
-    // 3. Register second project (NovOS) with set_active = true
+    // 3. Register second project (Orbit) with set_active = true
     let reg_b = register_project_in(
         &cfg_dir,
         &proj_b_dir,
         None,
-        vec!["distro".to_string(), "debian_sid".to_string()],
+        vec!["distro".to_string(), "rolling_base".to_string()],
         true,
     )
-    .expect("should register NovOS");
-    assert_eq!(reg_b.id, "novos");
+    .expect("should register Orbit");
+    assert_eq!(reg_b.id, "orbit");
     assert_eq!(reg_b.default_branch, "rolling-sid");
     assert_eq!(reg_b.active_phase.as_deref(), Some("01_sid_base"));
 
-    // 4. Register third project with conflicting name "NovOS" at a different path -> gets id "novos_2"
+    // 4. Register third project with conflicting name "Orbit" at a different path -> gets id "orbit_2"
     let reg_c = register_project_in(
         &cfg_dir,
         &proj_c_dir,
-        Some("NovOS"),
+        Some("Orbit"),
         vec!["experimental".to_string()],
         false,
     )
-    .expect("should register second NovOS project with disambiguated id");
-    assert_eq!(reg_c.id, "novos_2");
+    .expect("should register second Orbit project with disambiguated id");
+    assert_eq!(reg_c.id, "orbit_2");
 
     // 5. Re-registering proj_a_dir updates existing entry in place without creating duplicates
     let reg_a_updated = register_project_in(
@@ -920,7 +920,7 @@ fn test_global_project_registry_lifecycle_and_edge_cases() {
 
     let reg_state = load_global_registry_from(&cfg_dir).unwrap();
     assert_eq!(reg_state.projects.len(), 3);
-    assert_eq!(reg_state.active_project_id.as_deref(), Some("novos"));
+    assert_eq!(reg_state.active_project_id.as_deref(), Some("orbit"));
 
     // 6. Switch active project by name or ID
     let switched = set_active_project_in(&cfg_dir, "Nebulous Core").unwrap();
@@ -928,12 +928,12 @@ fn test_global_project_registry_lifecycle_and_edge_cases() {
     let reg_state = load_global_registry_from(&cfg_dir).unwrap();
     assert_eq!(reg_state.active_project_id.as_deref(), Some("nebulous"));
 
-    // 7. Remove active project ("nebulous") -> active_project_id falls back to first remaining ("novos")
+    // 7. Remove active project ("nebulous") -> active_project_id falls back to first remaining ("orbit")
     let removed = remove_project_in(&cfg_dir, "nebulous").unwrap();
     assert_eq!(removed.id, "nebulous");
     let reg_state = load_global_registry_from(&cfg_dir).unwrap();
     assert_eq!(reg_state.projects.len(), 2);
-    assert_eq!(reg_state.active_project_id.as_deref(), Some("novos"));
+    assert_eq!(reg_state.active_project_id.as_deref(), Some("orbit"));
 
     // 8. Round-trip TOML serialization of GlobalProjectRegistry
     let raw_toml = reg_state.to_toml_string().unwrap();
@@ -1055,12 +1055,12 @@ fn test_two_stage_directory_ingestion_gitignore_filtering_and_scope_promotion() 
     // 4. Un-manifested top-level functional directories: `scripts/`, `iso/`, `config/`
     fs::create_dir_all(root.join("scripts")).unwrap();
     fs::write(root.join("scripts/build-iso.sh"), "#!/usr/bin/env bash\n").unwrap();
-    fs::write(root.join("scripts/verify-qemu.sh"), "#!/usr/bin/env bash\n").unwrap();
+    fs::write(root.join("scripts/verify-virt.sh"), "#!/usr/bin/env bash\n").unwrap();
 
     fs::create_dir_all(root.join("iso")).unwrap();
     fs::write(
         root.join("iso/packages.sid.list"),
-        "systemd\nlinux-image-xanmod\n",
+        "systemd\nlinux-image-custom\n",
     )
     .unwrap();
 
@@ -1133,7 +1133,7 @@ fn test_two_stage_directory_ingestion_gitignore_filtering_and_scope_promotion() 
         scripts_comp.files,
         vec![
             "scripts/build-iso.sh".to_string(),
-            "scripts/verify-qemu.sh".to_string(),
+            "scripts/verify-virt.sh".to_string(),
         ]
     );
     assert!(root
@@ -1197,20 +1197,20 @@ fn test_two_stage_directory_ingestion_gitignore_filtering_and_scope_promotion() 
 }
 
 #[test]
-fn test_novos_component_manifest_pinning_rolling_updates_and_rollback() {
+fn test_orbit_component_manifest_pinning_rolling_updates_and_rollback() {
     use backend_core::{
         ComponentDependency, ComponentManifest, IngestionOptions, RollingUpdateEntry,
         VerificationRecord,
     };
 
-    let temp = TempTrackerDir::new("novos_pinning");
+    let temp = TempTrackerDir::new("orbit_pinning");
     let root = temp.path();
 
     let storage = TrackerStorage::init(
         root,
-        "NovOS",
+        "Orbit",
         "01_rolling_sid",
-        "Debian Sid & XanMod Rolling Release",
+        "Orbit Base & Custom Rolling Release",
     )
     .unwrap();
 
@@ -1218,58 +1218,58 @@ fn test_novos_component_manifest_pinning_rolling_updates_and_rollback() {
     fs::write(root.join("iso/live-build.sh"), "#!/usr/bin/env bash\n").unwrap();
     fs::write(
         root.join("iso/packages.list"),
-        "linux-image-xanmod\nsystemd\n",
+        "linux-image-custom\nsystemd\n",
     )
     .unwrap();
 
-    // 1. Author a `nebulous.component.toml` for NovOS ISO image tracking Debian Sid + XanMod kernel
-    let mut novos_iso = ComponentManifest::new("novos_iso", "NovOS Live ISO", "iso", "os_image");
-    novos_iso.tech_stack = vec![
-        "debian_sid".to_string(),
-        "xanmod".to_string(),
+    // 1. Author a `nebulous.component.toml` for Orbit ISO image tracking a rolling base + custom kernel
+    let mut orbit_iso = ComponentManifest::new("orbit_iso", "Orbit Live ISO", "iso", "os_image");
+    orbit_iso.tech_stack = vec![
+        "rolling_base".to_string(),
+        "custom".to_string(),
         "shell".to_string(),
     ];
-    novos_iso.tags = vec!["rolling".to_string(), "bootable".to_string()];
-    novos_iso.flags = vec!["--arch=amd64".to_string(), "--comp=zstd".to_string()];
-    novos_iso.files = vec![
+    orbit_iso.tags = vec!["rolling".to_string(), "bootable".to_string()];
+    orbit_iso.flags = vec!["--arch=amd64".to_string(), "--comp=zstd".to_string()];
+    orbit_iso.files = vec![
         "iso/live-build.sh".to_string(),
         "iso/packages.list".to_string(),
     ];
-    novos_iso.dependencies = vec![
+    orbit_iso.dependencies = vec![
         ComponentDependency::new(
-            "linux-image-6.11-xanmod1",
-            "kernel_xanmod",
+            "linux-image-6.11-custom1",
+            "kernel_custom",
             ">=6.11.0",
-            "6.11.4-xanmod1",
-            "https://deb.xanmod.org",
+            "6.11.4-custom1",
+            "https://packages.example.com/kernel",
         ),
         ComponentDependency::new(
             "systemd",
             "apt_sid",
             ">=256",
             "256.7-1",
-            "http://deb.debian.org/debian sid",
+            "http://packages.example.com/base rolling",
         ),
     ];
 
     let manifest_path = storage
-        .write_component_manifest(&novos_iso)
+        .write_component_manifest(&orbit_iso)
         .expect("should write nebulous.component.toml and sync project.toml");
     assert!(manifest_path.is_file());
 
-    // 2. Pin known-good release (`last_known_good`) after passing QEMU verification
+    // 2. Pin known-good release (`last_known_good`) after passing VM verification
     let initial_verification = VerificationRecord {
         passed: true,
         exit_code: 0,
-        command: "./scripts/verify-qemu.sh --iso build/novos.iso".to_string(),
-        summary: "QEMU UEFI boot + systemd multi-user target reached in 4.2s".to_string(),
-        logs_excerpt: Some("NovOS login: root (automatic login)".to_string()),
+        command: "./scripts/verify-virt.sh --iso build/orbit.iso".to_string(),
+        summary: "VM UEFI boot + systemd multi-user target reached in 4.2s".to_string(),
+        logs_excerpt: Some("Orbit login: root (automatic login)".to_string()),
         verified_at: Some("2026-11-03T12:00:00Z".to_string()),
     };
 
     let pinned_manifest = storage
         .pin_component_release(
-            "novos_iso",
+            "orbit_iso",
             Some("a1b2c3d"),
             Some("iso/live-build.sh".to_string()),
             vec!["--arch=amd64".to_string(), "--comp=zstd".to_string()],
@@ -1285,9 +1285,9 @@ fn test_novos_component_manifest_pinning_rolling_updates_and_rollback() {
     assert_eq!(pin.build_script_path.as_deref(), Some("iso/live-build.sh"));
     assert_eq!(
         pin.dependency_pins
-            .get("linux-image-6.11-xanmod1")
+            .get("linux-image-6.11-custom1")
             .map(String::as_str),
-        Some("6.11.4-xanmod1")
+        Some("6.11.4-custom1")
     );
     assert_eq!(
         pin.dependency_pins.get("systemd").map(String::as_str),
@@ -1295,45 +1295,45 @@ fn test_novos_component_manifest_pinning_rolling_updates_and_rollback() {
     );
     assert!(pin.last_verification_run.as_ref().unwrap().passed);
 
-    // 3. Simulate an upstream rolling update bumping XanMod kernel to 6.11.8-xanmod1
+    // 3. Simulate an upstream rolling update bumping custom kernel to 6.11.8-custom1
     let updated_manifest = storage
         .record_component_rolling_update(
-            "novos_iso",
+            "orbit_iso",
             RollingUpdateEntry {
-                dependency_name: "linux-image-6.11-xanmod1".to_string(),
-                kind: "kernel_xanmod".to_string(),
+                dependency_name: "linux-image-6.11-custom1".to_string(),
+                kind: "kernel_custom".to_string(),
                 previous_version: None,
-                new_version: "6.11.8-xanmod1".to_string(),
-                upstream_source: Some("https://deb.xanmod.org".to_string()),
+                new_version: "6.11.8-custom1".to_string(),
+                upstream_source: Some("https://packages.example.com/kernel".to_string()),
                 build_script_path: Some("iso/live-build.sh".to_string()),
                 tracked_item_id: Some("BUG-0001".to_string()),
                 status: "pending".to_string(),
                 recorded_at: Some("2026-11-03T13:00:00Z".to_string()),
-                summary: Some("Bump XanMod kernel to 6.11.8-xanmod1".to_string()),
+                summary: Some("Bump custom kernel to 6.11.8-custom1".to_string()),
                 verification_run: None,
             },
         )
         .expect("should record rolling update");
     assert_eq!(
         updated_manifest.dependencies[0].current_version,
-        "6.11.8-xanmod1"
+        "6.11.8-custom1"
     );
     assert_eq!(
         updated_manifest.rolling_updates[0]
             .previous_version
             .as_deref(),
-        Some("6.11.4-xanmod1")
+        Some("6.11.4-custom1")
     );
 
-    // 4. Record a failed QEMU verification run for the rolling update
+    // 4. Record a failed VM verification run for the rolling update
     let after_fail = storage
         .record_component_verification(
-            "novos_iso",
+            "orbit_iso",
             VerificationRecord {
                 passed: false,
                 exit_code: 1,
-                command: "./scripts/verify-qemu.sh --iso build/novos.iso".to_string(),
-                summary: "Initramfs dracut module missing for 6.11.8-xanmod1".to_string(),
+                command: "./scripts/verify-virt.sh --iso build/orbit.iso".to_string(),
+                summary: "Initramfs dracut module missing for 6.11.8-custom1".to_string(),
                 logs_excerpt: Some(
                     "Kernel panic - not syncing: VFS: Unable to mount root fs".to_string(),
                 ),
@@ -1356,11 +1356,11 @@ fn test_novos_component_manifest_pinning_rolling_updates_and_rollback() {
 
     // 5. Roll back to `last_known_good` pin
     let rolled_back = storage
-        .rollback_component_to_pinned("novos_iso")
+        .rollback_component_to_pinned("orbit_iso")
         .expect("should roll back component to pinned_release");
     assert_eq!(
         rolled_back.dependencies[0].current_version,
-        "6.11.4-xanmod1"
+        "6.11.4-custom1"
     );
     assert_eq!(rolled_back.rolling_updates[0].status, "rolled_back");
 
@@ -1373,8 +1373,8 @@ fn test_novos_component_manifest_pinning_rolling_updates_and_rollback() {
     let reingested_iso = reingest
         .components
         .iter()
-        .find(|c| c.id == "novos_iso")
-        .expect("should find novos_iso component");
+        .find(|c| c.id == "orbit_iso")
+        .expect("should find orbit_iso component");
     assert_eq!(reingested_iso.dependencies.len(), 2);
     assert!(reingested_iso.pinned_release.is_some());
     assert_eq!(reingested_iso.rolling_updates.len(), 1);
@@ -1391,7 +1391,7 @@ fn test_novos_component_manifest_pinning_rolling_updates_and_rollback() {
     assert!(storage
         .promote_component_to_scope(
             None,
-            "novos_iso",
+            "orbit_iso",
             None,
             Some(vec!["../escape_file.sh".to_string()]),
         )
@@ -1483,21 +1483,21 @@ fn test_component_manifest_table_header_merges_top_level_sections() {
 
     let raw = r#"
 [component]
-id = "novos_kernel"
-name = "NovOS XanMod Kernel"
+id = "orbit_kernel"
+name = "Orbit Custom Kernel"
 path = "kernel"
 type = "kernel_module"
 tech_stack = ["c_cpp", "kbuild"]
-tags = ["xanmod", "sid"]
+tags = ["custom", "sid"]
 flags = ["LLVM=1"]
 files = ["kernel/Kconfig", "kernel/Makefile"]
 
 [[dependencies]]
-name = "linux-source-6.11-xanmod1"
-kind = "kernel_xanmod"
+name = "linux-source-6.11-custom1"
+kind = "kernel_custom"
 version_constraint = ">=6.11.0"
-current_version = "6.11.4-xanmod1"
-upstream_source = "https://deb.xanmod.org"
+current_version = "6.11.4-custom1"
+upstream_source = "https://packages.example.com/kernel"
 
 [last_known_good]
 commit_sha = "deadbeef"
@@ -1506,23 +1506,23 @@ build_script_path = "kernel/build.sh"
 build_flags = ["LLVM=1", "-j16"]
 
 [last_known_good.dependency_pins]
-linux-source-6.11-xanmod1 = "6.11.4-xanmod1"
+linux-source-6.11-custom1 = "6.11.4-custom1"
 
 [[rolling_updates]]
-name = "linux-source-6.11-xanmod1"
-kind = "kernel_xanmod"
-from_version = "6.11.4-xanmod1"
-to_version = "6.11.8-xanmod1"
+name = "linux-source-6.11-custom1"
+kind = "kernel_custom"
+from_version = "6.11.4-custom1"
+to_version = "6.11.8-custom1"
 status = "passed"
 "#;
 
     let parsed = ComponentManifest::from_toml_str(raw)
         .expect("should parse [component]-wrapped manifest with top-level sections");
-    assert_eq!(parsed.id, "novos_kernel");
+    assert_eq!(parsed.id, "orbit_kernel");
     assert_eq!(parsed.relative_path, "kernel");
     assert_eq!(parsed.component_type, "kernel_module");
     assert_eq!(parsed.dependencies.len(), 1);
-    assert_eq!(parsed.dependencies[0].name, "linux-source-6.11-xanmod1");
+    assert_eq!(parsed.dependencies[0].name, "linux-source-6.11-custom1");
     let pin = parsed
         .pinned_release
         .as_ref()
@@ -1530,19 +1530,19 @@ status = "passed"
     assert_eq!(pin.commit_sha, "deadbeef");
     assert_eq!(
         pin.dependency_pins
-            .get("linux-source-6.11-xanmod1")
+            .get("linux-source-6.11-custom1")
             .map(String::as_str),
-        Some("6.11.4-xanmod1")
+        Some("6.11.4-custom1")
     );
     assert_eq!(parsed.rolling_updates.len(), 1);
-    assert_eq!(parsed.rolling_updates[0].new_version, "6.11.8-xanmod1");
+    assert_eq!(parsed.rolling_updates[0].new_version, "6.11.8-custom1");
 
     // Verify that when `[component]` is present and invalid inside a nested section,
     // `from_toml_str` returns the `WrappedComponent` error rather than `missing field id`.
     let invalid_wrapped = r#"
 [component]
-id = "novos_kernel"
-name = "NovOS XanMod Kernel"
+id = "orbit_kernel"
+name = "Orbit Custom Kernel"
 
 [last_known_good.dependency_pins]
 bad_pin = ["not", "a", "string"]
@@ -1561,7 +1561,7 @@ fn test_write_component_manifest_auto_populates_files_and_reingest_prunes_delete
     let temp = TempTrackerDir::new("auto_files_and_prune");
     let root = temp.path();
 
-    let storage = TrackerStorage::init(root, "NovOS", "01_init", "Init Phase").unwrap();
+    let storage = TrackerStorage::init(root, "Orbit", "01_init", "Init Phase").unwrap();
     fs::write(root.join(".gitignore"), "*.bak\n").unwrap();
 
     fs::create_dir_all(root.join("scripts")).unwrap();
@@ -1766,20 +1766,20 @@ fn test_container_sibling_dirs_id_stability_subpath_and_hand_edited_manifests() 
         vec!["packages/live_hooks/01-setup.sh".to_string()]
     );
 
-    // 3. Subpath ingestion on a nested un-manifested directory (`scripts/qemu`)
-    fs::create_dir_all(root.join("scripts/qemu")).unwrap();
+    // 3. Subpath ingestion on a nested un-manifested directory (`scripts/virt`)
+    fs::create_dir_all(root.join("scripts/virt")).unwrap();
     fs::write(
-        root.join("scripts/qemu/boot_check.sh"),
+        root.join("scripts/virt/boot_check.sh"),
         "#!/usr/bin/env bash\n",
     )
     .unwrap();
 
     let sub_rep = storage
-        .ingest_project_directory(IngestionOptions::new().with_subpath("scripts/qemu"))
+        .ingest_project_directory(IngestionOptions::new().with_subpath("scripts/virt"))
         .unwrap();
     assert_eq!(sub_rep.components.len(), 1);
-    assert_eq!(sub_rep.components[0].relative_path, "scripts/qemu");
-    assert_eq!(sub_rep.components[0].id, "qemu");
+    assert_eq!(sub_rep.components[0].relative_path, "scripts/virt");
+    assert_eq!(sub_rep.components[0].id, "virt");
 
     // 4. Hand-edited `iso/nebulous.component.toml` omitting `id` and `path`, with unquoted TOML
     // datetimes and `[last_known_good]` / `dependency_versions` / `verification_status` aliases
@@ -1787,15 +1787,15 @@ fn test_container_sibling_dirs_id_stability_subpath_and_hand_edited_manifests() 
     fs::write(root.join("iso/build.sh"), "#!/bin/sh\n").unwrap();
     let hand_edited_toml = r#"
 [component]
-name = "NovOS Live ISO"
+name = "Orbit Live ISO"
 type = "os_image"
 
 [[dependencies]]
-package = "linux-image-xanmod"
-channel = "kernel_xanmod"
+package = "linux-image-custom"
+channel = "kernel_custom"
 constraint = ">=6.11"
-version = "6.11.4-xanmod1"
-source = "https://deb.xanmod.org"
+version = "6.11.4-custom1"
+source = "https://packages.example.com/kernel"
 
 [last_known_good]
 commit_sha = "abc1234"
@@ -1803,20 +1803,20 @@ pinned_at = 2026-11-03T14:30:00Z
 build_flags = ["--uefi"]
 
 [last_known_good.dependency_versions]
-linux-image-xanmod = "6.11.4-xanmod1"
+linux-image-custom = "6.11.4-custom1"
 
 [last_known_good.verification_status]
 passed = true
 exit_code = 0
-command = "qemu-system-x86_64"
+command = "virt-system-x86_64"
 summary = "Booted cleanly"
 verified_at = 2026-11-03T14:29:00Z
 
 [[rolling_updates]]
-package = "linux-image-xanmod"
-kind = "kernel_xanmod"
-from_version = "6.11.2-xanmod1"
-to_version = "6.11.4-xanmod1"
+package = "linux-image-custom"
+kind = "kernel_custom"
+from_version = "6.11.2-custom1"
+to_version = "6.11.4-custom1"
 status = "passed"
 recorded_at = 2026-11-03T14:25:00Z
 "#;
@@ -1826,12 +1826,12 @@ recorded_at = 2026-11-03T14:25:00Z
     )
     .unwrap();
 
-    // Reading directly by relative directory path (`"iso"`) before ingestion must populate `id = "novos_live_iso"`
+    // Reading directly by relative directory path (`"iso"`) before ingestion must populate `id = "orbit_live_iso"`
     // and `relative_path = "iso"` (not `"."`) and parse unquoted TOML timestamps!
     let direct_iso = storage
         .read_component_manifest("iso")
         .expect("should read hand-edited iso/nebulous.component.toml");
-    assert_eq!(direct_iso.id, "novos_live_iso");
+    assert_eq!(direct_iso.id, "orbit_live_iso");
     assert_eq!(direct_iso.relative_path, "iso");
     assert_eq!(direct_iso.files, vec!["iso/build.sh".to_string()]);
     let pin = direct_iso.pinned_release.as_ref().unwrap();

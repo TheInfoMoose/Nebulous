@@ -19,8 +19,6 @@ while read -r count path; do
   ALLOWLIST["$path"]="$count"
   total_allowlisted_lines=$((total_allowlisted_lines + count))
 done <<'EOF'
-1 crates/backend_core/src/ingestion/mod.rs
-105 crates/backend_core/tests/storage_integration.rs
 2 crates/nebulous_cli/src/lib.rs
 41 crates/nebulous_cli/tests/cli_integration.rs
 EOF
