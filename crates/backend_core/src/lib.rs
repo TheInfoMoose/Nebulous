@@ -480,7 +480,7 @@ bug = -1
             .store_secret("project:nebulous:pat", "ghp_vault_token_abc987")
             .expect("should store PAT in encrypted vault");
         storage
-            .store_secret("project:novos:pat", "glpat_novos_rolling_token")
+            .store_secret("project:orbit:pat", "glpat_orbit_rolling_token")
             .expect("should store second PAT in encrypted vault");
 
         assert!(storage.vault_path().is_file());
@@ -515,15 +515,15 @@ bug = -1
         );
         assert_eq!(
             reopened
-                .get_secret_string("project:novos:pat")
+                .get_secret_string("project:orbit:pat")
                 .expect("should decrypt second PAT"),
-            "glpat_novos_rolling_token"
+            "glpat_orbit_rolling_token"
         );
         assert_eq!(
             reopened.list_vault_keys().unwrap(),
             vec![
                 "project:nebulous:pat".to_string(),
-                "project:novos:pat".to_string()
+                "project:orbit:pat".to_string()
             ]
         );
 
@@ -533,7 +533,7 @@ bug = -1
             .expect("should delete secret");
         assert!(!reopened.has_secret("project:nebulous:pat"));
         assert!(reopened.get_secret("project:nebulous:pat").is_err());
-        assert!(reopened.has_secret("project:novos:pat"));
+        assert!(reopened.has_secret("project:orbit:pat"));
 
         // Empty key or empty secret must fail validation
         assert!(reopened.store_secret("   ", "secret").is_err());
@@ -556,9 +556,9 @@ bug = -1
         );
         assert_eq!(
             reopened
-                .get_secret_string("project:novos:pat")
+                .get_secret_string("project:orbit:pat")
                 .expect("existing secret must remain intact after failed write"),
-            "glpat_novos_rolling_token"
+            "glpat_orbit_rolling_token"
         );
 
         // Regression test 2: Truncated/short vault.key (< 32 bytes) must return an error
@@ -649,7 +649,7 @@ bug = -1
             .expect("should write test private key file");
 
         let imported = manager
-            .import_ssh_key_file("novos/upstream", &priv_path, None)
+            .import_ssh_key_file("orbit/upstream", &priv_path, None)
             .expect("should import exported OpenSSH private key file");
         assert_eq!(imported.fingerprint_sha256, generated.fingerprint_sha256);
         assert_eq!(imported.public_key_openssh, generated.public_key_openssh);

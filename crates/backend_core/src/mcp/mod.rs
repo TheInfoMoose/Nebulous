@@ -749,7 +749,7 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Component identifier (e.g. novos_iso or backend_core)." },
+                        "id": { "type": "string", "description": "Component identifier (e.g. orbit_image or backend_core)." },
                         "name": { "type": "string", "description": "Human-readable component name." },
                         "relative_path": { "type": "string", "description": "Workspace-relative directory path (e.g. 'iso' or 'crates/backend_core')." },
                         "component_type": { "type": "string", "description": "Component type (rust_crate, cli_crate, ui_crate, python_pkg, node_pkg, c_cpp, os_image, kernel_module, build_scripts, custom)." },
@@ -777,16 +777,16 @@ impl McpServer {
                     "required": ["component_id"]
                 }),
             },
-            // Suite 3: NovOS Release Engineering & Self-Healing CI Tools
+            // Suite 3: Release Engineering & Self-Healing CI Tools
             McpToolDefinition {
                 name: "record_rolling_update".to_string(),
-                description: "Logs an upstream rolling dependency bump (e.g. Debian Sid package or XanMod kernel delta) and target build script path into nebulous.component.toml and creates/updates a tracking item.".to_string(),
+                description: "Logs an upstream rolling dependency bump (e.g. a rolling distro package or custom kernel delta) and target build script path into nebulous.component.toml and creates/updates a tracking item.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "component_id": { "type": "string", "description": "Target component ID or relative path." },
-                        "dependency_name": { "type": "string", "description": "Upstream package or dependency name (e.g. linux-xanmod-x64v3 or systemd)." },
-                        "kind": { "type": "string", "description": "Dependency channel/kind (e.g. apt_sid, kernel_xanmod, cargo, git)." },
+                        "dependency_name": { "type": "string", "description": "Upstream package or dependency name (e.g. linux-image-rt or systemd)." },
+                        "kind": { "type": "string", "description": "Dependency channel/kind (e.g. apt_sid, kernel_custom, cargo, git)." },
                         "previous_version": { "type": "string", "description": "Optional previous version before update." },
                         "new_version": { "type": "string", "description": "New upstream version string." },
                         "upstream_source": { "type": "string", "description": "Optional upstream repository or APT source URL." },
@@ -800,7 +800,7 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "record_verification_run".to_string(),
-                description: "Records QEMU, container, or CI test-suite verification results onto a component's latest rolling update and pinned release.".to_string(),
+                description: "Records VM, container, or CI test-suite verification results onto a component's latest rolling update and pinned release.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -932,7 +932,7 @@ impl McpServer {
             "ingest_project_directory" => self.tool_ingest_project_directory(arguments),
             "upsert_component_manifest" => self.tool_upsert_component_manifest(arguments),
             "promote_component_to_scope" => self.tool_promote_component_to_scope(arguments),
-            // Suite 3: NovOS Release Engineering & Self-Healing CI Tools
+            // Suite 3: Release Engineering & Self-Healing CI Tools
             "record_rolling_update" => self.tool_record_rolling_update(arguments),
             "record_verification_run" => self.tool_record_verification_run(arguments),
             "pin_stable_release" => self.tool_pin_stable_release(arguments),

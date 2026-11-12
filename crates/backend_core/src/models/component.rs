@@ -409,7 +409,7 @@ impl ComponentManifest {
     }
 }
 
-/// Upstream or ecosystem dependency tracked by a [`ComponentManifest`] (e.g., `apt_sid`, `kernel_xanmod`, `cargo`, `git`).
+/// Upstream or ecosystem dependency tracked by a [`ComponentManifest`] (e.g., `apt_sid`, `kernel_custom`, `cargo`, `git`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComponentDependency {
     #[serde(alias = "package")]
@@ -539,7 +539,7 @@ impl PinnedReleaseConfig {
     }
 }
 
-/// QEMU, container, or test-suite verification result recorded for a component release or rolling update.
+/// VM, container, or test-suite verification result recorded for a component release or rolling update.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationRecord {
     pub passed: bool,
