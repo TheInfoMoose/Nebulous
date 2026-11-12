@@ -742,7 +742,7 @@ fn run_neb_json_with_env(args: &[&str], current_dir: Option<&Path>, config_dir: 
 fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
     let temp = TempDir::new().expect("should create temp dir");
     let cfg_dir = temp.path().join("nebulous_config");
-    let proj_alpha = temp.path().join("novos_alpha");
+    let proj_alpha = temp.path().join("orbit_alpha");
     let proj_beta = temp.path().join("neb_beta");
     fs::create_dir_all(&proj_alpha).unwrap();
     fs::create_dir_all(&proj_beta).unwrap();
@@ -751,9 +751,9 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
     let repo = Repository::init(&proj_alpha).expect("should init git repo");
     {
         let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "NovOS Bot").unwrap();
-        cfg.set_str("user.email", "bot@novos.dev").unwrap();
-        let sig = Signature::now("NovOS Bot", "bot@novos.dev").unwrap();
+        cfg.set_str("user.name", "Orbit Bot").unwrap();
+        cfg.set_str("user.email", "bot@example.com").unwrap();
+        let sig = Signature::now("Orbit Bot", "bot@example.com").unwrap();
         let tree_id = repo.index().unwrap().write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
         repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
@@ -776,7 +776,7 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
     fs::create_dir_all(proj_alpha.join("iso")).unwrap();
     fs::write(
         proj_alpha.join("iso/build_iso.sh"),
-        "#!/usr/bin/env bash\necho 'Building NovOS ISO'\n",
+        "#!/usr/bin/env bash\necho 'Building Orbit ISO'\n",
     )
     .unwrap();
 
@@ -790,17 +790,17 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
             "add",
             alpha_str,
             "--name",
-            "NovOS Alpha",
+            "Orbit Alpha",
             "--tag",
-            "distro,sid,xanmod",
+            "distro,sid,custom",
         ],
         None,
         &cfg_dir,
     );
     assert_eq!(add_alpha["action"], "add");
-    assert_eq!(add_alpha["id"], "novos_alpha");
-    assert_eq!(add_alpha["name"], "NovOS Alpha");
-    assert_eq!(add_alpha["active_project_id"], "novos_alpha");
+    assert_eq!(add_alpha["id"], "orbit_alpha");
+    assert_eq!(add_alpha["name"], "Orbit Alpha");
+    assert_eq!(add_alpha["active_project_id"], "orbit_alpha");
 
     let add_beta = run_neb_json_with_env(
         &["project", "add", beta_str, "--name", "Neb Beta"],
@@ -814,14 +814,14 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
     assert_eq!(list_projects["total"], 2);
     assert_eq!(list_projects["active_project_id"], "neb_beta");
 
-    let switch_alpha = run_neb_json_with_env(&["project", "switch", "NovOS Alpha"], None, &cfg_dir);
+    let switch_alpha = run_neb_json_with_env(&["project", "switch", "Orbit Alpha"], None, &cfg_dir);
     assert_eq!(switch_alpha["action"], "switch");
-    assert_eq!(switch_alpha["active_project_id"], "novos_alpha");
+    assert_eq!(switch_alpha["active_project_id"], "orbit_alpha");
 
     let remove_beta = run_neb_json_with_env(&["project", "remove", "neb_beta"], None, &cfg_dir);
     assert_eq!(remove_beta["action"], "remove");
     assert_eq!(remove_beta["id"], "neb_beta");
-    assert_eq!(remove_beta["active_project_id"], "novos_alpha");
+    assert_eq!(remove_beta["active_project_id"], "orbit_alpha");
 
     // 2. `neb ingest --write-manifests --promote-all`
     let ingest_json = run_neb_json_with_env(
@@ -857,11 +857,11 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
             "--id",
             "iso",
             "--name",
-            "NovOS Live ISO",
+            "Orbit Live ISO",
             "--type",
             "os_image",
             "--flag",
-            "--xanmod-lto,--zstd",
+            "--custom-lto,--zstd",
         ],
         None,
         &cfg_dir,
@@ -882,7 +882,7 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
             "--script",
             "iso/build_iso.sh",
             "--dep",
-            "linux-xanmod=6.12.4-1,systemd=256.8-1",
+            "linux-custom=6.12.4-1,systemd=256.8-1",
         ],
         None,
         &cfg_dir,
@@ -890,7 +890,7 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
     assert_eq!(comp_pin["action"], "pin");
     assert_eq!(comp_pin["last_known_good"]["commit_sha"], "good123");
     assert_eq!(
-        comp_pin["last_known_good"]["dependency_pins"]["linux-xanmod"],
+        comp_pin["last_known_good"]["dependency_pins"]["linux-custom"],
         "6.12.4-1"
     );
 
@@ -907,7 +907,7 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
             "--root",
             alpha_str,
             "bug",
-            "Boot failure after XanMod 6.13-rc1 bump",
+            "Boot failure after Kernel 6.13-rc1 bump",
             "-s",
             "iso",
             "--severity",
@@ -936,8 +936,8 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
         .record_component_rolling_update(
             "iso",
             backend_core::RollingUpdateEntry {
-                dependency_name: "linux-xanmod".to_string(),
-                kind: "kernel_xanmod".to_string(),
+                dependency_name: "linux-custom".to_string(),
+                kind: "kernel_custom".to_string(),
                 previous_version: Some("6.12.4-1".to_string()),
                 new_version: "6.13.0-rc1".to_string(),
                 tracked_item_id: Some("BUG-0001".to_string()),
@@ -957,7 +957,7 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
             "-i",
             "BUG-0001",
             "-r",
-            "QEMU boot panicked in initramfs with 6.13.0-rc1",
+            "VM boot panicked in initramfs with 6.13.0-rc1",
         ],
         None,
         &cfg_dir,
@@ -969,12 +969,12 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
     assert_eq!(rollback_json["recurrence_count"], 1);
 
     let restored_iso = storage.read_component_manifest("iso").unwrap();
-    let xanmod_dep = restored_iso
+    let custom_dep = restored_iso
         .dependencies
         .iter()
-        .find(|d| d.name == "linux-xanmod")
+        .find(|d| d.name == "linux-custom")
         .unwrap();
-    assert_eq!(xanmod_dep.current_version, "6.12.4-1");
+    assert_eq!(custom_dep.current_version, "6.12.4-1");
 
     // 4. `neb git status` and `neb git commit -i <ITEM_ID> -m <SUMMARY> --path <FILES>`
     let git_status_before =
@@ -1020,7 +1020,7 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
             "-i",
             "BUG-0001",
             "-m",
-            "Restore XanMod 6.12.4-1 pin and stabilize ISO build script",
+            "Restore Kernel 6.12.4-1 pin and stabilize ISO build script",
             "--path",
             "crates/core_lib/Cargo.toml,crates/core_lib/src/lib.rs,crates/core_lib/nebulous.component.toml,iso/build_iso.sh,iso/nebulous.component.toml",
         ],
@@ -1034,7 +1034,7 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
     assert!(commit_json["message"]
         .as_str()
         .unwrap()
-        .starts_with("[BUG-0001](iso) Restore XanMod 6.12.4-1 pin"));
+        .starts_with("[BUG-0001](iso) Restore Kernel 6.12.4-1 pin"));
 
     let git_status_after =
         run_neb_json_with_env(&["--root", alpha_str, "git", "status"], None, &cfg_dir);
@@ -1045,7 +1045,7 @@ fn test_project_registry_ingest_component_pin_rollback_and_git_commit() {
     assert_eq!(detail_after.manifest.history.previous_fixes.len(), 1);
     assert!(detail_after
         .description_markdown
-        .contains("Restore XanMod 6.12.4-1 pin and stabilize ISO build script"));
+        .contains("Restore Kernel 6.12.4-1 pin and stabilize ISO build script"));
 }
 
 #[test]
@@ -1055,7 +1055,7 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
 
     let temp = TempDir::new().expect("should create temp dir for MCP test");
     let cfg_dir = temp.path().join("mcp_config");
-    let root = temp.path().join("novos_workspace");
+    let root = temp.path().join("orbit_workspace");
     fs::create_dir_all(&root).unwrap();
 
     // Initialize Git repository + files for ingestion
@@ -1090,12 +1090,12 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
     )
     .unwrap();
 
-    let storage = TrackerStorage::init(&root, "NovOS", "01_rolling_core", "Rolling Release Core")
-        .expect("should init NovOS tracker");
+    let storage = TrackerStorage::init(&root, "Orbit", "01_rolling_core", "Rolling Release Core")
+        .expect("should init Orbit tracker");
     let _ = backend_core::register_project_in(
         &cfg_dir,
         storage.project_root(),
-        Some("NovOS"),
+        Some("Orbit"),
         vec!["distro".to_string()],
         true,
     )
@@ -1154,9 +1154,9 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
                     "component_id": "iso",
                     "commit_sha": "stable01",
                     "build_script_path": "iso/build.sh",
-                    "build_flags": ["--xanmod-signed", "--squashfs-zstd"],
+                    "build_flags": ["--custom-signed", "--rootfs-zstd"],
                     "dependency_pins": {
-                        "linux-xanmod": "6.12.4-1",
+                        "linux-custom": "6.12.4-1",
                         "live-build": "20261101"
                     }
                 }
@@ -1170,13 +1170,13 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
                 "name": "record_rolling_update",
                 "arguments": {
                     "component_id": "iso",
-                    "dependency_name": "linux-xanmod",
-                    "kind": "kernel_xanmod",
+                    "dependency_name": "linux-custom",
+                    "kind": "kernel_custom",
                     "previous_version": "6.12.4-1",
                     "new_version": "6.13.0-rc2",
-                    "upstream_source": "https://deb.xanmod.org",
+                    "upstream_source": "https://packages.example.com/kernel",
                     "build_script_path": "iso/build.sh",
-                    "summary": "Bump XanMod kernel to 6.13.0-rc2"
+                    "summary": "Bump custom kernel to 6.13.0-rc2"
                 }
             }
         }),
@@ -1199,7 +1199,7 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
                     "component_id": "iso",
                     "passed": false,
                     "exit_code": 134,
-                    "command": "qemu-system-x86_64 -cdrom novos.iso --nographic",
+                    "command": "virt-system-x86_64 -cdrom orbit.iso --nographic",
                     "summary": "Kernel panic mounting overlayfs in live boot",
                     "logs_excerpt": "VFS: Cannot open root device overlay"
                 }
@@ -1214,7 +1214,7 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
                 "arguments": {
                     "component_id": "iso",
                     "restore_manifest": true,
-                    "reason": "Auto-rollback triggered after QEMU exit code 134"
+                    "reason": "Auto-rollback triggered after VM exit code 134"
                 }
             }
         }),
@@ -1226,7 +1226,7 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
                 "name": "git_commit_documented",
                 "arguments": {
                     "item_id": "FEAT-0001",
-                    "summary": "Rollback linux-xanmod to 6.12.4-1 after QEMU boot failure"
+                    "summary": "Rollback linux-custom to 6.12.4-1 after VM boot failure"
                 }
             }
         }),
@@ -1344,7 +1344,7 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
         "stable01"
     );
     assert_eq!(
-        responses[4]["result"]["last_known_good"]["dependency_pins"]["linux-xanmod"],
+        responses[4]["result"]["last_known_good"]["dependency_pins"]["linux-custom"],
         "6.12.4-1"
     );
 

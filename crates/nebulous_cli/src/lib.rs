@@ -220,7 +220,7 @@ mod tests {
         ));
 
         // 17. project
-        let cli = Cli::try_parse_from(["neb", "project", "add", "/tmp/novos", "--name", "NovOS"])
+        let cli = Cli::try_parse_from(["neb", "project", "add", "/tmp/orbit", "--name", "Orbit"])
             .unwrap();
         assert!(matches!(
             cli.command,
@@ -249,7 +249,7 @@ mod tests {
         ));
 
         // 19. component
-        let cli = Cli::try_parse_from(["neb", "component", "pin", "novos_iso"]).unwrap();
+        let cli = Cli::try_parse_from(["neb", "component", "pin", "orbit_iso"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Component {
