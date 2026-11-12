@@ -52,6 +52,9 @@ pub struct ItemDetail {
 /// STEP 23F sets `Task => 2` and raises `MAX_ITEM_SCHEMA_VERSION` to 2.
 pub const MAX_ITEM_SCHEMA_VERSION: u32 = 1;
 
+/// Number of uppercase hex characters in a hash item ID suffix (e.g. `7F3A2C` in `BUG-7F3A2C`).
+pub const HASH_ID_HEX_LEN: usize = 6;
+
 /// Category of tracked work item (`bug` or `feature`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -84,6 +87,29 @@ impl ItemType {
     pub fn format_id(self, number: u32) -> String {
         format!("{}-{:04}", self.id_prefix(), number)
     }
+
+    /// Formats a 24-bit value into a canonical hash item ID (e.g. `BUG-7F3A2C`).
+    pub fn format_hash_id(self, bits: u32) -> String {
+        format!("{}-{:06X}", self.id_prefix(), bits & 0x00FF_FFFF)
+    }
+}
+
+/// Returns `true` if `id` is a valid uppercase hash item ID (`BUG-XXXXXX` or `FEAT-XXXXXX`,
+/// where `XXXXXX` is 6 uppercase hex digits containing at least one `A`–`F`).
+pub fn is_hash_item_id(id: &str) -> bool {
+    let Some((prefix, suffix)) = id.split_once('-') else {
+        return false;
+    };
+    if !matches!(prefix, "BUG" | "FEAT") {
+        return false;
+    }
+    if suffix.len() != HASH_ID_HEX_LEN {
+        return false;
+    }
+    suffix
+        .bytes()
+        .all(|b| b.is_ascii_digit() || matches!(b, b'A'..=b'F'))
+        && suffix.bytes().any(|b| matches!(b, b'A'..=b'F'))
 }
 
 impl fmt::Display for ItemType {
@@ -268,5 +294,31 @@ impl PreviousFix {
     /// Parses `date` into `NaiveDate`.
     pub fn parsed_date(&self) -> Result<NaiveDate> {
         parse_date(&self.date)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_hash_id_pads_and_masks_to_24_bits() {
+        assert_eq!(ItemType::Bug.format_hash_id(0xABC), "BUG-000ABC");
+        assert_eq!(ItemType::Feature.format_hash_id(0xFFFF_FFFF), "FEAT-FFFFFF");
+    }
+
+    #[test]
+    fn is_hash_item_id_validates_prefix_length_uppercase_and_alpha_requirement() {
+        assert!(is_hash_item_id("BUG-7F3A2C"));
+        assert!(is_hash_item_id("FEAT-00000A"));
+
+        assert!(!is_hash_item_id("BUG-001234"));
+        assert!(!is_hash_item_id("BUG-0012"));
+        assert!(!is_hash_item_id("BUG-7f3a2c"));
+        assert!(!is_hash_item_id("BUG-7F3A2"));
+        assert!(!is_hash_item_id("BUG-7F3A2C1"));
+        assert!(!is_hash_item_id("TASK-7F3A2C"));
+        assert!(!is_hash_item_id("BUG7F3A2C"));
+        assert!(!is_hash_item_id(""));
     }
 }

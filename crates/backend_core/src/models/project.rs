@@ -47,12 +47,31 @@ pub struct ProjectMetadata {
     pub default_scope: String,
     #[serde(deserialize_with = "deserialize_datetime_string")]
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "IdScheme::is_sequential")]
+    pub id_scheme: IdScheme,
 }
 
 impl ProjectMetadata {
     /// Parses `created_at` into a UTC `DateTime`.
     pub fn parsed_created_at(&self) -> Result<DateTime<Utc>> {
         parse_timestamp_utc(&self.created_at)
+    }
+}
+
+/// Item ID allocation scheme (`sequential` allocates `BUG-0001`-style counters;
+/// `hash` allocates `BUG-7F3A2C`-style random IDs). A missing key defaults to `Sequential`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdScheme {
+    #[default]
+    Sequential,
+    Hash,
+}
+
+impl IdScheme {
+    /// Returns `true` if this scheme is `Sequential`.
+    pub fn is_sequential(&self) -> bool {
+        matches!(self, Self::Sequential)
     }
 }
 
@@ -230,4 +249,44 @@ fn default_true() -> bool {
 
 fn default_min_summary_length() -> usize {
     12
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE_PROJECT_TOML: &str = r#"[project]
+name = "test-proj"
+active_phase = "production"
+created_at = "2026-11-09T12:00:00Z"
+"#;
+
+    #[test]
+    fn id_scheme_defaults_to_sequential_and_parses_hash() {
+        let seq = ProjectManifest::from_toml_str(BASE_PROJECT_TOML).unwrap();
+        assert_eq!(seq.project.id_scheme, IdScheme::Sequential);
+        assert!(seq.project.id_scheme.is_sequential());
+
+        let hash_toml = format!("{BASE_PROJECT_TOML}id_scheme = \"hash\"\n");
+        let hash = ProjectManifest::from_toml_str(&hash_toml).unwrap();
+        assert_eq!(hash.project.id_scheme, IdScheme::Hash);
+        assert!(!hash.project.id_scheme.is_sequential());
+    }
+
+    #[test]
+    fn id_scheme_skips_serializing_when_sequential_and_emits_when_hash() {
+        let mut manifest = ProjectManifest::from_toml_str(BASE_PROJECT_TOML).unwrap();
+        let seq_serialized = manifest.to_toml_string().unwrap();
+        assert!(!seq_serialized.contains("id_scheme"));
+
+        manifest.project.id_scheme = IdScheme::Hash;
+        let hash_serialized = manifest.to_toml_string().unwrap();
+        assert!(hash_serialized.contains("id_scheme = \"hash\""));
+    }
+
+    #[test]
+    fn id_scheme_rejects_invalid_value() {
+        let bad_toml = format!("{BASE_PROJECT_TOML}id_scheme = \"bogus\"\n");
+        assert!(ProjectManifest::from_toml_str(&bad_toml).is_err());
+    }
 }

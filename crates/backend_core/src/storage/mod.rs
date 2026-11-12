@@ -337,6 +337,7 @@ impl TrackerStorage {
                 active_phase: phase_id.clone(),
                 default_scope: "inbox".to_string(),
                 created_at: now,
+                id_scheme: crate::models::project::IdScheme::Sequential,
             },
             counters: ProjectCounters::default(),
             phases: PhaseRegistry {
