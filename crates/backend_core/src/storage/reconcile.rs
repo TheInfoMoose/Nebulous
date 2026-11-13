@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -18,6 +18,7 @@ pub struct ReconcileReport {
     pub completed_items: u32,
     pub counters: ProjectCounters,
     pub skipped_unsupported: Vec<String>,
+    pub duplicate_ids: Vec<String>,
 }
 
 impl TrackerStorage {
@@ -34,6 +35,7 @@ impl TrackerStorage {
             let mut project = self.read_project()?;
             let original_project = project.clone();
             let mut max_counters = project.counters.clone();
+            let mut id_counts: HashMap<String, u32> = HashMap::new();
 
             // Discover any phase directories on disk not yet listed in `project.phases.registry`
             let phases_root = self.phases_dir();
@@ -156,6 +158,7 @@ impl TrackerStorage {
                         &items_dir,
                         &mut max_counters,
                         &mut report.skipped_unsupported,
+                        &mut id_counts,
                     )?;
 
                     let scope_item_count = (bugs.len() + features.len()) as u32;
@@ -202,6 +205,11 @@ impl TrackerStorage {
             project.counters.feature = project.counters.feature.max(max_counters.feature);
             report.counters = project.counters.clone();
             report.skipped_unsupported.sort();
+            report.duplicate_ids = id_counts
+                .into_iter()
+                .filter_map(|(id, count)| (count > 1).then_some(id))
+                .collect();
+            report.duplicate_ids.sort();
 
             if project != original_project {
                 self.write_project(&project)?;
@@ -217,6 +225,7 @@ fn collect_authoritative_items(
     items_dir: &Path,
     max_counters: &mut ProjectCounters,
     skipped: &mut Vec<String>,
+    id_counts: &mut HashMap<String, u32>,
 ) -> Result<(Vec<ItemStub>, Vec<ItemStub>, u32)> {
     let mut bugs = Vec::new();
     let mut features = Vec::new();
@@ -282,6 +291,7 @@ fn collect_authoritative_items(
             }
         }
 
+        *id_counts.entry(manifest.item.id.clone()).or_insert(0) += 1;
         let is_canonical_dir = dir_name == manifest.item.id;
         parsed_items.push((is_canonical_dir, manifest));
     }

@@ -2770,3 +2770,27 @@ fn reconcile_and_create_order_scope_stubs_by_created_at() {
         ]
     );
 }
+
+#[test]
+fn reconcile_reports_duplicate_item_ids_across_phases() {
+    let temp = TempTrackerDir::new("dup_ids");
+    let storage = TrackerStorage::init_standard(temp.path(), "DupProject").unwrap();
+    let (loc, _) = storage
+        .create_bug("dup bug", None, None, Severity::Medium, None)
+        .unwrap();
+
+    let clean_report = storage.reconcile_indexes().unwrap();
+    assert!(clean_report.duplicate_ids.is_empty());
+
+    let src_dir = storage
+        .item_dir(&loc.phase_id, &loc.scope_id, &loc.stub.id)
+        .unwrap();
+    let dst_dir = storage
+        .items_dir("production", "inbox")
+        .unwrap()
+        .join(&loc.stub.id);
+    copy_dir_recursive(&src_dir, &dst_dir).unwrap();
+
+    let dup_report = storage.reconcile_indexes().unwrap();
+    assert_eq!(dup_report.duplicate_ids, vec![loc.stub.id.clone()]);
+}

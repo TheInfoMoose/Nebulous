@@ -1734,6 +1734,7 @@ struct SyncIndexOutputJson {
     total_items: u32,
     completed_items: u32,
     counters: ProjectCounters,
+    duplicate_ids: Vec<String>,
 }
 
 fn handle_sync_index(storage: &TrackerStorage, json: bool) -> Result<String> {
@@ -1746,10 +1747,11 @@ fn handle_sync_index(storage: &TrackerStorage, json: bool) -> Result<String> {
             total_items: report.total_items,
             completed_items: report.completed_items,
             counters: report.counters,
+            duplicate_ids: report.duplicate_ids,
         });
     }
 
-    Ok(format!(
+    let mut out = format!(
         "Reconciled .tracker/ indexes: {} phase(s), {} scope(s), {} item(s) ({} completed), counters: bug={}, feature={}",
         report.phases_reconciled,
         report.scopes_reconciled,
@@ -1757,7 +1759,13 @@ fn handle_sync_index(storage: &TrackerStorage, json: bool) -> Result<String> {
         report.completed_items,
         report.counters.bug,
         report.counters.feature
-    ))
+    );
+    for id in &report.duplicate_ids {
+        out.push_str(&format!(
+            "\nwarning: item ID {id} exists in more than one item directory (likely a merge from two clones); rename one by hand"
+        ));
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Serialize)]
@@ -2905,5 +2913,35 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let err = resolve_tui_storage(Some(tmp.path())).unwrap_err();
         assert!(matches!(err, TrackerError::TrackerRootNotFound(_)));
+    }
+
+    #[test]
+    fn sync_index_warns_about_duplicate_item_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = TrackerStorage::init_standard(tmp.path(), "Dup").unwrap();
+        let (loc, _) = storage
+            .create_bug("dup bug", None, None, Severity::Medium, None)
+            .unwrap();
+        let id = loc.stub.id.clone();
+
+        let clean_out = handle_sync_index(&storage, false).unwrap();
+        assert!(!clean_out.contains("warning:"));
+
+        let dup_dir = storage.items_dir("production", "inbox").unwrap().join(&id);
+        std::fs::create_dir_all(&dup_dir).unwrap();
+        let orig_toml = storage
+            .item_dir(&loc.phase_id, &loc.scope_id, &id)
+            .unwrap()
+            .join("item.toml");
+        std::fs::copy(orig_toml, dup_dir.join("item.toml")).unwrap();
+
+        let warn_out = handle_sync_index(&storage, false).unwrap();
+        assert!(warn_out.contains(&format!(
+            "warning: item ID {id} exists in more than one item directory"
+        )));
+
+        let json_out = handle_sync_index(&storage, true).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_out).unwrap();
+        assert_eq!(parsed["duplicate_ids"], serde_json::json!([id]));
     }
 }
