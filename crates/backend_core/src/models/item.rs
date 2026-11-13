@@ -36,6 +36,7 @@ impl ItemManifest {
             title: self.item.title.clone(),
             status: self.item.status,
             severity: self.item.severity,
+            created_at: self.item.created_at.clone(),
         }
     }
 }

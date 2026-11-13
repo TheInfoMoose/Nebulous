@@ -251,6 +251,7 @@ fn test_lazy_loading_does_not_read_desc_md_during_boot_index_load() {
                 title: "Lazy bug".to_string(),
                 status: ItemStatus::Open,
                 severity: Severity::High,
+                created_at: String::new(),
             }],
             features: vec![],
         },
@@ -457,6 +458,7 @@ fn test_reconcile_indexes_rebuilds_from_authoritative_item_toml() {
                 title: "Ghost bug that does not exist".to_string(),
                 status: ItemStatus::Open,
                 severity: Severity::Low,
+                created_at: String::new(),
             }],
             features: vec![],
         },
@@ -2602,4 +2604,83 @@ fn sequential_and_hash_ids_coexist() {
         .create_bug("Second sequential bug", None, None, Severity::Medium, None)
         .unwrap();
     assert_eq!(seq2_loc.stub.id, "BUG-0002");
+}
+
+#[test]
+fn item_stub_chronological_cmp_orders_by_instant_then_sequence_then_id() {
+    fn stub(id: &str, created_at: &str) -> ItemStub {
+        ItemStub {
+            id: id.to_string(),
+            title: "t".to_string(),
+            status: ItemStatus::Open,
+            severity: Severity::Medium,
+            created_at: created_at.to_string(),
+        }
+    }
+
+    fn sorted_ids(mut v: Vec<ItemStub>) -> Vec<String> {
+        v.sort_by(|a, b| a.chronological_cmp(b));
+        v.into_iter().map(|s| s.id).collect()
+    }
+
+    // (a) empty before parseable instants in chronological order
+    assert_eq!(
+        sorted_ids(vec![
+            stub("BUG-00ABCD", "2026-01-02T00:00:00Z"),
+            stub("BUG-FFFFFA", "2026-01-01T00:00:00Z"),
+            stub("BUG-0002", ""),
+        ]),
+        vec!["BUG-0002", "BUG-FFFFFA", "BUG-00ABCD"]
+    );
+
+    // (b) same created_at ties by sequence number for same type
+    assert_eq!(
+        sorted_ids(vec![
+            stub("BUG-0010", "2026-01-01T00:00:00Z"),
+            stub("BUG-0002", "2026-01-01T00:00:00Z"),
+        ]),
+        vec!["BUG-0002", "BUG-0010"]
+    );
+
+    // (c) offsets compare as UTC instants
+    assert_eq!(
+        sorted_ids(vec![
+            stub("BUG-0002", "2026-01-01T09:00:00Z"),
+            stub("BUG-0001", "2026-01-01T10:00:00+02:00"),
+        ]),
+        vec!["BUG-0001", "BUG-0002"]
+    );
+
+    // (d) unparseable sorts after parseable
+    assert_eq!(
+        sorted_ids(vec![
+            stub("BUG-0001", "not-a-date"),
+            stub("BUG-0002", "2026-01-01T00:00:00Z"),
+        ]),
+        vec!["BUG-0002", "BUG-0001"]
+    );
+
+    // (e) mixed type tie breaks by ID string
+    assert_eq!(
+        sorted_ids(vec![
+            stub("FEAT-0001", "2026-01-01T00:00:00Z"),
+            stub("BUG-0002", "2026-01-01T00:00:00Z"),
+        ]),
+        vec!["BUG-0002", "FEAT-0001"]
+    );
+
+    // Round-trip check: empty created_at is omitted when serialized, non-empty is present
+    let empty_items = ScopeItems {
+        bugs: vec![stub("BUG-0001", "")],
+        features: vec![],
+    };
+    let empty_toml = toml::to_string(&empty_items).unwrap();
+    assert!(!empty_toml.contains("created_at"));
+
+    let filled_items = ScopeItems {
+        bugs: vec![stub("BUG-0001", "2026-01-01T00:00:00Z")],
+        features: vec![],
+    };
+    let filled_toml = toml::to_string(&filled_items).unwrap();
+    assert!(filled_toml.contains("created_at"));
 }

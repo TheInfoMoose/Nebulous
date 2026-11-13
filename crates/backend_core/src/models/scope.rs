@@ -61,4 +61,45 @@ pub struct ItemStub {
     pub status: ItemStatus,
     #[serde(default)]
     pub severity: Severity,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub created_at: String,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum CreatedAtRank<'a> {
+    Empty,
+    Parsed(chrono::DateTime<chrono::Utc>),
+    Unparseable(&'a str),
+}
+
+fn created_at_rank(value: &str) -> CreatedAtRank<'_> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        CreatedAtRank::Empty
+    } else if let Ok(dt) = crate::models::parse_timestamp_utc(trimmed) {
+        CreatedAtRank::Parsed(dt)
+    } else {
+        CreatedAtRank::Unparseable(trimmed)
+    }
+}
+
+impl ItemStub {
+    /// Orders item stubs chronologically by `created_at` instant (empty first, then parsed UTC
+    /// instant, then unparseable trimmed string), breaking ties by same-type sequential ID number
+    /// and finally by raw `id` string.
+    pub fn chronological_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        created_at_rank(&self.created_at)
+            .cmp(&created_at_rank(&other.created_at))
+            .then_with(|| {
+                match (
+                    crate::storage::parse_item_id_number(&self.id),
+                    crate::storage::parse_item_id_number(&other.id),
+                ) {
+                    (Some((type_a, num_a)), Some((type_b, num_b))) if type_a == type_b => {
+                        num_a.cmp(&num_b).then_with(|| self.id.cmp(&other.id))
+                    }
+                    _ => self.id.cmp(&other.id),
+                }
+            })
+    }
 }
