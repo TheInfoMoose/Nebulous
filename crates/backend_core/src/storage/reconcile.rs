@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -307,19 +306,10 @@ fn collect_authoritative_items(
         }
     }
 
-    bugs.sort_by(compare_item_stubs);
-    features.sort_by(compare_item_stubs);
+    bugs.sort_by(ItemStub::chronological_cmp);
+    features.sort_by(ItemStub::chronological_cmp);
 
     Ok((bugs, features, completed_count))
-}
-
-fn compare_item_stubs(a: &ItemStub, b: &ItemStub) -> Ordering {
-    match (parse_item_id_number(&a.id), parse_item_id_number(&b.id)) {
-        (Some((type_a, num_a)), Some((type_b, num_b))) if type_a == type_b => {
-            num_a.cmp(&num_b).then_with(|| a.id.cmp(&b.id))
-        }
-        _ => a.id.cmp(&b.id),
-    }
 }
 
 pub(crate) fn infer_default_scope_type(scope_id: &str) -> String {

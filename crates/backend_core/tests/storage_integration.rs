@@ -2684,3 +2684,89 @@ fn item_stub_chronological_cmp_orders_by_instant_then_sequence_then_id() {
     let filled_toml = toml::to_string(&filled_items).unwrap();
     assert!(filled_toml.contains("created_at"));
 }
+
+#[test]
+fn chronological_cmp_is_total_with_mixed_hash_and_wide_sequential_ids() {
+    fn stub(id: &str) -> ItemStub {
+        ItemStub {
+            id: id.to_string(),
+            title: "t".to_string(),
+            status: ItemStatus::Open,
+            severity: Severity::Medium,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    let a = stub("BUG-9999");
+    let b = stub("BUG-10000");
+    let c = stub("BUG-5ABCDE");
+
+    assert_eq!(a.chronological_cmp(&b), std::cmp::Ordering::Less);
+    assert_eq!(b.chronological_cmp(&c), std::cmp::Ordering::Less);
+    assert_eq!(a.chronological_cmp(&c), std::cmp::Ordering::Less);
+}
+
+#[test]
+fn reconcile_and_create_order_scope_stubs_by_created_at() {
+    let temp = TempTrackerDir::new("chrono_order");
+    let storage = TrackerStorage::init_standard(temp.path(), "ChronoProject").unwrap();
+
+    let mut project = storage.read_project().unwrap();
+    project.project.id_scheme = backend_core::models::project::IdScheme::Hash;
+    storage.write_project(&project).unwrap();
+
+    let timestamps = [
+        "2026-03-01T00:00:00Z",
+        "2026-01-01T10:00:00+02:00",
+        "2026-02-01T00:00:00Z",
+    ];
+    let mut created = Vec::new();
+    for (i, ts) in timestamps.iter().enumerate() {
+        let (loc, _) = storage
+            .create_bug(format!("bug {i}"), None, None, Severity::Medium, None)
+            .unwrap();
+        let mut manifest = storage
+            .read_item_manifest(&loc.phase_id, &loc.scope_id, &loc.stub.id)
+            .unwrap();
+        manifest.item.created_at = (*ts).to_string();
+        storage
+            .write_item_manifest(&loc.phase_id, &loc.scope_id, &loc.stub.id, &manifest)
+            .unwrap();
+        created.push(loc);
+    }
+
+    storage.reconcile_indexes().unwrap();
+
+    let phase_id = &created[0].phase_id;
+    let scope_id = &created[0].scope_id;
+    let scope = storage.read_scope(phase_id, scope_id).unwrap();
+    let bug_ids: Vec<&str> = scope.items.bugs.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(
+        bug_ids,
+        vec![
+            created[1].stub.id.as_str(),
+            created[2].stub.id.as_str(),
+            created[0].stub.id.as_str(),
+        ]
+    );
+
+    let (loc3, _) = storage
+        .create_bug(format!("bug {}", 3), None, None, Severity::Medium, None)
+        .unwrap();
+    let scope_after = storage.read_scope(phase_id, scope_id).unwrap();
+    let bug_ids_after: Vec<&str> = scope_after
+        .items
+        .bugs
+        .iter()
+        .map(|s| s.id.as_str())
+        .collect();
+    assert_eq!(
+        bug_ids_after,
+        vec![
+            created[1].stub.id.as_str(),
+            created[2].stub.id.as_str(),
+            created[0].stub.id.as_str(),
+            loc3.stub.id.as_str(),
+        ]
+    );
+}

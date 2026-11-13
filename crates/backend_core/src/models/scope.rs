@@ -83,23 +83,31 @@ fn created_at_rank(value: &str) -> CreatedAtRank<'_> {
     }
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum IdRank<'a> {
+    Sequential(u8, u32, &'a str),
+    Other(&'a str),
+}
+
+fn id_rank(id: &str) -> IdRank<'_> {
+    if let Some((item_type, number)) = crate::storage::parse_item_id_number(id) {
+        let type_order = match item_type {
+            crate::models::ItemType::Bug => 0,
+            crate::models::ItemType::Feature => 1,
+        };
+        IdRank::Sequential(type_order, number, id)
+    } else {
+        IdRank::Other(id)
+    }
+}
+
 impl ItemStub {
     /// Orders item stubs chronologically by `created_at` instant (empty first, then parsed UTC
-    /// instant, then unparseable trimmed string), breaking ties by same-type sequential ID number
-    /// and finally by raw `id` string.
+    /// instant, then unparseable trimmed string), breaking ties with sequential IDs first
+    /// (by type, then number, then ID string), then all other IDs by string.
     pub fn chronological_cmp(&self, other: &Self) -> std::cmp::Ordering {
         created_at_rank(&self.created_at)
             .cmp(&created_at_rank(&other.created_at))
-            .then_with(|| {
-                match (
-                    crate::storage::parse_item_id_number(&self.id),
-                    crate::storage::parse_item_id_number(&other.id),
-                ) {
-                    (Some((type_a, num_a)), Some((type_b, num_b))) if type_a == type_b => {
-                        num_a.cmp(&num_b).then_with(|| self.id.cmp(&other.id))
-                    }
-                    _ => self.id.cmp(&other.id),
-                }
-            })
+            .then_with(|| id_rank(&self.id).cmp(&id_rank(&other.id)))
     }
 }

@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::fs;
 
 use chrono::Utc;
@@ -11,7 +10,6 @@ use crate::models::{
     PhaseRegistryEntry, PhaseStatus, PhaseSummary, PreviousFix, ProjectManifest, ScopeItems,
     ScopeManifest, ScopeMetadata, ScopeRegistry, ScopeRegistryEntry, Severity,
 };
-use crate::storage::id::parse_item_id_number;
 use crate::storage::reconcile::infer_default_scope_type;
 use crate::storage::{validate_identifier, ItemLocation, TrackerStorage};
 
@@ -983,11 +981,17 @@ impl TrackerStorage {
         match item_manifest.item.item_type {
             ItemType::Bug => {
                 scope_manifest.items.bugs.push(stub);
-                scope_manifest.items.bugs.sort_by(compare_stubs);
+                scope_manifest
+                    .items
+                    .bugs
+                    .sort_by(ItemStub::chronological_cmp);
             }
             ItemType::Feature => {
                 scope_manifest.items.features.push(stub);
-                scope_manifest.items.features.sort_by(compare_stubs);
+                scope_manifest
+                    .items
+                    .features
+                    .sort_by(ItemStub::chronological_cmp);
             }
         }
 
@@ -998,13 +1002,4 @@ impl TrackerStorage {
 
 pub(crate) fn now_rfc3339() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
-}
-
-fn compare_stubs(a: &ItemStub, b: &ItemStub) -> Ordering {
-    match (parse_item_id_number(&a.id), parse_item_id_number(&b.id)) {
-        (Some((type_a, num_a)), Some((type_b, num_b))) if type_a == type_b => {
-            num_a.cmp(&num_b).then_with(|| a.id.cmp(&b.id))
-        }
-        _ => a.id.cmp(&b.id),
-    }
 }
