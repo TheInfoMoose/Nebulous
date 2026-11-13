@@ -865,7 +865,7 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "git_pull".to_string(),
-                description: "Pulls the current HEAD branch (fast-forward or merge with automatic .tracker/ index conflict resolution) from the configured remote and reconciles .tracker/ indexes. Errors if HEAD is not on the configured [git] branch; aborts without writing when local uncommitted changes would be overwritten.".to_string(),
+                description: "Pulls the current HEAD branch (fast-forward or merge with automatic .tracker/ index conflict resolution) from the configured remote and reconciles .tracker/ indexes. Errors if HEAD is not on the configured [git] branch; aborts without writing when local uncommitted changes would be overwritten. The result's `duplicate_ids` lists item IDs the post-pull reconcile found in more than one item directory (likely a merge from two clones).".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -901,7 +901,7 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "git_sync".to_string(),
-                description: "Stages and commits dirty .tracker/ state, then pulls and pushes if a remote is configured.".to_string(),
+                description: "Stages and commits dirty .tracker/ state, then pulls and pushes if a remote is configured. The result's `duplicate_ids` lists item IDs the post-pull reconcile found in more than one item directory (empty with commit_only or when nothing was pulled).".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -2114,11 +2114,12 @@ impl McpServer {
             .map_err(|e| TrackerError::ValidationError(format!("Invalid git_pull args: {e}")))?;
         let auth = mcp_auth_request(parsed.auth_override.as_deref(), parsed.pat.as_ref())?;
         let storage = self.resolve_active_storage()?;
-        let updated = storage.git_pull(&auth)?;
+        let outcome = storage.git_pull_with_report(&auth)?;
         let status = storage.git_status()?;
         Ok(json!({
-            "updated": updated,
-            "status": status
+            "updated": outcome.updated,
+            "status": status,
+            "duplicate_ids": outcome.duplicate_ids
         }))
     }
 
@@ -2195,10 +2196,15 @@ impl McpServer {
             .map_err(|e| TrackerError::ValidationError(format!("Invalid git_sync args: {e}")))?;
         let auth = mcp_auth_request(parsed.auth_override.as_deref(), parsed.pat.as_ref())?;
         let storage = self.resolve_active_storage()?;
-        let sha = if parsed.commit_only {
-            storage.git_commit_tracker(non_empty(parsed.message.as_deref()))?
+        let (sha, duplicate_ids) = if parsed.commit_only {
+            (
+                storage.git_commit_tracker(non_empty(parsed.message.as_deref()))?,
+                Vec::new(),
+            )
         } else {
-            storage.git_sync(non_empty(parsed.message.as_deref()), &auth)?
+            let outcome =
+                storage.git_sync_with_report(non_empty(parsed.message.as_deref()), &auth)?;
+            (outcome.sha, outcome.duplicate_ids)
         };
         let tracker_dirty_after = storage
             .git_status()
@@ -2208,7 +2214,8 @@ impl McpServer {
         Ok(json!({
             "commit_only": parsed.commit_only,
             "committed_or_head_sha": sha,
-            "tracker_dirty_after": tracker_dirty_after
+            "tracker_dirty_after": tracker_dirty_after,
+            "duplicate_ids": duplicate_ids
         }))
     }
 }

@@ -2141,3 +2141,111 @@ fn git_pull_and_sync_with_report_surface_duplicate_item_ids() {
     assert!(synced.sha.is_some());
     assert_eq!(synced.duplicate_ids, vec![id]);
 }
+
+#[test]
+fn mcp_git_pull_and_sync_report_duplicate_item_ids() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    fn copy_dir(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).unwrap();
+        for entry in fs::read_dir(src).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_file() {
+                fs::copy(&path, dst.join(entry.file_name())).unwrap();
+            }
+        }
+    }
+
+    let dir = TempDir::new().unwrap();
+    let storage = TrackerStorage::init_standard(dir.path(), "McpDupProject").unwrap();
+    let repo = Repository::init(dir.path()).unwrap();
+    {
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "testuser").unwrap();
+        cfg.set_str("user.email", "testuser@example.com").unwrap();
+    }
+
+    let bare_dir = TempDir::new().unwrap();
+    let _bare_repo = Repository::init_bare(bare_dir.path()).unwrap();
+    let bare_url = bare_dir.path().to_str().unwrap().to_string();
+    repo.remote("origin", &bare_url).unwrap();
+
+    storage
+        .git_commit_tracker(Some("chore: init tracker"))
+        .unwrap();
+    let current_branch = repo
+        .head()
+        .unwrap()
+        .shorthand()
+        .unwrap_or("main")
+        .to_string();
+
+    let mut project = storage.read_project().unwrap();
+    project.git.remote = "origin".to_string();
+    project.git.branch = current_branch.clone();
+    storage.write_project(&project).unwrap();
+    storage
+        .git_commit_tracker(Some("chore: configure remote"))
+        .unwrap();
+    storage.git_push(&GitAuthRequest::default()).unwrap();
+
+    let clone_dir = TempDir::new().unwrap();
+    let cloned_repo = Repository::clone(&bare_url, clone_dir.path()).unwrap();
+    {
+        let mut cfg = cloned_repo.config().unwrap();
+        cfg.set_str("user.name", "testuser").unwrap();
+        cfg.set_str("user.email", "testuser@example.com").unwrap();
+        let head_commit = cloned_repo.head().unwrap().peel_to_commit().unwrap();
+        let _ = cloned_repo.branch(&current_branch, &head_commit, true);
+        cloned_repo
+            .set_head(&format!("refs/heads/{current_branch}"))
+            .unwrap();
+    }
+
+    let mut server = McpServer::new(Some(TrackerStorage::new(clone_dir.path())));
+
+    // Idle pull
+    let idle = server.call_tool("git_pull", json!({})).unwrap();
+    assert_eq!(idle["updated"], json!(false));
+    assert_eq!(idle["duplicate_ids"], json!([]));
+
+    // Duplicate pull
+    let (loc, _) = storage
+        .create_bug("dup bug", None, None, Severity::Medium, None)
+        .unwrap();
+    let id = loc.stub.id.clone();
+    copy_dir(
+        &storage.item_dir(&loc.phase_id, &loc.scope_id, &id).unwrap(),
+        &storage.items_dir("production", "inbox").unwrap().join(&id),
+    );
+    storage
+        .git_commit_tracker(Some("chore: commit duplicate bug"))
+        .unwrap();
+    storage.git_push(&GitAuthRequest::default()).unwrap();
+
+    let pulled = server.call_tool("git_pull", json!({})).unwrap();
+    assert_eq!(pulled["updated"], json!(true));
+    assert_eq!(pulled["duplicate_ids"], json!([id]));
+    assert!(pulled.get("status").is_some());
+
+    // commit_only
+    let commit_only = server
+        .call_tool("git_sync", json!({"commit_only": true}))
+        .unwrap();
+    assert_eq!(commit_only["duplicate_ids"], json!([]));
+
+    // Sync
+    storage
+        .create_bug("second bug", None, None, Severity::Medium, None)
+        .unwrap();
+    storage
+        .git_commit_tracker(Some("chore: commit second bug"))
+        .unwrap();
+    storage.git_push(&GitAuthRequest::default()).unwrap();
+
+    let synced = server.call_tool("git_sync", json!({})).unwrap();
+    assert!(synced["committed_or_head_sha"].is_string());
+    assert_eq!(synced["duplicate_ids"], json!([id]));
+}
