@@ -1633,6 +1633,7 @@ struct SyncOutputJson {
     commit_only: bool,
     committed_or_head_sha: Option<String>,
     tracker_dirty_after: bool,
+    duplicate_ids: Vec<String>,
 }
 
 /// Environment variable holding an HTTPS Personal Access Token for `neb git`/`neb sync`.
@@ -1685,6 +1686,7 @@ fn handle_sync(
     commit_only: bool,
     json: bool,
 ) -> Result<String> {
+    let mut duplicate_ids = Vec::new();
     let sha = if item.is_some() || !paths.is_empty() {
         let summary = message
             .map(str::trim)
@@ -1700,13 +1702,15 @@ fn handle_sync(
             paths: paths.to_vec(),
         })?;
         if !commit_only {
-            let _ = storage.git_sync(message, auth)?;
+            duplicate_ids = storage.git_sync_with_report(message, auth)?.duplicate_ids;
         }
         Some(outcome.commit_sha)
     } else if commit_only {
         storage.git_commit_tracker(message)?
     } else {
-        storage.git_sync(message, auth)?
+        let outcome = storage.git_sync_with_report(message, auth)?;
+        duplicate_ids = outcome.duplicate_ids;
+        outcome.sha
     };
     let tracker_dirty_after = storage
         .git_status()
@@ -1718,13 +1722,16 @@ fn handle_sync(
             commit_only,
             committed_or_head_sha: sha,
             tracker_dirty_after,
+            duplicate_ids,
         });
     }
 
-    match sha {
-        Some(commit_sha) => Ok(format!("Synchronized .tracker/ state (HEAD: {commit_sha})")),
-        None => Ok("No .tracker/ changes to commit.".to_string()),
-    }
+    let mut out = match sha {
+        Some(commit_sha) => format!("Synchronized .tracker/ state (HEAD: {commit_sha})"),
+        None => "No .tracker/ changes to commit.".to_string(),
+    };
+    out.push_str(&duplicate_id_warnings(&duplicate_ids));
+    Ok(out)
 }
 
 #[derive(Debug, Serialize)]
@@ -1760,12 +1767,19 @@ fn handle_sync_index(storage: &TrackerStorage, json: bool) -> Result<String> {
         report.counters.bug,
         report.counters.feature
     );
-    for id in &report.duplicate_ids {
+    out.push_str(&duplicate_id_warnings(&report.duplicate_ids));
+    Ok(out)
+}
+
+/// Formats one trailing warning line per duplicate item ID reported by index reconciliation.
+fn duplicate_id_warnings(ids: &[String]) -> String {
+    let mut out = String::new();
+    for id in ids {
         out.push_str(&format!(
             "\nwarning: item ID {id} exists in more than one item directory (likely a merge from two clones); rename one by hand"
         ));
     }
-    Ok(out)
+    out
 }
 
 #[derive(Debug, Serialize)]
@@ -2698,6 +2712,7 @@ struct GitPullOutputJson {
     action: &'static str,
     updated: bool,
     status: backend_core::GitRepoStatus,
+    duplicate_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2754,19 +2769,21 @@ fn handle_git(storage: &TrackerStorage, action: &GitCommand, json: bool) -> Resu
             ))
         }
         GitCommand::Pull { pat_stdin } => {
-            let updated = storage.git_pull(&cli_git_auth(*pat_stdin)?)?;
+            let outcome = storage.git_pull_with_report(&cli_git_auth(*pat_stdin)?)?;
             let status = storage.git_status()?;
             if json {
                 return to_json_pretty(&GitPullOutputJson {
                     action: "pull",
-                    updated,
+                    updated: outcome.updated,
                     status,
+                    duplicate_ids: outcome.duplicate_ids,
                 });
             }
-            if updated {
+            if outcome.updated {
                 Ok(format!(
-                    "Pulled remote changes and reconciled .tracker/ indexes (HEAD: {})",
-                    status.head_short_sha.as_deref().unwrap_or("uncommitted")
+                    "Pulled remote changes and reconciled .tracker/ indexes (HEAD: {}){}",
+                    status.head_short_sha.as_deref().unwrap_or("uncommitted"),
+                    duplicate_id_warnings(&outcome.duplicate_ids)
                 ))
             } else {
                 Ok("Already up to date.".to_string())
@@ -2943,5 +2960,19 @@ mod tests {
         let json_out = handle_sync_index(&storage, true).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json_out).unwrap();
         assert_eq!(parsed["duplicate_ids"], serde_json::json!([id]));
+    }
+
+    #[test]
+    fn duplicate_id_warnings_emits_one_line_per_id() {
+        assert_eq!(duplicate_id_warnings(&[]), "");
+
+        let ids = vec!["BUG-0001".to_string(), "FEAT-00ABCD".to_string()];
+        let out = duplicate_id_warnings(&ids);
+        assert_eq!(out.matches("\nwarning: item ID ").count(), 2);
+        for id in &ids {
+            assert!(out.contains(&format!(
+                "item ID {id} exists in more than one item directory"
+            )));
+        }
     }
 }

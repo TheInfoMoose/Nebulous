@@ -154,6 +154,26 @@ impl DocumentedCommitInput {
     }
 }
 
+/// Outcome returned by [`TrackerStorage::git_pull_with_report`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitPullOutcome {
+    /// `true` if remote commits were pulled into the working tree.
+    pub updated: bool,
+    /// Item IDs that exist in more than one item directory after the post-pull reconcile, or empty
+    /// when nothing was pulled.
+    pub duplicate_ids: Vec<String>,
+}
+
+/// Outcome returned by [`TrackerStorage::git_sync_with_report`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitSyncOutcome {
+    /// Committed `.tracker/` short SHA, or current `HEAD` short SHA if nothing new was committed.
+    pub sha: Option<String>,
+    /// Item IDs that exist in more than one item directory after the post-pull reconcile, or empty
+    /// when nothing was pulled.
+    pub duplicate_ids: Vec<String>,
+}
+
 /// Outcome returned by [`TrackerStorage::git_commit_documented`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentedCommitOutcome {
@@ -1630,6 +1650,11 @@ impl TrackerStorage {
     /// Pulls the configured branch from the configured remote in `project.toml` `[git]` and
     /// reconciles `.tracker/` indexes if new commits were pulled.
     pub fn git_pull(&self, auth: &GitAuthRequest) -> Result<bool> {
+        Ok(self.git_pull_with_report(auth)?.updated)
+    }
+
+    /// Same as [`Self::git_pull`], but keeps the post-pull reconcile's duplicate item IDs.
+    pub fn git_pull_with_report(&self, auth: &GitAuthRequest) -> Result<GitPullOutcome> {
         let project = self.read_project()?;
         let auth = self.resolve_git_auth(auth)?;
         let updated = pull_repo_with_auth(
@@ -1638,10 +1663,15 @@ impl TrackerStorage {
             &project.git.branch,
             auth,
         )?;
-        if updated {
-            let _ = self.reconcile_indexes()?;
-        }
-        Ok(updated)
+        let duplicate_ids = if updated {
+            self.reconcile_indexes()?.duplicate_ids
+        } else {
+            Vec::new()
+        };
+        Ok(GitPullOutcome {
+            updated,
+            duplicate_ids,
+        })
     }
 
     /// Validates `input` against path rules and `[git.commit_policy]` without staging or
@@ -1976,14 +2006,29 @@ impl TrackerStorage {
     /// Stages and commits any dirty `.tracker/` changes, then pulls and pushes if the configured
     /// remote exists in the repository.
     pub fn git_sync(&self, message: Option<&str>, auth: &GitAuthRequest) -> Result<Option<String>> {
+        Ok(self.git_sync_with_report(message, auth)?.sha)
+    }
+
+    /// Same as [`Self::git_sync`], but keeps the post-pull reconcile's duplicate item IDs.
+    pub fn git_sync_with_report(
+        &self,
+        message: Option<&str>,
+        auth: &GitAuthRequest,
+    ) -> Result<GitSyncOutcome> {
         let committed_sha = self.git_commit_tracker(message)?;
         let project = self.read_project()?;
         let repo = Repository::discover(self.project_root())?;
-        if repo.find_remote(&project.git.remote).is_ok() {
-            let _ = self.git_pull(auth)?;
+        let duplicate_ids = if repo.find_remote(&project.git.remote).is_ok() {
+            let pull_outcome = self.git_pull_with_report(auth)?;
             self.git_push(auth)?;
-        }
-        Ok(committed_sha.or_else(|| head_short_sha_from_repo(&repo).ok()))
+            pull_outcome.duplicate_ids
+        } else {
+            Vec::new()
+        };
+        Ok(GitSyncOutcome {
+            sha: committed_sha.or_else(|| head_short_sha_from_repo(&repo).ok()),
+            duplicate_ids,
+        })
     }
 }
 
