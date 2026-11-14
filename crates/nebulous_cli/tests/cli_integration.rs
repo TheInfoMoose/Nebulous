@@ -2401,3 +2401,57 @@ fn test_project_add_scaffolds_canonical_stages_and_no_use_flag() {
     assert_eq!(add_three["id"], "projthree");
     assert_eq!(add_three["active_project_id"], "projthree");
 }
+
+#[test]
+fn test_task_quick_capture_show_and_close() {
+    let temp = TempDir::new().expect("should create temp dir");
+    let root_str = temp.path().to_str().unwrap();
+
+    run_neb_json(&["--root", root_str, "init", "--name", "TaskCliTest"], None);
+    run_neb_json(
+        &[
+            "--root", root_str, "scope", "add", "docs", "--target", "docs",
+        ],
+        None,
+    );
+
+    let task_json = run_neb_json(
+        &[
+            "--root",
+            root_str,
+            "task",
+            "Untrack build dir",
+            "-s",
+            "docs",
+        ],
+        None,
+    );
+    assert_eq!(task_json["id"], "TASK-0001");
+    assert_eq!(task_json["type"], "task");
+    assert_eq!(task_json["scope_id"], "docs");
+
+    let show_json = run_neb_json(&["--root", root_str, "show", "TASK-0001"], None);
+    assert_eq!(show_json["item"]["type"], "task");
+
+    let scope_list_json = run_neb_json(&["--root", root_str, "scope", "list"], None);
+    let docs_scope = scope_list_json["scopes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "docs")
+        .expect("should find docs scope");
+    assert_eq!(docs_scope["tasks_count"], 1);
+
+    let done_json = run_neb_json(
+        &[
+            "--root",
+            root_str,
+            "done",
+            "TASK-0001",
+            "-m",
+            "Untracked build dir",
+        ],
+        None,
+    );
+    assert_eq!(done_json["status"], "closed");
+}

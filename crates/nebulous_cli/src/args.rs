@@ -98,6 +98,29 @@ pub enum Commands {
         desc: Option<String>,
     },
 
+    /// Quick-capture a generic change/work item (`TASK-XXXX`).
+    #[command(visible_alias = "chore")]
+    Task {
+        /// Short summary title of the task.
+        title: String,
+
+        /// Target domain scope ID (falls back to `default_scope` / `inbox` if omitted).
+        #[arg(short, long)]
+        scope: Option<String>,
+
+        /// Target phase ID (falls back to `active_phase` if omitted).
+        #[arg(short, long)]
+        phase: Option<String>,
+
+        /// Task priority/severity (`low`, `medium`, `high`, `critical`).
+        #[arg(long, default_value = "medium")]
+        severity: Severity,
+
+        /// Task specification and notes for `desc.md`.
+        #[arg(short, long = "desc", visible_alias = "description")]
+        desc: Option<String>,
+    },
+
     /// Fast index-backed listing of tracked items with optional filters.
     List {
         /// Filter by domain scope ID.
@@ -276,7 +299,7 @@ pub enum Commands {
         #[arg(short, long)]
         message: Option<String>,
 
-        /// Optional linked item ID (`BUG-XXXX` or `FEAT-XXXX`) when committing workspace changes.
+        /// Optional linked item ID (`BUG-XXXX`, `FEAT-XXXX` or `TASK-XXXX`) when committing workspace changes.
         #[arg(short = 'i', long = "item")]
         item: Option<String>,
 
@@ -635,7 +658,7 @@ pub enum GitCommand {
 
     /// Create a policy-validated, self-documenting Git commit linked to a tracked item (`[<ITEM_ID>](<scope>) <summary>`).
     Commit {
-        /// Linked work item ID (`BUG-XXXX` or `FEAT-XXXX`).
+        /// Linked work item ID (`BUG-XXXX`, `FEAT-XXXX` or `TASK-XXXX`).
         #[arg(short = 'i', long = "item")]
         item: Option<String>,
 

@@ -114,6 +114,27 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
                 cli.json,
             )
         }
+        Some(Commands::Task {
+            title,
+            scope,
+            phase,
+            severity,
+            desc,
+        }) => {
+            let storage = resolve_storage(cli.root.as_deref())?;
+            let cwd = resolve_context_cwd(&storage, cli.root.as_deref());
+            handle_create_item(
+                &storage,
+                ItemType::Task,
+                title,
+                phase.as_deref(),
+                scope.as_deref(),
+                *severity,
+                desc.as_deref(),
+                cwd.as_deref(),
+                cli.json,
+            )
+        }
         Some(Commands::List {
             scope,
             phase,
@@ -1911,6 +1932,7 @@ struct ScopeListEntryJson {
     tech_stack: Vec<String>,
     bugs_count: usize,
     features_count: usize,
+    tasks_count: usize,
     total_items: usize,
 }
 
@@ -1955,6 +1977,7 @@ fn handle_scope(storage: &TrackerStorage, action: &ScopeCommand, json: bool) -> 
                     tech_stack: s.manifest.scope.tech_stack.clone(),
                     bugs_count: s.manifest.items.count(ItemType::Bug),
                     features_count: s.manifest.items.count(ItemType::Feature),
+                    tasks_count: s.manifest.items.count(ItemType::Task),
                     total_items: s.manifest.total_items(),
                 })
                 .collect();
@@ -1970,10 +1993,10 @@ fn handle_scope(storage: &TrackerStorage, action: &ScopeCommand, json: bool) -> 
             let _ = writeln!(out, "Phase: {phase_id}");
             let _ = writeln!(
                 out,
-                "{:<18} {:<26} {:<6} {:<6} TECH STACK",
-                "SCOPE ID", "TARGET PATH", "BUGS", "FEATS"
+                "{:<18} {:<26} {:<6} {:<6} {:<6} TECH STACK",
+                "SCOPE ID", "TARGET PATH", "BUGS", "FEATS", "TASKS"
             );
-            let _ = writeln!(out, "{}", "-".repeat(78));
+            let _ = writeln!(out, "{}", "-".repeat(85));
             for s in &scopes {
                 let stack = if s.tech_stack.is_empty() {
                     "-".to_string()
@@ -1982,8 +2005,8 @@ fn handle_scope(storage: &TrackerStorage, action: &ScopeCommand, json: bool) -> 
                 };
                 let _ = writeln!(
                     out,
-                    "{:<18} {:<26} {:<6} {:<6} {}",
-                    s.id, s.target, s.bugs_count, s.features_count, stack
+                    "{:<18} {:<26} {:<6} {:<6} {:<6} {}",
+                    s.id, s.target, s.bugs_count, s.features_count, s.tasks_count, stack
                 );
             }
             Ok(out.trim_end().to_string())
