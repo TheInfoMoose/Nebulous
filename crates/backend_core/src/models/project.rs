@@ -83,6 +83,12 @@ pub struct ProjectCounters {
     pub bug: u32,
     #[serde(default, alias = "feat")]
     pub feature: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub task: u32,
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 impl ProjectCounters {
@@ -91,6 +97,7 @@ impl ProjectCounters {
         match kind {
             ItemType::Bug => self.bug,
             ItemType::Feature => self.feature,
+            ItemType::Task => self.task,
         }
     }
 
@@ -99,6 +106,7 @@ impl ProjectCounters {
         match kind {
             ItemType::Bug => &mut self.bug,
             ItemType::Feature => &mut self.feature,
+            ItemType::Task => &mut self.task,
         }
     }
 
@@ -320,12 +328,40 @@ created_at = "2026-11-09T12:00:00Z"
 
     #[test]
     fn project_counters_get_and_merge_max_per_kind() {
-        let mut counters = ProjectCounters { bug: 3, feature: 7 };
+        let mut counters = ProjectCounters {
+            bug: 3,
+            feature: 7,
+            task: 0,
+        };
         *counters.get_mut(ItemType::Bug) += 1;
         assert_eq!(counters.get(ItemType::Bug), 4);
         assert_eq!(counters.get(ItemType::Feature), 7);
 
-        counters.merge_max(&ProjectCounters { bug: 2, feature: 9 });
-        assert_eq!(counters, ProjectCounters { bug: 4, feature: 9 });
+        counters.merge_max(&ProjectCounters {
+            bug: 2,
+            feature: 9,
+            task: 0,
+        });
+        assert_eq!(
+            counters,
+            ProjectCounters {
+                bug: 4,
+                feature: 9,
+                task: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn project_counters_task_defaults_and_skips_zero() {
+        let mut manifest = ProjectManifest::from_toml_str(BASE_PROJECT_TOML).unwrap();
+        assert_eq!(manifest.counters.task, 0);
+
+        let serialized_zero = manifest.to_toml_string().unwrap();
+        assert!(!serialized_zero.contains("task ="));
+
+        manifest.counters.task = 3;
+        let serialized_three = manifest.to_toml_string().unwrap();
+        assert!(serialized_three.contains("task = 3"));
     }
 }

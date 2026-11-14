@@ -50,13 +50,13 @@ pub struct ItemDetail {
 
 /// Maximum item schema version supported by this binary.
 ///
-/// STEP 23F sets `Task => 2` and raises `MAX_ITEM_SCHEMA_VERSION` to 2.
-pub const MAX_ITEM_SCHEMA_VERSION: u32 = 1;
+/// Tasks require schema version 2; bugs and features use schema version 1.
+pub const MAX_ITEM_SCHEMA_VERSION: u32 = 2;
 
 /// Number of uppercase hex characters in a hash item ID suffix (e.g. `7F3A2C` in `BUG-7F3A2C`).
 pub const HASH_ID_HEX_LEN: usize = 6;
 
-/// Category of tracked work item (`bug` or `feature`).
+/// Category of tracked work item (`bug`, `feature` or `task`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemType {
@@ -64,23 +64,27 @@ pub enum ItemType {
     Bug,
     #[serde(alias = "feat", alias = "features")]
     Feature,
+    #[serde(alias = "tasks")]
+    Task,
 }
 
 impl ItemType {
     /// Returns the minimum `schema_version` required for an item of this type.
     ///
-    /// STEP 23F sets `Task => 2` and raises `MAX_ITEM_SCHEMA_VERSION` to 2.
+    /// Tasks require schema version 2; bugs and features use schema version 1.
     pub fn min_schema_version(self) -> u32 {
         match self {
             Self::Bug | Self::Feature => 1,
+            Self::Task => 2,
         }
     }
 
-    /// Returns the canonical ID prefix (`BUG` or `FEAT`).
+    /// Returns the canonical ID prefix (`BUG`, `FEAT`, or `TASK`).
     pub fn id_prefix(self) -> &'static str {
         match self {
             Self::Bug => "BUG",
             Self::Feature => "FEAT",
+            Self::Task => "TASK",
         }
     }
 
@@ -95,41 +99,44 @@ impl ItemType {
     }
 
     /// Every item type, in ordinal order.
-    pub const ALL: &'static [ItemType] = &[Self::Bug, Self::Feature];
+    pub const ALL: &'static [ItemType] = &[Self::Bug, Self::Feature, Self::Task];
 
     /// Stable sort position of this type (index into `ALL`).
     pub fn ordinal(self) -> u8 {
         match self {
             Self::Bug => 0,
             Self::Feature => 1,
+            Self::Task => 2,
         }
     }
 
-    /// Parses an item ID prefix (`BUG`, `FEAT`, or `FEATURE`, case-insensitive) into an `ItemType`.
+    /// Parses an item ID prefix (`BUG`, `FEAT`, `FEATURE`, or `TASK`, case-insensitive) into an `ItemType`.
     pub fn from_prefix(prefix: &str) -> Option<Self> {
         match prefix.to_ascii_uppercase().as_str() {
             "BUG" => Some(Self::Bug),
             "FEAT" | "FEATURE" => Some(Self::Feature),
+            "TASK" => Some(Self::Task),
             _ => None,
         }
     }
 
-    /// Returns the uppercase display label (`BUG` or `FEATURE`).
+    /// Returns the uppercase display label (`BUG`, `FEATURE`, or `TASK`).
     pub fn label(self) -> &'static str {
         match self {
             Self::Bug => "BUG",
             Self::Feature => "FEATURE",
+            Self::Task => "TASK",
         }
     }
 }
 
-/// Returns `true` if `id` is a valid uppercase hash item ID (`BUG-XXXXXX` or `FEAT-XXXXXX`,
+/// Returns `true` if `id` is a valid uppercase hash item ID (`BUG-XXXXXX`, `FEAT-XXXXXX`, or `TASK-XXXXXX`,
 /// where `XXXXXX` is 6 uppercase hex digits containing at least one `A`–`F`).
 pub fn is_hash_item_id(id: &str) -> bool {
     let Some((prefix, suffix)) = id.split_once('-') else {
         return false;
     };
-    if !matches!(prefix, "BUG" | "FEAT") {
+    if !matches!(prefix, "BUG" | "FEAT" | "TASK") {
         return false;
     }
     if suffix.len() != HASH_ID_HEX_LEN {
@@ -146,6 +153,7 @@ impl fmt::Display for ItemType {
         match self {
             Self::Bug => write!(f, "bug"),
             Self::Feature => write!(f, "feature"),
+            Self::Task => write!(f, "task"),
         }
     }
 }
@@ -157,10 +165,11 @@ impl FromStr for ItemType {
         match s.trim().to_ascii_lowercase().as_str() {
             "bug" | "bugs" => Ok(Self::Bug),
             "feature" | "features" | "feat" => Ok(Self::Feature),
+            "task" | "tasks" => Ok(Self::Task),
             other => Err(TrackerError::InvalidEnumValue {
                 enum_name: "ItemType",
                 value: other.to_string(),
-                expected: "bug, feature (or feat)",
+                expected: "bug, feature (or feat), task",
             }),
         }
     }
@@ -346,7 +355,7 @@ mod tests {
         assert!(!is_hash_item_id("BUG-7f3a2c"));
         assert!(!is_hash_item_id("BUG-7F3A2"));
         assert!(!is_hash_item_id("BUG-7F3A2C1"));
-        assert!(!is_hash_item_id("TASK-7F3A2C"));
+        assert!(is_hash_item_id("TASK-7F3A2C"));
         assert!(!is_hash_item_id("BUG7F3A2C"));
         assert!(!is_hash_item_id(""));
     }
@@ -363,9 +372,62 @@ mod tests {
             );
         }
         assert_eq!(ItemType::from_prefix("FEATURE"), Some(ItemType::Feature));
-        assert_eq!(ItemType::from_prefix("TASK"), None);
+        assert_eq!(ItemType::from_prefix("TASK"), Some(ItemType::Task));
+        assert_eq!(ItemType::from_prefix("TASKS"), None);
         assert_eq!(ItemType::from_prefix(""), None);
         assert_eq!(ItemType::Bug.label(), "BUG");
         assert_eq!(ItemType::Feature.label(), "FEATURE");
+    }
+
+    #[test]
+    fn task_type_parses_formats_and_requires_schema_v2() {
+        assert_eq!(ItemType::from_str("task").unwrap(), ItemType::Task);
+        assert_eq!(ItemType::from_str("tasks").unwrap(), ItemType::Task);
+        assert_eq!(ItemType::Task.format_id(7), "TASK-0007");
+        assert_eq!(ItemType::Task.format_hash_id(0xABCDEF), "TASK-ABCDEF");
+        assert_eq!(ItemType::Task.min_schema_version(), 2);
+        assert_eq!(ItemType::Bug.min_schema_version(), 1);
+        assert_eq!(MAX_ITEM_SCHEMA_VERSION, 2);
+    }
+
+    #[test]
+    fn created_task_writes_schema_version_2_and_bug_does_not() {
+        use std::fs;
+
+        use crate::storage::TrackerStorage;
+        use crate::workflow::CreateItemInput;
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = TrackerStorage::init_standard(dir.path(), "task-test").unwrap();
+
+        let (task_loc, task_detail) = storage
+            .create_item(CreateItemInput::new(ItemType::Task, "Sample task"))
+            .unwrap();
+        let (bug_loc, bug_detail) = storage
+            .create_bug("Sample bug", None, None, Severity::Medium, None)
+            .unwrap();
+
+        assert!(task_detail.manifest.item.id.starts_with("TASK-"));
+
+        let task_path = storage
+            .item_toml_path(
+                &task_loc.phase_id,
+                &task_loc.scope_id,
+                &task_detail.manifest.item.id,
+            )
+            .unwrap();
+        let bug_path = storage
+            .item_toml_path(
+                &bug_loc.phase_id,
+                &bug_loc.scope_id,
+                &bug_detail.manifest.item.id,
+            )
+            .unwrap();
+
+        let task_text = fs::read_to_string(task_path).unwrap();
+        let bug_text = fs::read_to_string(bug_path).unwrap();
+
+        assert!(task_text.contains("schema_version = 2"));
+        assert!(!bug_text.contains("schema_version"));
     }
 }

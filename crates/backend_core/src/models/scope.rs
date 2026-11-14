@@ -50,15 +50,18 @@ pub struct ScopeItems {
     pub bugs: Vec<ItemStub>,
     #[serde(default)]
     pub features: Vec<ItemStub>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<ItemStub>,
 }
 
 impl ScopeItems {
-    /// Iterates over all indexed stubs tagged with their `ItemType` (bugs, then features, in stored order).
+    /// Iterates over all indexed stubs tagged with their `ItemType` (bugs, features, then tasks, in stored order).
     pub fn iter(&self) -> impl Iterator<Item = (ItemType, &ItemStub)> {
         self.bugs
             .iter()
             .map(|stub| (ItemType::Bug, stub))
             .chain(self.features.iter().map(|stub| (ItemType::Feature, stub)))
+            .chain(self.tasks.iter().map(|stub| (ItemType::Task, stub)))
     }
 
     /// Returns the number of stubs stored for `kind`.
@@ -66,6 +69,7 @@ impl ScopeItems {
         match kind {
             ItemType::Bug => self.bugs.len(),
             ItemType::Feature => self.features.len(),
+            ItemType::Task => self.tasks.len(),
         }
     }
 
@@ -76,6 +80,7 @@ impl ScopeItems {
         let list = match kind {
             ItemType::Bug => &mut self.bugs,
             ItemType::Feature => &mut self.features,
+            ItemType::Task => &mut self.tasks,
         };
         list.push(stub);
         list.sort_by(ItemStub::chronological_cmp);
@@ -85,6 +90,7 @@ impl ScopeItems {
     pub fn remove_id(&mut self, id: &str) {
         self.bugs.retain(|s| s.id != id);
         self.features.retain(|s| s.id != id);
+        self.tasks.retain(|s| s.id != id);
     }
 }
 
@@ -183,6 +189,7 @@ mod tests {
                 stub("FEAT-0001", "2026-01-01T00:00:00Z"),
                 stub("FEAT-0002", "2026-01-02T00:00:00Z"),
             ],
+            tasks: Vec::new(),
         };
 
         items.remove_id("FEAT-0001");
@@ -204,6 +211,7 @@ mod tests {
                 stub("BUG-0002", "2026-01-02T00:00:00Z"),
             ],
             features: vec![stub("FEAT-0001", "2026-01-03T00:00:00Z")],
+            tasks: Vec::new(),
         };
 
         let collected: Vec<(ItemType, &str)> =
@@ -224,6 +232,49 @@ mod tests {
             items,
         };
         assert_eq!(manifest.total_items(), 3);
+    }
+
+    #[test]
+    fn scope_items_tasks_default_skip_and_follow_iter_order() {
+        let toml_without_tasks = r#"[scope]
+id = "inbox"
+target = "."
+
+[[items.bugs]]
+id = "BUG-0001"
+title = "b"
+
+[[items.features]]
+id = "FEAT-0001"
+title = "f"
+"#;
+
+        let mut manifest = ScopeManifest::from_toml_str(toml_without_tasks).unwrap();
+        assert!(manifest.items.tasks.is_empty());
+
+        let reserialized = manifest.to_toml_string().unwrap();
+        assert!(!reserialized.contains("tasks"));
+
+        manifest
+            .items
+            .insert(ItemType::Task, stub("TASK-0001", "2026-01-01T00:00:00Z"));
+        let order: Vec<(ItemType, &str)> = manifest
+            .items
+            .iter()
+            .map(|(k, s)| (k, s.id.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                (ItemType::Bug, "BUG-0001"),
+                (ItemType::Feature, "FEAT-0001"),
+                (ItemType::Task, "TASK-0001"),
+            ]
+        );
+        assert_eq!(manifest.items.count(ItemType::Task), 1);
+
+        manifest.items.remove_id("TASK-0001");
+        assert!(manifest.items.tasks.is_empty());
     }
 
     #[test]

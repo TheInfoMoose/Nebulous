@@ -254,6 +254,7 @@ fn test_lazy_loading_does_not_read_desc_md_during_boot_index_load() {
                 created_at: String::new(),
             }],
             features: vec![],
+            tasks: Vec::new(),
         },
     };
     storage
@@ -461,6 +462,7 @@ fn test_reconcile_indexes_rebuilds_from_authoritative_item_toml() {
                 created_at: String::new(),
             }],
             features: vec![],
+            tasks: Vec::new(),
         },
     };
     storage
@@ -2383,7 +2385,7 @@ fn versioned_reads_and_writes_preserve_unknown_keys_and_layout() {
         } => {
             assert_eq!(path, item_path);
             assert_eq!(found, 9);
-            assert_eq!(supported, 1);
+            assert_eq!(supported, 2);
         }
         other => panic!("expected UnsupportedSchema on read, got {other:?}"),
     }
@@ -2404,7 +2406,7 @@ fn versioned_reads_and_writes_preserve_unknown_keys_and_layout() {
         } => {
             assert_eq!(path, item_path);
             assert_eq!(found, 9);
-            assert_eq!(supported, 1);
+            assert_eq!(supported, 2);
         }
         other => panic!("expected UnsupportedSchema on write, got {other:?}"),
     }
@@ -2673,6 +2675,7 @@ fn item_stub_chronological_cmp_orders_by_instant_then_sequence_then_id() {
     let empty_items = ScopeItems {
         bugs: vec![stub("BUG-0001", "")],
         features: vec![],
+        tasks: Vec::new(),
     };
     let empty_toml = toml::to_string(&empty_items).unwrap();
     assert!(!empty_toml.contains("created_at"));
@@ -2680,6 +2683,7 @@ fn item_stub_chronological_cmp_orders_by_instant_then_sequence_then_id() {
     let filled_items = ScopeItems {
         bugs: vec![stub("BUG-0001", "2026-01-01T00:00:00Z")],
         features: vec![],
+        tasks: Vec::new(),
     };
     let filled_toml = toml::to_string(&filled_items).unwrap();
     assert!(filled_toml.contains("created_at"));
