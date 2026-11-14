@@ -134,6 +134,11 @@ fn id_rank(id: &str) -> IdRank<'_> {
     }
 }
 
+/// Total order on item IDs: sequential IDs (by type ordinal, then number, then ID string) before all other IDs (by string).
+pub(crate) fn cmp_item_ids(a: &str, b: &str) -> std::cmp::Ordering {
+    id_rank(a).cmp(&id_rank(b))
+}
+
 impl ItemStub {
     /// Orders item stubs chronologically by `created_at` instant (empty first, then parsed UTC
     /// instant, then unparseable trimmed string), breaking ties with sequential IDs first
@@ -141,7 +146,7 @@ impl ItemStub {
     pub fn chronological_cmp(&self, other: &Self) -> std::cmp::Ordering {
         created_at_rank(&self.created_at)
             .cmp(&created_at_rank(&other.created_at))
-            .then_with(|| id_rank(&self.id).cmp(&id_rank(&other.id)))
+            .then_with(|| cmp_item_ids(&self.id, &other.id))
     }
 }
 
@@ -219,5 +224,38 @@ mod tests {
             items,
         };
         assert_eq!(manifest.total_items(), 3);
+    }
+
+    #[test]
+    fn cmp_item_ids_is_a_total_order_over_mixed_ids() {
+        use std::cmp::Ordering;
+
+        let ids = [
+            "BUG-9999",
+            "BUG-10000",
+            "BUG-5ABCDE",
+            "FEAT-0001",
+            "bug-0002",
+            "BUG-ABCDEF",
+            "NOTANID",
+        ];
+
+        assert_eq!(cmp_item_ids("BUG-9999", "BUG-10000"), Ordering::Less);
+        assert_eq!(cmp_item_ids("BUG-10000", "BUG-5ABCDE"), Ordering::Less);
+        assert_eq!(cmp_item_ids("BUG-9999", "BUG-5ABCDE"), Ordering::Less);
+
+        for a in ids {
+            assert_eq!(cmp_item_ids(a, a), Ordering::Equal);
+            for b in ids {
+                assert_eq!(cmp_item_ids(a, b), cmp_item_ids(b, a).reverse());
+                for c in ids {
+                    if cmp_item_ids(a, b) != Ordering::Greater
+                        && cmp_item_ids(b, c) != Ordering::Greater
+                    {
+                        assert_ne!(cmp_item_ids(a, c), Ordering::Greater);
+                    }
+                }
+            }
+        }
     }
 }

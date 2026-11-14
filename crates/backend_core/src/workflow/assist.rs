@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
@@ -10,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TrackerError};
 use crate::ingestion::ECOSYSTEM_MANIFEST_FILES;
+use crate::models::scope::cmp_item_ids;
 use crate::models::{resolve_phase_alias, ItemStatus, ItemType, Severity, CANONICAL_PHASES};
-use crate::storage::id::parse_item_id_number;
 use crate::storage::{
     normalize_relative_path, normalize_relative_path_str, PhaseIndex, ScopeIndex, TrackerStorage,
 };
@@ -460,7 +459,7 @@ impl TrackerStorage {
                 .cmp(&a_in_active)
                 .then_with(|| (b.scope_id == inferred_scope).cmp(&(a.scope_id == inferred_scope)))
                 .then_with(|| b.severity.cmp(&a.severity))
-                .then_with(|| compare_item_ids(&a.id, &b.id))
+                .then_with(|| cmp_item_ids(&a.id, &b.id))
         });
 
         for c in in_progress_items {
@@ -504,7 +503,7 @@ impl TrackerStorage {
                         .cmp(&(b.item_type == ItemType::Bug))
                         .reverse()
                 })
-                .then_with(|| compare_item_ids(&a.id, &b.id))
+                .then_with(|| cmp_item_ids(&a.id, &b.id))
         });
 
         for c in recurring_open {
@@ -542,7 +541,7 @@ impl TrackerStorage {
             b.days_since_update
                 .cmp(&a.days_since_update)
                 .then_with(|| b.severity.cmp(&a.severity))
-                .then_with(|| compare_item_ids(&a.id, &b.id))
+                .then_with(|| cmp_item_ids(&a.id, &b.id))
         });
 
         for c in stagnant {
@@ -585,7 +584,7 @@ impl TrackerStorage {
                 .cmp(&a_in_scope)
                 .then_with(|| b.severity.cmp(&a.severity))
                 .then_with(|| (b.item_type == ItemType::Bug).cmp(&(a.item_type == ItemType::Bug)))
-                .then_with(|| compare_item_ids(&a.id, &b.id))
+                .then_with(|| cmp_item_ids(&a.id, &b.id))
         });
 
         for c in active_stage_open {
@@ -750,15 +749,6 @@ fn suggest_next_stage(current_phase_id: &str, registered_phases: &[&str]) -> Opt
                 .find(|(id, _)| *id == "production")
                 .map(|(id, _)| (*id).to_string())
         }
-    }
-}
-
-fn compare_item_ids(a: &str, b: &str) -> Ordering {
-    match (parse_item_id_number(a), parse_item_id_number(b)) {
-        (Some((type_a, num_a)), Some((type_b, num_b))) if type_a == type_b => {
-            num_a.cmp(&num_b).then_with(|| a.cmp(b))
-        }
-        _ => a.cmp(b),
     }
 }
 
