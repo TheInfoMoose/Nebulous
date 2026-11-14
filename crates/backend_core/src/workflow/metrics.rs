@@ -126,12 +126,7 @@ impl TrackerStorage {
                 let mut scope_total_items: u32 = 0;
                 let mut scope_completed_items: u32 = 0;
 
-                let all_stubs = scope_idx
-                    .manifest
-                    .items
-                    .bugs
-                    .iter()
-                    .chain(scope_idx.manifest.items.features.iter());
+                let all_stubs = scope_idx.manifest.items.iter().map(|(_, stub)| stub);
 
                 for stub in all_stubs {
                     let manifest = self.read_item_manifest(

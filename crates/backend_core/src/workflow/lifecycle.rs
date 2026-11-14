@@ -6,7 +6,7 @@ use crate::agent_context::AgentContextBundle;
 use crate::error::{Result, TrackerError};
 use crate::models::{
     canonical_phase_title, resolve_phase_alias, ActiveTimer, ItemDetail, ItemEffort, ItemHistory,
-    ItemManifest, ItemMetadata, ItemStatus, ItemStub, ItemType, PhaseManifest, PhaseMetadata,
+    ItemManifest, ItemMetadata, ItemStatus, ItemType, PhaseManifest, PhaseMetadata,
     PhaseRegistryEntry, PhaseStatus, PhaseSummary, PreviousFix, ProjectManifest, ScopeItems,
     ScopeManifest, ScopeMetadata, ScopeRegistry, ScopeRegistryEntry, Severity,
 };
@@ -937,15 +937,9 @@ impl TrackerStorage {
                 self.read_scope_from_path(&s_toml)?
             };
 
-            for bug in &s_manifest.items.bugs {
+            for (_, stub) in s_manifest.items.iter() {
                 total_items += 1;
-                if bug.status.is_completed() {
-                    completed_items += 1;
-                }
-            }
-            for feat in &s_manifest.items.features {
-                total_items += 1;
-                if feat.status.is_completed() {
+                if stub.status.is_completed() {
                     completed_items += 1;
                 }
             }
@@ -969,31 +963,10 @@ impl TrackerStorage {
         let mut scope_manifest = self.read_scope(phase_id, scope_id)?;
         let stub = item_manifest.to_stub();
 
+        scope_manifest.items.remove_id(&stub.id);
         scope_manifest
             .items
-            .bugs
-            .retain(|existing| existing.id != stub.id);
-        scope_manifest
-            .items
-            .features
-            .retain(|existing| existing.id != stub.id);
-
-        match item_manifest.item.item_type {
-            ItemType::Bug => {
-                scope_manifest.items.bugs.push(stub);
-                scope_manifest
-                    .items
-                    .bugs
-                    .sort_by(ItemStub::chronological_cmp);
-            }
-            ItemType::Feature => {
-                scope_manifest.items.features.push(stub);
-                scope_manifest
-                    .items
-                    .features
-                    .sort_by(ItemStub::chronological_cmp);
-            }
-        }
+            .insert(item_manifest.item.item_type, stub);
 
         self.write_scope(phase_id, scope_id, &scope_manifest)?;
         self.recompute_phase_summary_with_scope(phase_id, scope_id, &scope_manifest)

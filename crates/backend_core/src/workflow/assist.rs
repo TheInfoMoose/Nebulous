@@ -234,13 +234,7 @@ impl TrackerStorage {
             let in_progress_in_active: Vec<String> = active_phase
                 .scopes
                 .iter()
-                .flat_map(|s| {
-                    s.manifest
-                        .items
-                        .bugs
-                        .iter()
-                        .chain(s.manifest.items.features.iter())
-                })
+                .flat_map(|s| s.manifest.items.iter().map(|(_, stub)| stub))
                 .filter(|stub| stub.status == ItemStatus::InProgress)
                 .map(|stub| stub.id.clone())
                 .collect();
@@ -394,12 +388,7 @@ impl TrackerStorage {
         let mut candidates = Vec::new();
         for phase_idx in &index.phases {
             for scope_idx in &phase_idx.scopes {
-                let all_stubs = scope_idx
-                    .manifest
-                    .items
-                    .bugs
-                    .iter()
-                    .chain(scope_idx.manifest.items.features.iter());
+                let all_stubs = scope_idx.manifest.items.iter().map(|(_, stub)| stub);
                 for stub in all_stubs {
                     if stub.status.is_completed() {
                         continue;
@@ -725,15 +714,9 @@ fn count_phase_items(phase_idx: &PhaseIndex) -> (u32, u32) {
     let mut total = 0u32;
     let mut completed = 0u32;
     for scope in &phase_idx.scopes {
-        for bug in &scope.manifest.items.bugs {
+        for (_, stub) in scope.manifest.items.iter() {
             total += 1;
-            if bug.status.is_completed() {
-                completed += 1;
-            }
-        }
-        for feat in &scope.manifest.items.features {
-            total += 1;
-            if feat.status.is_completed() {
+            if stub.status.is_completed() {
                 completed += 1;
             }
         }
