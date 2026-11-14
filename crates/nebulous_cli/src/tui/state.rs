@@ -793,6 +793,9 @@ impl TuiApp {
             KeyCode::Char('f') => {
                 self.open_create_modal(ItemType::Feature);
             }
+            KeyCode::Char('t') => {
+                self.open_create_modal(ItemType::Task);
+            }
             KeyCode::Char('s') => {
                 self.action_start_work()?;
             }

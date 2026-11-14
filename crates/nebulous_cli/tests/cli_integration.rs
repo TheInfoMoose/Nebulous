@@ -2455,3 +2455,25 @@ fn test_task_quick_capture_show_and_close() {
     );
     assert_eq!(done_json["status"], "closed");
 }
+
+#[test]
+fn test_tui_t_key_opens_task_capture_and_creates_task() {
+    use crossterm::event::KeyCode;
+    use nebulous_cli::tui::{render_to_string, TuiApp};
+
+    let temp = TempDir::new().expect("should create temp dir for TUI task test");
+    let storage = TrackerStorage::init_standard(temp.path(), "TuiTaskTest").unwrap();
+    let mut app = TuiApp::new(storage, None).unwrap();
+
+    let idle_str = render_to_string(&mut app, 120, 36);
+    assert!(idle_str.contains("[t] Task"));
+
+    app.press_char('t').unwrap();
+    let modal_str = render_to_string(&mut app, 80, 24);
+    assert!(modal_str.contains("NEW TASK CAPTURE"));
+
+    app.type_text("Untrack build dir").unwrap();
+    app.press_key(KeyCode::Enter).unwrap();
+    assert!(app.modal.is_none());
+    assert!(app.items.iter().any(|i| i.id == "TASK-0001"));
+}

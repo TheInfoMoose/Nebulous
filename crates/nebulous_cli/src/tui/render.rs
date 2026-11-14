@@ -208,7 +208,8 @@ fn render_whats_next_bar(frame: &mut Frame, app: &TuiApp, area: Rect) {
     } else if let Some(rec) = app.whats_next.recommendations.first() {
         format!("{} ({})", rec.summary, rec.suggested_command)
     } else {
-        "All clear in active stage — press [b] New Bug or [f] New Feature.".to_string()
+        "All clear in active stage — press [b] New Bug, [f] New Feature or [t] New Task."
+            .to_string()
     };
 
     let divider = "═".repeat(area.width as usize);
@@ -343,7 +344,7 @@ fn render_items_pane(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
             Cell::from(Span::styled("-", style_dim())),
             Cell::from(Span::styled("empty", style_dim())),
             Cell::from(Span::styled(
-                "No items in this view — press [b] Bug or [f] Feature",
+                "No items in this view — press [b] Bug, [f] Feature or [t] Task",
                 style_dim(),
             )),
         ])]
@@ -491,7 +492,7 @@ fn render_details_pane(frame: &mut Frame, app: &TuiApp, area: Rect) {
             style_dim(),
         )));
         lines.push(Line::from(Span::styled(
-            "Press [b] to capture a Bug, [f] to capture a Feature, or [1/2/3] to switch stages.",
+            "Press [b] Bug, [f] Feature, [t] Task, or [1/2/3] to switch stages.",
             style_base(),
         )));
     }
@@ -514,7 +515,7 @@ fn render_footer_bar(frame: &mut Frame, app: &TuiApp, area: Rect) {
             Span::styled(" STATUS: ", style_dim()),
             Span::styled(msg.clone(), msg_style),
             Span::styled(
-                "  │  [1/2/3] Stage [b] Bug [f] Feat [s] Start [d] Done [m] Move [q] Quit",
+                "  │  [1/2/3] Stage [b] Bug [f] Feat [t] Task [s] Start [d] Done [m] Move [q] Quit",
                 style_dim(),
             ),
         ])
@@ -526,6 +527,8 @@ fn render_footer_bar(frame: &mut Frame, app: &TuiApp, area: Rect) {
             Span::styled(" Bug ", style_base()),
             Span::styled("[f]", style_bright()),
             Span::styled(" Feat ", style_base()),
+            Span::styled("[t]", style_bright()),
+            Span::styled(" Task ", style_base()),
             Span::styled("[s]", style_bright()),
             Span::styled(" Start ", style_base()),
             Span::styled("[d]", style_bright()),
