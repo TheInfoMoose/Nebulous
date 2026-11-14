@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TrackerError};
 use crate::models::component::ComponentRegistry;
+use crate::models::item::ItemType;
 use crate::models::{deserialize_datetime_string, parse_timestamp_utc};
 
 /// Tier 1: Root project manifest (`.tracker/project.toml`).
@@ -82,6 +83,33 @@ pub struct ProjectCounters {
     pub bug: u32,
     #[serde(default, alias = "feat")]
     pub feature: u32,
+}
+
+impl ProjectCounters {
+    /// Returns the counter value for `kind`.
+    pub fn get(&self, kind: ItemType) -> u32 {
+        match kind {
+            ItemType::Bug => self.bug,
+            ItemType::Feature => self.feature,
+        }
+    }
+
+    /// Returns a mutable reference to the counter for `kind`.
+    pub fn get_mut(&mut self, kind: ItemType) -> &mut u32 {
+        match kind {
+            ItemType::Bug => &mut self.bug,
+            ItemType::Feature => &mut self.feature,
+        }
+    }
+
+    /// Updates each counter in `self` to at least the corresponding value in `other`.
+    pub fn merge_max(&mut self, other: &ProjectCounters) {
+        for &kind in ItemType::ALL {
+            let v = other.get(kind);
+            let slot = self.get_mut(kind);
+            *slot = (*slot).max(v);
+        }
+    }
 }
 
 /// `[phases]` table inside `.tracker/project.toml`.
@@ -288,5 +316,16 @@ created_at = "2026-11-09T12:00:00Z"
     fn id_scheme_rejects_invalid_value() {
         let bad_toml = format!("{BASE_PROJECT_TOML}id_scheme = \"bogus\"\n");
         assert!(ProjectManifest::from_toml_str(&bad_toml).is_err());
+    }
+
+    #[test]
+    fn project_counters_get_and_merge_max_per_kind() {
+        let mut counters = ProjectCounters { bug: 3, feature: 7 };
+        *counters.get_mut(ItemType::Bug) += 1;
+        assert_eq!(counters.get(ItemType::Bug), 4);
+        assert_eq!(counters.get(ItemType::Feature), 7);
+
+        counters.merge_max(&ProjectCounters { bug: 2, feature: 9 });
+        assert_eq!(counters, ProjectCounters { bug: 4, feature: 9 });
     }
 }

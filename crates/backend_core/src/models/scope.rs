@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-use crate::models::item::{ItemStatus, Severity};
+use crate::models::item::{ItemStatus, ItemType, Severity};
 
 /// Tier 3: Domain/crate scope index manifest (`.../domains/<scope_id>/scope.toml`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,7 +24,7 @@ impl ScopeManifest {
 
     /// Returns total number of indexed bugs and features in this scope.
     pub fn total_items(&self) -> usize {
-        self.items.bugs.len() + self.items.features.len()
+        self.items.iter().count()
     }
 }
 
@@ -50,6 +50,42 @@ pub struct ScopeItems {
     pub bugs: Vec<ItemStub>,
     #[serde(default)]
     pub features: Vec<ItemStub>,
+}
+
+impl ScopeItems {
+    /// Iterates over all indexed stubs tagged with their `ItemType` (bugs, then features, in stored order).
+    pub fn iter(&self) -> impl Iterator<Item = (ItemType, &ItemStub)> {
+        self.bugs
+            .iter()
+            .map(|stub| (ItemType::Bug, stub))
+            .chain(self.features.iter().map(|stub| (ItemType::Feature, stub)))
+    }
+
+    /// Returns the number of stubs stored for `kind`.
+    pub fn count(&self, kind: ItemType) -> usize {
+        match kind {
+            ItemType::Bug => self.bugs.len(),
+            ItemType::Feature => self.features.len(),
+        }
+    }
+
+    /// Appends `stub` to `kind`'s list and sorts that list with `ItemStub::chronological_cmp`.
+    ///
+    /// Does not deduplicate; callers that move or update an existing stub must call `remove_id` first.
+    pub fn insert(&mut self, kind: ItemType, stub: ItemStub) {
+        let list = match kind {
+            ItemType::Bug => &mut self.bugs,
+            ItemType::Feature => &mut self.features,
+        };
+        list.push(stub);
+        list.sort_by(ItemStub::chronological_cmp);
+    }
+
+    /// Removes any stub with `id` from every kind list.
+    pub fn remove_id(&mut self, id: &str) {
+        self.bugs.retain(|s| s.id != id);
+        self.features.retain(|s| s.id != id);
+    }
 }
 
 /// Lightweight item summary stored in `scope.toml` `[items]`.
@@ -91,10 +127,7 @@ enum IdRank<'a> {
 
 fn id_rank(id: &str) -> IdRank<'_> {
     if let Some((item_type, number)) = crate::storage::parse_item_id_number(id) {
-        let type_order = match item_type {
-            crate::models::ItemType::Bug => 0,
-            crate::models::ItemType::Feature => 1,
-        };
+        let type_order = item_type.ordinal();
         IdRank::Sequential(type_order, number, id)
     } else {
         IdRank::Other(id)
@@ -109,5 +142,82 @@ impl ItemStub {
         created_at_rank(&self.created_at)
             .cmp(&created_at_rank(&other.created_at))
             .then_with(|| id_rank(&self.id).cmp(&id_rank(&other.id)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stub(id: &str, created_at: &str) -> ItemStub {
+        ItemStub {
+            id: id.to_string(),
+            title: "t".to_string(),
+            status: ItemStatus::default(),
+            severity: Severity::default(),
+            created_at: created_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn scope_items_insert_keeps_chronological_order() {
+        let mut items = ScopeItems::default();
+        items.insert(ItemType::Bug, stub("BUG-0002", "2026-01-02T00:00:00Z"));
+        items.insert(ItemType::Bug, stub("BUG-0001", "2026-01-01T00:00:00Z"));
+
+        let bug_ids: Vec<&str> = items.bugs.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(bug_ids, vec!["BUG-0001", "BUG-0002"]);
+        assert!(items.features.is_empty());
+    }
+
+    #[test]
+    fn scope_items_remove_id_drops_from_every_list() {
+        let mut items = ScopeItems {
+            bugs: vec![stub("BUG-0001", "2026-01-01T00:00:00Z")],
+            features: vec![
+                stub("FEAT-0001", "2026-01-01T00:00:00Z"),
+                stub("FEAT-0002", "2026-01-02T00:00:00Z"),
+            ],
+        };
+
+        items.remove_id("FEAT-0001");
+        let bug_ids: Vec<&str> = items.bugs.iter().map(|s| s.id.as_str()).collect();
+        let feat_ids: Vec<&str> = items.features.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(bug_ids, vec!["BUG-0001"]);
+        assert_eq!(feat_ids, vec!["FEAT-0002"]);
+
+        items.remove_id("NOPE");
+        assert_eq!(items.bugs.len(), 1);
+        assert_eq!(items.features.len(), 1);
+    }
+
+    #[test]
+    fn scope_items_iter_and_count_cover_every_kind() {
+        let items = ScopeItems {
+            bugs: vec![
+                stub("BUG-0001", "2026-01-01T00:00:00Z"),
+                stub("BUG-0002", "2026-01-02T00:00:00Z"),
+            ],
+            features: vec![stub("FEAT-0001", "2026-01-03T00:00:00Z")],
+        };
+
+        let collected: Vec<(ItemType, &str)> =
+            items.iter().map(|(k, s)| (k, s.id.as_str())).collect();
+        assert_eq!(
+            collected,
+            vec![
+                (ItemType::Bug, "BUG-0001"),
+                (ItemType::Bug, "BUG-0002"),
+                (ItemType::Feature, "FEAT-0001"),
+            ]
+        );
+        assert_eq!(items.count(ItemType::Bug), 2);
+        assert_eq!(items.count(ItemType::Feature), 1);
+
+        let manifest = ScopeManifest {
+            scope: ScopeMetadata::default(),
+            items,
+        };
+        assert_eq!(manifest.total_items(), 3);
     }
 }

@@ -93,6 +93,34 @@ impl ItemType {
     pub fn format_hash_id(self, bits: u32) -> String {
         format!("{}-{:06X}", self.id_prefix(), bits & 0x00FF_FFFF)
     }
+
+    /// Every item type, in ordinal order.
+    pub const ALL: &'static [ItemType] = &[Self::Bug, Self::Feature];
+
+    /// Stable sort position of this type (index into `ALL`).
+    pub fn ordinal(self) -> u8 {
+        match self {
+            Self::Bug => 0,
+            Self::Feature => 1,
+        }
+    }
+
+    /// Parses an item ID prefix (`BUG`, `FEAT`, or `FEATURE`, case-insensitive) into an `ItemType`.
+    pub fn from_prefix(prefix: &str) -> Option<Self> {
+        match prefix.to_ascii_uppercase().as_str() {
+            "BUG" => Some(Self::Bug),
+            "FEAT" | "FEATURE" => Some(Self::Feature),
+            _ => None,
+        }
+    }
+
+    /// Returns the uppercase display label (`BUG` or `FEATURE`).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Bug => "BUG",
+            Self::Feature => "FEATURE",
+        }
+    }
 }
 
 /// Returns `true` if `id` is a valid uppercase hash item ID (`BUG-XXXXXX` or `FEAT-XXXXXX`,
@@ -321,5 +349,23 @@ mod tests {
         assert!(!is_hash_item_id("TASK-7F3A2C"));
         assert!(!is_hash_item_id("BUG7F3A2C"));
         assert!(!is_hash_item_id(""));
+    }
+
+    #[test]
+    fn item_type_helpers_round_trip_over_all() {
+        for (i, kind) in ItemType::ALL.iter().enumerate() {
+            assert_eq!(kind.ordinal() as usize, i);
+            assert_eq!(kind.to_string().parse::<ItemType>().unwrap(), *kind);
+            assert_eq!(ItemType::from_prefix(kind.id_prefix()), Some(*kind));
+            assert_eq!(
+                ItemType::from_prefix(&kind.id_prefix().to_ascii_lowercase()),
+                Some(*kind)
+            );
+        }
+        assert_eq!(ItemType::from_prefix("FEATURE"), Some(ItemType::Feature));
+        assert_eq!(ItemType::from_prefix("TASK"), None);
+        assert_eq!(ItemType::from_prefix(""), None);
+        assert_eq!(ItemType::Bug.label(), "BUG");
+        assert_eq!(ItemType::Feature.label(), "FEATURE");
     }
 }
