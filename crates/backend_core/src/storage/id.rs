@@ -18,19 +18,13 @@ pub fn parse_item_id_number(id: &str) -> Option<(ItemType, u32)> {
         return None;
     }
     let number: u32 = digits.parse().ok()?;
-    match prefix.to_ascii_uppercase().as_str() {
-        "BUG" => Some((ItemType::Bug, number)),
-        "FEAT" | "FEATURE" => Some((ItemType::Feature, number)),
-        _ => None,
-    }
+    ItemType::from_prefix(prefix).map(|kind| (kind, number))
 }
 
 fn record_id_in_counters(counters: &mut ProjectCounters, id: &str) {
     if let Some((item_type, number)) = parse_item_id_number(id) {
-        match item_type {
-            ItemType::Bug => counters.bug = counters.bug.max(number),
-            ItemType::Feature => counters.feature = counters.feature.max(number),
-        }
+        let slot = counters.get_mut(item_type);
+        *slot = (*slot).max(number);
     }
 }
 
@@ -44,8 +38,7 @@ impl TrackerStorage {
         let mut counters = ProjectCounters::default();
 
         if let Ok(project) = self.read_project() {
-            counters.bug = counters.bug.max(project.counters.bug);
-            counters.feature = counters.feature.max(project.counters.feature);
+            counters.merge_max(&project.counters);
 
             for phase_entry in &project.phases.registry {
                 let phase_dir =
@@ -105,27 +98,16 @@ impl TrackerStorage {
             }
             let scanned = self.scan_max_counters()?;
 
-            project.counters.bug = project.counters.bug.max(scanned.bug);
-            project.counters.feature = project.counters.feature.max(scanned.feature);
+            project.counters.merge_max(&scanned);
 
-            let next_num = match item_type {
-                ItemType::Bug => {
-                    let next = project.counters.bug.checked_add(1).ok_or_else(|| {
-                        TrackerError::ValidationError("BUG counter overflowed u32::MAX".to_string())
-                    })?;
-                    project.counters.bug = next;
-                    next
-                }
-                ItemType::Feature => {
-                    let next = project.counters.feature.checked_add(1).ok_or_else(|| {
-                        TrackerError::ValidationError(
-                            "FEAT counter overflowed u32::MAX".to_string(),
-                        )
-                    })?;
-                    project.counters.feature = next;
-                    next
-                }
-            };
+            let slot = project.counters.get_mut(item_type);
+            let next_num = slot.checked_add(1).ok_or_else(|| {
+                TrackerError::ValidationError(format!(
+                    "{} counter overflowed u32::MAX",
+                    item_type.id_prefix()
+                ))
+            })?;
+            *slot = next_num;
 
             self.write_project(&project)?;
             Ok(item_type.format_id(next_num))
@@ -171,10 +153,7 @@ fn scan_scope_dir(storage: &TrackerStorage, scope_dir: &Path, counters: &mut Pro
     let scope_toml = scope_dir.join("scope.toml");
     if let Ok(raw) = storage.read_tracker_file(&scope_toml) {
         if let Ok(scope_manifest) = ScopeManifest::from_toml_str(&raw) {
-            for stub in &scope_manifest.items.bugs {
-                record_id_in_counters(counters, &stub.id);
-            }
-            for stub in &scope_manifest.items.features {
+            for (_, stub) in scope_manifest.items.iter() {
                 record_id_in_counters(counters, &stub.id);
             }
         }

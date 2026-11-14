@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::error::{Result, TrackerError};
 use crate::models::{
-    ItemManifest, ItemStub, ItemType, PhaseRegistryEntry, ProjectCounters, ScopeRegistryEntry,
+    ItemManifest, PhaseRegistryEntry, ProjectCounters, ScopeItems, ScopeRegistryEntry,
 };
 use crate::storage::id::parse_item_id_number;
 use crate::storage::TrackerStorage;
@@ -153,7 +153,7 @@ impl TrackerStorage {
                     let original_scope_manifest = scope_manifest.clone();
                     let items_dir = scope_dir.join("items");
 
-                    let (bugs, features, scope_completed) = collect_authoritative_items(
+                    let (items, scope_completed) = collect_authoritative_items(
                         self,
                         &items_dir,
                         &mut max_counters,
@@ -161,12 +161,11 @@ impl TrackerStorage {
                         &mut id_counts,
                     )?;
 
-                    let scope_item_count = (bugs.len() + features.len()) as u32;
+                    let scope_item_count = items.iter().count() as u32;
                     phase_total_items += scope_item_count;
                     phase_completed_items += scope_completed;
 
-                    scope_manifest.items.bugs = bugs;
-                    scope_manifest.items.features = features;
+                    scope_manifest.items = items;
 
                     if scope_manifest != original_scope_manifest {
                         self.write_scope_to_path(&scope_toml_path, &scope_manifest)?;
@@ -201,8 +200,7 @@ impl TrackerStorage {
                 }
             }
 
-            project.counters.bug = project.counters.bug.max(max_counters.bug);
-            project.counters.feature = project.counters.feature.max(max_counters.feature);
+            project.counters.merge_max(&max_counters);
             report.counters = project.counters.clone();
             report.skipped_unsupported.sort();
             report.duplicate_ids = id_counts
@@ -226,13 +224,12 @@ fn collect_authoritative_items(
     max_counters: &mut ProjectCounters,
     skipped: &mut Vec<String>,
     id_counts: &mut HashMap<String, u32>,
-) -> Result<(Vec<ItemStub>, Vec<ItemStub>, u32)> {
-    let mut bugs = Vec::new();
-    let mut features = Vec::new();
+) -> Result<(ScopeItems, u32)> {
+    let mut items = ScopeItems::default();
     let mut completed_count: u32 = 0;
 
     if !items_dir.is_dir() {
-        return Ok((bugs, features, completed_count));
+        return Ok((items, completed_count));
     }
 
     let entries = fs::read_dir(items_dir).map_err(|source| TrackerError::Io {
@@ -257,10 +254,8 @@ fn collect_authoritative_items(
             .to_string();
 
         if let Some((kind, num)) = parse_item_id_number(&dir_name) {
-            match kind {
-                ItemType::Bug => max_counters.bug = max_counters.bug.max(num),
-                ItemType::Feature => max_counters.feature = max_counters.feature.max(num),
-            }
+            let slot = max_counters.get_mut(kind);
+            *slot = (*slot).max(num);
         }
 
         let item_toml_path = item_dir.join("item.toml");
@@ -285,10 +280,8 @@ fn collect_authoritative_items(
         };
 
         if let Some((kind, num)) = parse_item_id_number(&manifest.item.id) {
-            match kind {
-                ItemType::Bug => max_counters.bug = max_counters.bug.max(num),
-                ItemType::Feature => max_counters.feature = max_counters.feature.max(num),
-            }
+            let slot = max_counters.get_mut(kind);
+            *slot = (*slot).max(num);
         }
 
         *id_counts.entry(manifest.item.id.clone()).or_insert(0) += 1;
@@ -310,16 +303,10 @@ fn collect_authoritative_items(
         }
 
         let stub = manifest.to_stub();
-        match manifest.item.item_type {
-            ItemType::Bug => bugs.push(stub),
-            ItemType::Feature => features.push(stub),
-        }
+        items.insert(manifest.item.item_type, stub);
     }
 
-    bugs.sort_by(ItemStub::chronological_cmp);
-    features.sort_by(ItemStub::chronological_cmp);
-
-    Ok((bugs, features, completed_count))
+    Ok((items, completed_count))
 }
 
 pub(crate) fn infer_default_scope_type(scope_id: &str) -> String {

@@ -90,23 +90,13 @@ impl TrackerIndex {
     pub fn find_item(&self, item_id: &str) -> Option<ItemLocation> {
         for phase in &self.phases {
             for scope in &phase.scopes {
-                for bug in &scope.manifest.items.bugs {
-                    if bug.id == item_id {
+                for (item_type, stub) in scope.manifest.items.iter() {
+                    if stub.id == item_id {
                         return Some(ItemLocation {
                             phase_id: phase.phase_id.clone(),
                             scope_id: scope.scope_id.clone(),
-                            item_type: ItemType::Bug,
-                            stub: bug.clone(),
-                        });
-                    }
-                }
-                for feat in &scope.manifest.items.features {
-                    if feat.id == item_id {
-                        return Some(ItemLocation {
-                            phase_id: phase.phase_id.clone(),
-                            scope_id: scope.scope_id.clone(),
-                            item_type: ItemType::Feature,
-                            stub: feat.clone(),
+                            item_type,
+                            stub: stub.clone(),
                         });
                     }
                 }
@@ -120,20 +110,12 @@ impl TrackerIndex {
         let mut out = Vec::new();
         for phase in &self.phases {
             for scope in &phase.scopes {
-                for bug in &scope.manifest.items.bugs {
+                for (item_type, stub) in scope.manifest.items.iter() {
                     out.push(ItemLocation {
                         phase_id: phase.phase_id.clone(),
                         scope_id: scope.scope_id.clone(),
-                        item_type: ItemType::Bug,
-                        stub: bug.clone(),
-                    });
-                }
-                for feat in &scope.manifest.items.features {
-                    out.push(ItemLocation {
-                        phase_id: phase.phase_id.clone(),
-                        scope_id: scope.scope_id.clone(),
-                        item_type: ItemType::Feature,
-                        stub: feat.clone(),
+                        item_type,
+                        stub: stub.clone(),
                     });
                 }
             }
