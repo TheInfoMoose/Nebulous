@@ -49,7 +49,7 @@ pub struct GitRepoStatus {
 /// untracked files are staged only when their exact path is listed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentedCommitInput {
-    /// Linked work item ID (`BUG-XXXX` or `FEAT-XXXX`).
+    /// Linked work item ID (`BUG-XXXX`, `FEAT-XXXX` or `TASK-XXXX`).
     /// Required for workspace code commits when `commit_policy.require_item_id` is `true`.
     #[serde(default)]
     pub item_id: Option<String>,
@@ -183,7 +183,7 @@ pub struct DocumentedCommitOutcome {
     pub recorded_fix_sha: String,
     /// Full formatted commit message.
     pub message: String,
-    /// Linked item ID (`BUG-XXXX` / `FEAT-XXXX`), if any.
+    /// Linked item ID (`BUG-XXXX` / `FEAT-XXXX` / `TASK-XXXX`), if any.
     pub item_id: Option<String>,
     /// Resolved scope ID, if any.
     pub scope_id: Option<String>,
@@ -1800,7 +1800,7 @@ impl TrackerStorage {
         if !is_pure_tracker_commit {
             if policy.require_item_id && normalized_item_id.is_none() {
                 return Err(TrackerError::ValidationError(
-                    "Commit policy requires an item_id (e.g. BUG-0001 or FEAT-0001) when committing workspace code changes".to_string(),
+                    "Commit policy requires an item_id (e.g. BUG-0001, FEAT-0001 or TASK-0001) when committing workspace code changes".to_string(),
                 ));
             }
 

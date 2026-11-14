@@ -105,6 +105,7 @@ pub struct CrateBoundaryEntry {
     pub tracked_files: Vec<String>,
     pub bugs_count: usize,
     pub features_count: usize,
+    pub tasks_count: usize,
     pub total_items: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pinned_release: Option<PinnedReleaseConfig>,
@@ -628,7 +629,7 @@ impl McpServer {
                         "phase_id": { "type": "string", "description": "Optional phase ID filter." },
                         "scope_id": { "type": "string", "description": "Optional domain scope ID filter." },
                         "status": { "type": "string", "description": "Optional status filter (open, in_progress, pending, closed, merged)." },
-                        "item_type": { "type": "string", "description": "Optional item type filter (bug, feature)." },
+                        "item_type": { "type": "string", "description": "Optional item type filter (bug, feature, task)." },
                         "stagnant": { "type": "boolean", "description": "When true, filters to stagnant non-completed items." },
                         "recurring": { "type": "boolean", "description": "When true, filters to items with recurrence_count > 0." }
                     }
@@ -640,7 +641,7 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "item_id": { "type": "string", "description": "Item ID (e.g. BUG-0001 or FEAT-0001)." },
+                        "item_id": { "type": "string", "description": "Item ID (e.g. BUG-0001, FEAT-0001 or TASK-0001)." },
                         "refs_only": { "type": "boolean", "description": "When true, sets output to compact @file references only." }
                     },
                     "required": ["item_id"]
@@ -658,11 +659,11 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "create_item".to_string(),
-                description: "Creates a new bug (BUG-XXXX) or feature (FEAT-XXXX) item in the specified or default phase and scope.".to_string(),
+                description: "Creates a new bug (BUG-XXXX), feature (FEAT-XXXX) or task (TASK-XXXX) item in the specified or default phase and scope.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "item_type": { "type": "string", "description": "Item type: 'bug' or 'feature' (default 'bug')." },
+                        "item_type": { "type": "string", "description": "Item type: 'bug', 'feature' or 'task' (default 'bug')." },
                         "title": { "type": "string", "description": "Concise item summary title." },
                         "phase_id": { "type": "string", "description": "Optional target phase ID." },
                         "scope_id": { "type": "string", "description": "Optional target domain scope ID." },
@@ -889,7 +890,7 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "item_id": { "type": "string", "description": "Linked item ID (e.g. BUG-0001 or FEAT-0001)." },
+                        "item_id": { "type": "string", "description": "Linked item ID (e.g. BUG-0001, FEAT-0001 or TASK-0001)." },
                         "scope_id": { "type": "string", "description": "Optional domain scope ID override." },
                         "summary": { "type": "string", "description": "Commit summary message." },
                         "body": { "type": "string", "description": "Optional extended commit notes." },
@@ -1258,6 +1259,7 @@ impl McpServer {
                 tracked_files,
                 bugs_count: scope_idx.manifest.items.count(ItemType::Bug),
                 features_count: scope_idx.manifest.items.count(ItemType::Feature),
+                tasks_count: scope_idx.manifest.items.count(ItemType::Task),
                 total_items: scope_idx.manifest.total_items(),
                 pinned_release: bound_comp.and_then(|c| c.pinned_release.clone()),
             });

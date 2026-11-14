@@ -2249,3 +2249,34 @@ fn mcp_git_pull_and_sync_report_duplicate_item_ids() {
     assert!(synced["committed_or_head_sha"].is_string());
     assert_eq!(synced["duplicate_ids"], json!([id]));
 }
+
+#[test]
+fn mcp_create_item_accepts_task_and_reports_tasks_count() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let dir = TempDir::new().unwrap();
+    let storage = TrackerStorage::init_standard(dir.path(), "McpTaskTest").unwrap();
+    let mut server = McpServer::new(Some(storage));
+
+    let created = server
+        .call_tool(
+            "create_item",
+            json!({"title": "Untrack build dir", "item_type": "task"}),
+        )
+        .unwrap();
+    assert_eq!(created["id"], json!("TASK-0001"));
+    assert_eq!(created["type"], json!("task"));
+
+    let listed = server
+        .call_tool("list_items", json!({"item_type": "task"}))
+        .unwrap();
+    assert_eq!(listed["total"], json!(1));
+    assert_eq!(listed["items"][0]["id"], json!("TASK-0001"));
+
+    let boundaries = server
+        .call_tool("list_crate_boundaries", json!({}))
+        .unwrap();
+    assert_eq!(boundaries["scopes"][0]["scope_id"], json!("inbox"));
+    assert_eq!(boundaries["scopes"][0]["tasks_count"], json!(1));
+}
