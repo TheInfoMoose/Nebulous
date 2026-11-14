@@ -2798,3 +2798,154 @@ fn reconcile_reports_duplicate_item_ids_across_phases() {
     let dup_report = storage.reconcile_indexes().unwrap();
     assert_eq!(dup_report.duplicate_ids, vec![loc.stub.id.clone()]);
 }
+
+#[test]
+fn task_items_allocate_alongside_bugs_and_features() {
+    use backend_core::CreateItemInput;
+
+    let temp = TempTrackerDir::new("task_items_allocate");
+    let storage = TrackerStorage::init_standard(temp.path(), "TaskAllocateTest").unwrap();
+
+    let (_, bug_detail) = storage
+        .create_bug("Sample bug", None, None, Severity::Medium, None)
+        .unwrap();
+    let (_, feat_detail) = storage
+        .create_feature("Sample feature", None, None, Severity::Medium, None)
+        .unwrap();
+    let (task_loc, task_detail) = storage
+        .create_item(CreateItemInput::new(ItemType::Task, "Sample task"))
+        .unwrap();
+
+    assert_eq!(bug_detail.manifest.item.id, "BUG-0001");
+    assert_eq!(feat_detail.manifest.item.id, "FEAT-0001");
+    assert_eq!(task_detail.manifest.item.id, "TASK-0001");
+    assert_eq!(task_loc.item_type, ItemType::Task);
+
+    let scope = storage
+        .read_scope(&task_loc.phase_id, &task_loc.scope_id)
+        .unwrap();
+    let task_ids: Vec<&str> = scope.items.tasks.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(task_ids, vec![task_detail.manifest.item.id.as_str()]);
+
+    let project = storage.read_project().unwrap();
+    assert_eq!(project.counters.task, 1);
+}
+
+#[test]
+fn reconcile_restores_task_counter() {
+    use backend_core::CreateItemInput;
+
+    let temp = TempTrackerDir::new("reconcile_task_counter");
+    let storage = TrackerStorage::init_standard(temp.path(), "ReconcileTaskCounterTest").unwrap();
+
+    storage
+        .create_item(CreateItemInput::new(ItemType::Task, "Task for counter"))
+        .unwrap();
+
+    let mut project = storage.read_project().unwrap();
+    project.counters = Default::default();
+    storage.write_project(&project).unwrap();
+    assert_eq!(storage.read_project().unwrap().counters.task, 0);
+
+    let report = storage.reconcile_indexes().unwrap();
+    assert_eq!(report.counters.task, 1);
+    assert_eq!(storage.read_project().unwrap().counters.task, 1);
+}
+
+#[test]
+fn concurrent_mixed_type_creators_get_unique_ids() {
+    use std::collections::HashSet;
+    use std::thread;
+
+    use backend_core::CreateItemInput;
+
+    let temp = TempTrackerDir::new("concurrent_mixed_creators");
+    let root = temp.path().to_path_buf();
+    let storage = TrackerStorage::init_standard(&root, "ConcurrentMixedTest").unwrap();
+
+    let root_a = root.clone();
+    let handle_a = thread::spawn(move || {
+        let s = TrackerStorage::new(&root_a);
+        let mut ids = Vec::with_capacity(75);
+        for i in 0..25 {
+            let (_, bug) = s
+                .create_bug(format!("a_bug_{i}"), None, None, Severity::Medium, None)
+                .expect("thread A should create bug");
+            ids.push(bug.manifest.item.id);
+            let (_, feat) = s
+                .create_feature(format!("a_feat_{i}"), None, None, Severity::Medium, None)
+                .expect("thread A should create feature");
+            ids.push(feat.manifest.item.id);
+            let (_, task) = s
+                .create_item(CreateItemInput::new(ItemType::Task, format!("a_task_{i}")))
+                .expect("thread A should create task");
+            ids.push(task.manifest.item.id);
+        }
+        ids
+    });
+
+    let root_b = root.clone();
+    let handle_b = thread::spawn(move || {
+        let s = TrackerStorage::new(&root_b);
+        let mut ids = Vec::with_capacity(75);
+        for i in 0..25 {
+            let (_, bug) = s
+                .create_bug(format!("b_bug_{i}"), None, None, Severity::Medium, None)
+                .expect("thread B should create bug");
+            ids.push(bug.manifest.item.id);
+            let (_, feat) = s
+                .create_feature(format!("b_feat_{i}"), None, None, Severity::Medium, None)
+                .expect("thread B should create feature");
+            ids.push(feat.manifest.item.id);
+            let (_, task) = s
+                .create_item(CreateItemInput::new(ItemType::Task, format!("b_task_{i}")))
+                .expect("thread B should create task");
+            ids.push(task.manifest.item.id);
+        }
+        ids
+    });
+
+    let ids_a = handle_a.join().expect("thread A should not panic");
+    let ids_b = handle_b.join().expect("thread B should not panic");
+
+    let mut distinct_ids: HashSet<String> = HashSet::with_capacity(150);
+    distinct_ids.extend(ids_a);
+    distinct_ids.extend(ids_b);
+    assert_eq!(distinct_ids.len(), 150);
+
+    let active_phase = storage.read_project().unwrap().project.active_phase;
+    let items_dir = storage.items_dir(&active_phase, "inbox").unwrap();
+    let dir_count = fs::read_dir(&items_dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .count();
+    assert_eq!(dir_count, 150);
+
+    let counters = storage.read_project().unwrap().counters;
+    assert_eq!(counters.bug, 50);
+    assert_eq!(counters.feature, 50);
+    assert_eq!(counters.task, 50);
+
+    assert_eq!(
+        distinct_ids
+            .iter()
+            .filter(|id| id.starts_with("BUG-"))
+            .count(),
+        50
+    );
+    assert_eq!(
+        distinct_ids
+            .iter()
+            .filter(|id| id.starts_with("FEAT-"))
+            .count(),
+        50
+    );
+    assert_eq!(
+        distinct_ids
+            .iter()
+            .filter(|id| id.starts_with("TASK-"))
+            .count(),
+        50
+    );
+}
