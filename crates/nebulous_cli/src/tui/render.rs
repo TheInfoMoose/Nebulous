@@ -561,10 +561,10 @@ pub fn render_create_modal(frame: &mut Frame, create: &CreateModalState, area: R
         Style::default().fg(AMBER_PRIMARY).bg(PANEL_BG),
     );
 
-    let title_str = match create.item_type {
-        backend_core::ItemType::Bug => " ✦ NEW BUG CAPTURE (PREDICTIVE ASSIST) ✦ ",
-        backend_core::ItemType::Feature => " ✦ NEW FEATURE CAPTURE (PREDICTIVE ASSIST) ✦ ",
-    };
+    let title_str = format!(
+        " ✦ NEW {} CAPTURE (PREDICTIVE ASSIST) ✦ ",
+        create.item_type.label()
+    );
 
     let outer_block = Block::default()
         .title(Span::styled(title_str, style_bright()))

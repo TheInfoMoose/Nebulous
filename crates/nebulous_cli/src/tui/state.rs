@@ -310,13 +310,12 @@ impl TuiApp {
 
             for sc in &phase.scopes {
                 self.available_scopes.push(sc.scope_id.clone());
-                let total = sc.manifest.items.bugs.len() + sc.manifest.items.features.len();
+                let total = sc.manifest.items.iter().count();
                 let open = sc
                     .manifest
                     .items
-                    .bugs
                     .iter()
-                    .chain(sc.manifest.items.features.iter())
+                    .map(|(_, s)| s)
                     .filter(|i| !i.status.is_completed())
                     .count();
                 stage_total += total;
@@ -382,19 +381,7 @@ impl TuiApp {
                         continue;
                     }
                 }
-                let stubs = sc
-                    .manifest
-                    .items
-                    .bugs
-                    .iter()
-                    .map(|b| (ItemType::Bug, b))
-                    .chain(
-                        sc.manifest
-                            .items
-                            .features
-                            .iter()
-                            .map(|f| (ItemType::Feature, f)),
-                    );
+                let stubs = sc.manifest.items.iter();
 
                 for (item_type, stub) in stubs {
                     if !query_lower.is_empty() {
