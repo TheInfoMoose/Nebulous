@@ -1256,8 +1256,8 @@ impl McpServer {
                     .clone()
                     .or_else(|| bound_comp.map(|c| c.id.clone())),
                 tracked_files,
-                bugs_count: scope_idx.manifest.items.bugs.len(),
-                features_count: scope_idx.manifest.items.features.len(),
+                bugs_count: scope_idx.manifest.items.count(ItemType::Bug),
+                features_count: scope_idx.manifest.items.count(ItemType::Feature),
                 total_items: scope_idx.manifest.total_items(),
                 pinned_release: bound_comp.and_then(|c| c.pinned_release.clone()),
             });

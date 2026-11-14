@@ -1953,8 +1953,8 @@ fn handle_scope(storage: &TrackerStorage, action: &ScopeCommand, json: bool) -> 
                     id: s.scope_id.clone(),
                     target: s.manifest.scope.target.clone(),
                     tech_stack: s.manifest.scope.tech_stack.clone(),
-                    bugs_count: s.manifest.items.bugs.len(),
-                    features_count: s.manifest.items.features.len(),
+                    bugs_count: s.manifest.items.count(ItemType::Bug),
+                    features_count: s.manifest.items.count(ItemType::Feature),
                     total_items: s.manifest.total_items(),
                 })
                 .collect();
