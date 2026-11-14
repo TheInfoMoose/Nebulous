@@ -114,14 +114,15 @@ impl TrackerStorage {
 
             let manifest = ItemManifest {
                 item: ItemMetadata {
-                    id: item_id.clone(),
-                    item_type: input.item_type,
-                    title: title.clone(),
                     status: ItemStatus::Open,
                     severity: input.severity,
-                    scope_ref: scope_id.clone(),
-                    created_at: now.clone(),
-                    updated_at: now,
+                    ..ItemMetadata::new(
+                        item_id.clone(),
+                        input.item_type,
+                        title.clone(),
+                        scope_id.clone(),
+                        now,
+                    )
                 },
                 effort: ItemEffort {
                     logged_time_minutes: 0,

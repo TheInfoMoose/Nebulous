@@ -290,6 +290,27 @@ pub struct ItemMetadata {
 }
 
 impl ItemMetadata {
+    /// Build literals as `ItemMetadata { field: x, ..ItemMetadata::new(..) }` so adding a field never breaks a call site.
+    pub fn new(
+        id: impl Into<String>,
+        item_type: ItemType,
+        title: impl Into<String>,
+        scope_ref: impl Into<String>,
+        timestamp: impl Into<String>,
+    ) -> Self {
+        let timestamp = timestamp.into();
+        Self {
+            id: id.into(),
+            item_type,
+            title: title.into(),
+            status: ItemStatus::default(),
+            severity: Severity::default(),
+            scope_ref: scope_ref.into(),
+            created_at: timestamp.clone(),
+            updated_at: timestamp,
+        }
+    }
+
     /// Parses `created_at` into `DateTime<Utc>`.
     pub fn parsed_created_at(&self) -> Result<DateTime<Utc>> {
         parse_timestamp_utc(&self.created_at)
@@ -338,6 +359,48 @@ impl PreviousFix {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn item_metadata_new_sets_every_field() {
+        let meta = ItemMetadata::new(
+            "TASK-0001",
+            ItemType::Task,
+            "Sample task",
+            "inbox",
+            "2026-01-01T00:00:00Z",
+        );
+        assert_eq!(meta.id, "TASK-0001");
+        assert_eq!(meta.item_type, ItemType::Task);
+        assert_eq!(meta.title, "Sample task");
+        assert_eq!(meta.status, ItemStatus::Open);
+        assert_eq!(meta.severity, Severity::Medium);
+        assert_eq!(meta.scope_ref, "inbox");
+        assert_eq!(meta.created_at, "2026-01-01T00:00:00Z");
+        assert_eq!(meta.updated_at, "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn item_metadata_struct_update_keeps_other_fields() {
+        let base = ItemMetadata::new(
+            "TASK-0001",
+            ItemType::Task,
+            "Sample task",
+            "inbox",
+            "2026-01-01T00:00:00Z",
+        );
+        let updated = ItemMetadata {
+            severity: Severity::Critical,
+            ..base.clone()
+        };
+        assert_eq!(updated.severity, Severity::Critical);
+        assert_eq!(
+            ItemMetadata {
+                severity: Severity::Medium,
+                ..updated
+            },
+            base
+        );
+    }
 
     #[test]
     fn format_hash_id_pads_and_masks_to_24_bits() {
