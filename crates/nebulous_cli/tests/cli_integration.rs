@@ -2542,6 +2542,37 @@ fn test_tui_t_key_opens_task_capture_and_creates_task() {
 }
 
 #[test]
+fn tui_timer_renders_wall_clock_minutes() {
+    use backend_core::{ActiveTimer, TimerStatus};
+    use chrono::{Duration, Utc};
+    use nebulous_cli::tui::{render_to_string, TuiApp};
+
+    let temp = TempDir::new().expect("should create temp dir for TUI timer test");
+    let storage = TrackerStorage::init_standard(temp.path(), "TuiTimerTest").unwrap();
+    let mut app = TuiApp::new(storage, None).unwrap();
+
+    let started_at = (Utc::now() - Duration::minutes(7))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    app.active_timer = Some(TimerStatus {
+        timer: ActiveTimer::new(
+            "BUG-0001",
+            Some("pre_production".to_string()),
+            Some("inbox".to_string()),
+            started_at,
+        ),
+        elapsed_minutes: 0,
+        elapsed_seconds: 0,
+    });
+
+    let rendered = render_to_string(&mut app, 120, 40);
+    assert!(
+        rendered.contains("7m"),
+        "expected rendered TUI to contain '7m', got:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_plan_import_dry_run_write_and_rerun() {
     let temp = TempDir::new().expect("should create temp dir for plan import test");
     let root_str = temp.path().to_str().unwrap();

@@ -1,4 +1,5 @@
-use backend_core::{ItemStatus, Severity, CANONICAL_PHASES};
+use backend_core::{ItemStatus, Severity, TimerStatus, CANONICAL_PHASES};
+use chrono::Utc;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -43,6 +44,12 @@ fn paint_crt_background(frame: &mut Frame, area: Rect, bg_style: Style) {
             }
         }
     }
+}
+
+fn live_minutes(t: &TimerStatus) -> u32 {
+    t.timer
+        .elapsed_minutes_at(Utc::now())
+        .unwrap_or(t.elapsed_minutes)
 }
 
 /// Top-level frame renderer for the retro Amber-on-Black Nebulous TUI.
@@ -105,7 +112,7 @@ pub fn render_scaling_lock_guard(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let active_focus = app
         .active_timer
         .as_ref()
-        .map(|t| format!("⏱ {} ({}m)", t.timer.item_id, t.elapsed_minutes))
+        .map(|t| format!("⏱ {} ({}m)", t.timer.item_id, live_minutes(t)))
         .or_else(|| app.whats_next.top_item_id().map(|id| format!("Next: {id}")))
         .unwrap_or_else(|| "Idle".to_string());
 
@@ -185,7 +192,7 @@ fn render_stage_and_timer_bar(frame: &mut Frame, app: &TuiApp, area: Rect) {
     spans.push(Span::styled("   ║   ", style_dark()));
     if let Some(ref timer) = app.active_timer {
         spans.push(Span::styled(
-            format!("⏱ {} {}m", timer.timer.item_id, timer.elapsed_minutes),
+            format!("⏱ {} {}m", timer.timer.item_id, live_minutes(timer)),
             style_alert(),
         ));
     } else {

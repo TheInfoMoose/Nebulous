@@ -6,7 +6,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use backend_core::{Result, TrackerError, TrackerStorage};
+use backend_core::{Result, TrackerError, TrackerStorage, TrackerWatcher};
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -69,6 +69,13 @@ impl Drop for TerminalCleanupGuard {
 /// Launches the interactive retro Amber-on-Black TUI in the active terminal.
 pub fn run_tui(storage: TrackerStorage, cwd: Option<PathBuf>) -> Result<()> {
     let mut app = TuiApp::new(storage, cwd)?;
+    let watch = match TrackerWatcher::start(app.storage.clone()) {
+        Ok(pair) => Some(pair),
+        Err(err) => {
+            app.status_message = Some(format!("Live reload unavailable: {err}"));
+            None
+        }
+    };
 
     enable_raw_mode().map_err(|source| TrackerError::Io {
         path: PathBuf::from("/dev/tty"),
@@ -88,6 +95,25 @@ pub fn run_tui(storage: TrackerStorage, cwd: Option<PathBuf>) -> Result<()> {
     })?;
 
     loop {
+        if let Some((_, ref rx)) = watch {
+            let mut any_event = false;
+            let mut reconcile_err = None;
+            while let Ok(ev) = rx.try_recv() {
+                any_event = true;
+                if let Some(e) = ev.reconcile_error {
+                    reconcile_err = Some(e);
+                }
+            }
+            if any_event {
+                if let Err(err) = app.refresh() {
+                    app.status_message = Some(format!("Error: {err}"));
+                }
+                if let Some(e) = reconcile_err {
+                    app.status_message = Some(format!("Reconcile error: {e}"));
+                }
+            }
+        }
+
         terminal
             .draw(|frame| render_frame(frame, &mut app))
             .map_err(|source| TrackerError::Io {
