@@ -668,25 +668,27 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "switch_project".to_string(),
-                description: "Switches the active project in the global Nebulous registry by ID, name, or root path and binds the MCP server to its .tracker/ workspace.".to_string(),
+                description: "Switches the active project in the global Nebulous registry by ID, name, or root path and binds the MCP server to its .tracker/ workspace. Defaults to dry_run: true.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "id_or_name": { "type": "string", "description": "Project ID, name, or workspace path." }
+                        "id_or_name": { "type": "string", "description": "Project ID, name, or workspace path." },
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), reports git status and what would happen without network access or commits. Pass false to run." }
                     },
                     "required": ["id_or_name"]
                 }),
             },
             McpToolDefinition {
                 name: "ingest_project_directory".to_string(),
-                description: "Stage 1 Directory Ingestion: scans the project directory respecting .gitignore, discovers ecosystem manifests and un-manifested functional directories, and indexes component file lists into .tracker/project.toml.".to_string(),
+                description: "Stage 1 Directory Ingestion: scans the project directory respecting .gitignore, discovers ecosystem manifests and un-manifested functional directories, and indexes component file lists into .tracker/project.toml. Defaults to dry_run: true.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "subpath": { "type": "string", "description": "Optional relative subdirectory to restrict scanning." },
                         "write_manifests": { "type": "boolean", "description": "When true, writes nebulous.component.toml files to component directories." },
                         "promote_all": { "type": "boolean", "description": "When true, promotes all discovered components into domain scopes." },
-                        "promote_phase_id": { "type": "string", "description": "Optional target phase ID when promote_all is true." }
+                        "promote_phase_id": { "type": "string", "description": "Optional target phase ID when promote_all is true." },
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), reports git status and what would happen without network access or commits. Pass false to run." }
                     }
                 }),
             },
@@ -793,14 +795,15 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "rollback_to_pinned_release".to_string(),
-                description: "Returns the last_known_good pin configuration (and optionally restores nebulous.component.toml dependency pins and flags) while recording a regression on the active/linked item for self-healing CI.".to_string(),
+                description: "Returns the last_known_good pin configuration (and optionally restores nebulous.component.toml dependency pins and flags) while recording a regression on the active/linked item for self-healing CI. Defaults to dry_run: true.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "component_id": { "type": "string", "description": "Target component ID or relative path." },
                         "restore_manifest": { "type": "boolean", "description": "Whether to restore nebulous.component.toml dependencies and flags from last_known_good (default true)." },
                         "item_id": { "type": "string", "description": "Optional active item ID to record the regression on." },
-                        "reason": { "type": "string", "description": "Optional rollback/regression reason appended to desc.md." }
+                        "reason": { "type": "string", "description": "Optional rollback/regression reason appended to desc.md." },
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), reports git status and what would happen without network access or commits. Pass false to run." }
                     },
                     "required": ["component_id"]
                 }),
@@ -1439,12 +1442,30 @@ impl McpServer {
         struct Args {
             #[serde(alias = "id", alias = "name", alias = "project")]
             id_or_name: String,
+            #[serde(default = "default_true")]
+            dry_run: bool,
         }
 
         let parsed: Args = serde_json::from_value(args).map_err(|e| {
             TrackerError::ValidationError(format!("Invalid switch_project args: {e}"))
         })?;
-        let active = self.switch_in_registry(parsed.id_or_name.trim())?;
+        let q = parsed.id_or_name.trim();
+        if parsed.dry_run {
+            let registry = self.load_registry()?;
+            let project =
+                registry
+                    .find_project(q)
+                    .cloned()
+                    .ok_or_else(|| TrackerError::NotFound {
+                        kind: "Project",
+                        id: q.to_string(),
+                    })?;
+            return Ok(json!({
+                "dry_run": true,
+                "would_switch_to": project
+            }));
+        }
+        let active = self.switch_in_registry(q)?;
         if let Ok(discovered) = TrackerStorage::discover(&active.root_path) {
             self.storage = Some(discovered);
         } else {
@@ -1458,7 +1479,7 @@ impl McpServer {
     }
 
     fn tool_ingest_project_directory(&mut self, args: Value) -> Result<Value> {
-        #[derive(Debug, Default, Deserialize)]
+        #[derive(Debug, Deserialize)]
         struct Args {
             #[serde(default, alias = "path")]
             subpath: Option<String>,
@@ -1468,15 +1489,26 @@ impl McpServer {
             promote_all: bool,
             #[serde(default, alias = "phase_id", alias = "phase")]
             promote_phase_id: Option<String>,
+            #[serde(default = "default_true")]
+            dry_run: bool,
         }
 
         let parsed: Args = serde_json::from_value(args).map_err(|e| {
             TrackerError::ValidationError(format!("Invalid ingest_project_directory args: {e}"))
         })?;
         let storage = self.resolve_active_storage()?;
-        let mut opts = IngestionOptions::new()
-            .with_write_manifests(parsed.write_manifests)
-            .with_promote_all(parsed.promote_all);
+        let writes =
+            parsed.write_manifests || parsed.promote_all || parsed.promote_phase_id.is_some();
+        let is_dry = writes && parsed.dry_run;
+        let mut opts = if is_dry {
+            IngestionOptions::new()
+                .with_write_manifests(false)
+                .with_promote_all(false)
+        } else {
+            IngestionOptions::new()
+                .with_write_manifests(parsed.write_manifests)
+                .with_promote_all(parsed.promote_all)
+        };
         if let Some(sub) = non_empty(parsed.subpath.as_deref()) {
             let sub_path = Path::new(sub);
             if sub_path.is_absolute() {
@@ -1503,12 +1535,27 @@ impl McpServer {
                 opts = opts.with_subpath(sub);
             }
         }
-        if let Some(phase) = non_empty(parsed.promote_phase_id.as_deref()) {
-            opts = opts.with_promote_phase(phase);
+        if !is_dry {
+            if let Some(phase) = non_empty(parsed.promote_phase_id.as_deref()) {
+                opts = opts.with_promote_phase(phase);
+            }
         }
 
         let report = storage.ingest_project_directory(opts)?;
+        if is_dry {
+            return Ok(json!({
+                "dry_run": true,
+                "would_write_manifests": parsed.write_manifests,
+                "would_promote": parsed.promote_all || parsed.promote_phase_id.is_some(),
+                "total_components": report.components.len(),
+                "total_files_indexed": report.total_files_indexed,
+                "components": report.components,
+                "manifests_written": report.manifests_written,
+                "promoted_scopes": report.promoted_scopes
+            }));
+        }
         Ok(json!({
+            "dry_run": false,
             "total_components": report.components.len(),
             "total_files_indexed": report.total_files_indexed,
             "components": report.components,
@@ -2000,6 +2047,8 @@ impl McpServer {
             item_id: Option<String>,
             #[serde(default, alias = "summary", alias = "note")]
             reason: Option<String>,
+            #[serde(default = "default_true")]
+            dry_run: bool,
         }
 
         let parsed: Args = serde_json::from_value(args).map_err(|e| {
@@ -2032,6 +2081,16 @@ impl McpServer {
             })
             .or_else(|| select_best_active_item(&storage, None, None).ok().flatten());
 
+        if parsed.dry_run {
+            return Ok(json!({
+                "dry_run": true,
+                "component_id": initial_manifest.id,
+                "would_restore": parsed.restore_manifest,
+                "last_known_good": pinned,
+                "would_record_regression_on": target_item_id
+            }));
+        }
+
         let final_manifest = if parsed.restore_manifest {
             storage.rollback_component_to_pinned(&initial_manifest.id)?
         } else {
@@ -2057,6 +2116,7 @@ impl McpServer {
         }
 
         Ok(json!({
+            "dry_run": false,
             "component_id": final_manifest.id,
             "restored": parsed.restore_manifest,
             "last_known_good": pinned,

@@ -1131,7 +1131,8 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
                 "name": "ingest_project_directory",
                 "arguments": {
                     "write_manifests": true,
-                    "promote_all": true
+                    "promote_all": true,
+                    "dry_run": false
                 }
             }
         }),
@@ -1214,7 +1215,8 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
                 "arguments": {
                     "component_id": "iso",
                     "restore_manifest": true,
-                    "reason": "Auto-rollback triggered after VM exit code 134"
+                    "reason": "Auto-rollback triggered after VM exit code 134",
+                    "dry_run": false
                 }
             }
         }),
@@ -1484,7 +1486,7 @@ fn test_mcp_remaining_tools_resources_content_length_and_error_paths() {
     let sw_val = server
         .call_tool(
             "switch_project",
-            serde_json::json!({ "id_or_name": "ProjTwo" }),
+            serde_json::json!({ "id_or_name": "ProjTwo", "dry_run": false }),
         )
         .unwrap();
     assert_eq!(sw_val["active_project_id"], "projtwo");
@@ -1493,7 +1495,7 @@ fn test_mcp_remaining_tools_resources_content_length_and_error_paths() {
     server
         .call_tool(
             "switch_project",
-            serde_json::json!({ "id_or_name": "projone" }),
+            serde_json::json!({ "id_or_name": "projone", "dry_run": false }),
         )
         .unwrap();
 

@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Cursor;
 
 use backend_core::{
-    register_project_in, McpServer, TrackerStorage, DEFAULT_MCP_PROTOCOL_VERSION,
+    register_project_in, McpServer, TrackerError, TrackerStorage, DEFAULT_MCP_PROTOCOL_VERSION,
     MAX_MCP_MESSAGE_BYTES, SUPPORTED_MCP_PROTOCOL_VERSIONS,
 };
 use serde_json::Value;
@@ -302,5 +302,134 @@ fn list_projects_leaves_an_existing_registry_byte_for_byte() {
     assert_eq!(out["total"], 1);
     assert_eq!(out["active_project_id"], "projone");
     let after = fs::read(&reg_file).expect("read after");
+    assert_eq!(after, before);
+}
+
+#[test]
+fn switch_project_dry_run_leaves_registry() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let storage =
+        TrackerStorage::init(temp.path().join("proj"), "ProjOne", "01_core", "Core Phase")
+            .expect("init storage");
+    let cfg_dir = temp.path().join("cfg");
+
+    register_project_in(
+        &cfg_dir,
+        storage.project_root(),
+        Some("ProjOne"),
+        vec![],
+        true,
+    )
+    .expect("register project");
+    let reg_file = cfg_dir.join("projects.toml");
+    let before = fs::read(&reg_file).expect("read before");
+
+    let mut server = McpServer::from_storage(storage).with_registry_path(&cfg_dir);
+    let out = server
+        .call_tool("switch_project", serde_json::json!({ "id": "ProjOne" }))
+        .expect("switch_project dry run");
+
+    assert_eq!(out["dry_run"], true);
+    assert_eq!(out["would_switch_to"]["name"], "ProjOne");
+    let after = fs::read(&reg_file).expect("read after");
+    assert_eq!(after, before);
+
+    let err = server
+        .call_tool("switch_project", serde_json::json!({ "id": "NoSuchProj" }))
+        .expect_err("unknown project should error");
+    assert!(matches!(
+        err,
+        TrackerError::NotFound {
+            kind: "Project",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn ingest_writing_mode_defaults_to_dry_run() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let proj_root = temp.path().join("proj");
+    let storage =
+        TrackerStorage::init(&proj_root, "ProjOne", "01_core", "Core Phase").expect("init storage");
+    let demo_dir = proj_root.join("crates/demo");
+    fs::create_dir_all(demo_dir.join("src")).expect("create crates/demo/src");
+    fs::write(
+        demo_dir.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+    fs::write(demo_dir.join("src/lib.rs"), "pub fn demo() {}\n").expect("write lib.rs");
+
+    let mut server = McpServer::from_storage(storage);
+    let out = server
+        .call_tool(
+            "ingest_project_directory",
+            serde_json::json!({ "write_manifests": true }),
+        )
+        .expect("ingest_project_directory dry run");
+
+    assert_eq!(out["dry_run"], true);
+    assert_eq!(out["would_write_manifests"], true);
+    assert!(!demo_dir.join("nebulous.component.toml").exists());
+}
+
+#[test]
+fn rollback_defaults_to_dry_run() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let proj_root = temp.path().join("proj");
+    let storage =
+        TrackerStorage::init(&proj_root, "ProjOne", "01_core", "Core Phase").expect("init storage");
+    let scripts_dir = proj_root.join("scripts");
+    fs::create_dir_all(&scripts_dir).expect("create scripts");
+    fs::write(scripts_dir.join("deploy.sh"), "#!/bin/sh\necho ok\n").expect("write deploy.sh");
+
+    let mut server = McpServer::from_storage(storage);
+    server
+        .call_tool(
+            "upsert_component_manifest",
+            serde_json::json!({
+                "id": "deploy_scripts",
+                "name": "Deploy Scripts",
+                "relative_path": "scripts",
+                "component_type": "build_scripts"
+            }),
+        )
+        .expect("upsert component");
+    server
+        .call_tool(
+            "pin_stable_release",
+            serde_json::json!({
+                "component_id": "deploy_scripts",
+                "commit_sha": "abc1234",
+                "dependency_pins": { "tool-a": "1.0.0" }
+            }),
+        )
+        .expect("pin release");
+    server
+        .call_tool(
+            "record_rolling_update",
+            serde_json::json!({
+                "component_id": "deploy_scripts",
+                "dependency_name": "tool-a",
+                "new_version": "2.0.0"
+            }),
+        )
+        .expect("record rolling update");
+
+    let manifest_path = scripts_dir.join("nebulous.component.toml");
+    let before = fs::read(&manifest_path).expect("read component manifest before");
+
+    let out = server
+        .call_tool(
+            "rollback_to_pinned_release",
+            serde_json::json!({ "component_id": "deploy_scripts" }),
+        )
+        .expect("rollback dry run");
+
+    assert_eq!(out["dry_run"], true);
+    assert_eq!(out["component_id"], "deploy_scripts");
+    assert_eq!(out["would_restore"], true);
+    let after = fs::read(&manifest_path).expect("read component manifest after");
     assert_eq!(after, before);
 }
