@@ -20,8 +20,11 @@ use crate::planning::{import_plan, parse_roadmap};
 use crate::storage::{contained_path, normalize_relative_path_str, ItemLocation, TrackerStorage};
 use crate::workflow::CreateItemInput;
 
-/// Default MCP protocol version advertised by the Nebulous stdio server.
-pub const DEFAULT_MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+/// MCP protocol versions this server speaks, newest first.
+pub const SUPPORTED_MCP_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// Version `initialize` answers with when the client asks for one not in [`SUPPORTED_MCP_PROTOCOL_VERSIONS`] (or none): the newest supported version.
+pub const DEFAULT_MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Largest JSON-RPC message accepted on stdio (header line, raw JSON line, or `Content-Length` body).
 pub const MAX_MCP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
@@ -340,16 +343,14 @@ impl McpServer {
 
         match method {
             "initialize" => {
-                let requested_version = params
-                    .get("protocolVersion")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or(DEFAULT_MCP_PROTOCOL_VERSION);
+                let protocol_version = negotiate_protocol_version(
+                    params.get("protocolVersion").and_then(Value::as_str),
+                );
 
                 Some(JsonRpcResponse::success(
                     req_id,
                     json!({
-                        "protocolVersion": requested_version,
+                        "protocolVersion": protocol_version,
                         "capabilities": {
                             "tools": {
                                 "listChanged": false
@@ -2523,6 +2524,20 @@ fn parse_request(message: Value) -> std::result::Result<JsonRpcRequest, Box<Json
             None,
         ))
     })
+}
+
+/// Picks the version `initialize` answers with: the trimmed requested version when it is in
+/// [`SUPPORTED_MCP_PROTOCOL_VERSIONS`], otherwise [`DEFAULT_MCP_PROTOCOL_VERSION`].
+fn negotiate_protocol_version(requested: Option<&str>) -> &'static str {
+    requested
+        .map(str::trim)
+        .and_then(|wanted| {
+            SUPPORTED_MCP_PROTOCOL_VERSIONS
+                .iter()
+                .copied()
+                .find(|version| *version == wanted)
+        })
+        .unwrap_or(DEFAULT_MCP_PROTOCOL_VERSION)
 }
 
 fn default_jsonrpc_version() -> String {

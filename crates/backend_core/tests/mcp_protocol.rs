@@ -1,6 +1,8 @@
 use std::io::Cursor;
 
-use backend_core::{McpServer, MAX_MCP_MESSAGE_BYTES};
+use backend_core::{
+    McpServer, DEFAULT_MCP_PROTOCOL_VERSION, MAX_MCP_MESSAGE_BYTES, SUPPORTED_MCP_PROTOCOL_VERSIONS,
+};
 use serde_json::Value;
 
 const PING: &str = r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#;
@@ -209,4 +211,45 @@ fn invalid_batch_entries_each_get_an_error() {
     assert_eq!(arr[0]["id"], Value::Null);
     assert_eq!(arr[1]["id"], 2);
     assert!(arr[1].get("error").is_none());
+}
+
+fn initialize_version(params: &str) -> Value {
+    let raw = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{params}}}"#);
+    reply(&raw).expect("expected initialize reply")["result"]["protocolVersion"].clone()
+}
+
+#[test]
+fn initialize_answers_each_supported_version_with_itself() {
+    for &version in SUPPORTED_MCP_PROTOCOL_VERSIONS {
+        let params = format!(r#"{{"protocolVersion":"{version}"}}"#);
+        assert_eq!(initialize_version(&params), version);
+    }
+    assert_eq!(
+        initialize_version(r#"{"protocolVersion":" 2025-03-26 "}"#),
+        "2025-03-26"
+    );
+}
+
+#[test]
+fn initialize_unknown_or_missing_version_gets_newest() {
+    for params in [
+        r#"{"protocolVersion":"1999-01-01"}"#,
+        r#"{"protocolVersion":""}"#,
+        r#"{"protocolVersion":42}"#,
+        r#"{}"#,
+    ] {
+        assert_eq!(initialize_version(params), "2025-06-18");
+    }
+}
+
+#[test]
+fn default_protocol_version_is_newest_supported() {
+    assert_eq!(
+        SUPPORTED_MCP_PROTOCOL_VERSIONS,
+        ["2025-06-18", "2025-03-26", "2024-11-05"]
+    );
+    assert_eq!(
+        DEFAULT_MCP_PROTOCOL_VERSION,
+        SUPPORTED_MCP_PROTOCOL_VERSIONS[0]
+    );
 }
