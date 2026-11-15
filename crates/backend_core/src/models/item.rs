@@ -333,6 +333,9 @@ pub struct ItemEffort {
     pub logged_time_minutes: u32,
     #[serde(default)]
     pub iteration_count: u32,
+    /// `<item_id>@<started_at>` of the last session logged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_timer_session: Option<String>,
 }
 
 /// `[history]` table inside `item.toml`.

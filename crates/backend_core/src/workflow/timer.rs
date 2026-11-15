@@ -121,11 +121,25 @@ impl TrackerStorage {
             let elapsed_minutes = timer.elapsed_minutes_at(stopped_at)?;
             let (loc, mut detail) = self.load_item_detail_by_id(&timer.item_id)?;
 
+            let session_key = format!("{}@{}", timer.item_id, timer.started_at);
+            if detail.manifest.effort.last_timer_session.as_deref() == Some(&session_key) {
+                // A crash between writing item.toml and removing .timer.toml made the next stop log the session again.
+                self.clear_active_timer()?;
+                let total_logged_minutes = detail.manifest.effort.logged_time_minutes;
+                return Ok(StoppedTimerSession {
+                    timer,
+                    elapsed_minutes: 0,
+                    total_logged_minutes,
+                    updated_item: detail,
+                });
+            }
+
             detail.manifest.effort.logged_time_minutes = detail
                 .manifest
                 .effort
                 .logged_time_minutes
                 .saturating_add(elapsed_minutes);
+            detail.manifest.effort.last_timer_session = Some(session_key);
             detail.manifest.item.updated_at = stopped_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
             self.write_item_manifest(
@@ -134,6 +148,7 @@ impl TrackerStorage {
                 &detail.manifest.item.id,
                 &detail.manifest,
             )?;
+            self.sync_parent_indexes_for_item(&loc.phase_id, &loc.scope_id, &detail.manifest)?;
             self.clear_active_timer()?;
 
             let total_logged_minutes = detail.manifest.effort.logged_time_minutes;

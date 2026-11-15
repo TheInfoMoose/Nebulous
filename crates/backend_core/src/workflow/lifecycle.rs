@@ -136,6 +136,7 @@ impl TrackerStorage {
                 effort: ItemEffort {
                     logged_time_minutes: 0,
                     iteration_count: 1,
+                    last_timer_session: None,
                 },
                 history: ItemHistory {
                     recurrence_count: 0,

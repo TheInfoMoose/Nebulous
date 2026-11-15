@@ -341,6 +341,7 @@ fn test_metrics_engine_valuation_stagnant_items_and_recurring_hotspots() {
             effort: ItemEffort {
                 logged_time_minutes: 120,
                 iteration_count: 3,
+                last_timer_session: None,
             },
             history: ItemHistory {
                 recurrence_count: 2,
@@ -378,6 +379,7 @@ fn test_metrics_engine_valuation_stagnant_items_and_recurring_hotspots() {
             effort: ItemEffort {
                 logged_time_minutes: 60,
                 iteration_count: 1,
+                last_timer_session: None,
             },
             history: ItemHistory::default(),
         },
@@ -402,6 +404,7 @@ fn test_metrics_engine_valuation_stagnant_items_and_recurring_hotspots() {
             effort: ItemEffort {
                 logged_time_minutes: 180,
                 iteration_count: 1,
+                last_timer_session: None,
             },
             history: ItemHistory {
                 recurrence_count: 0,
@@ -755,6 +758,7 @@ fn test_watcher_detects_external_changes_and_auto_reconciles_indexes() {
             effort: ItemEffort {
                 logged_time_minutes: 15,
                 iteration_count: 1,
+                last_timer_session: None,
             },
             history: ItemHistory::default(),
         },
@@ -2495,4 +2499,47 @@ fn scan_max_counters_unchanged_with_registered_phases() {
     let counters = storage.scan_max_counters().unwrap();
     assert_eq!(counters.bug, 1);
     assert_eq!(counters.feature, 1);
+}
+
+#[test]
+fn stop_twice_for_same_session_logs_once() {
+    let (_dir, storage) = init_temp_tracker();
+    storage
+        .create_bug("Idempotent stop test", None, None, Severity::Medium, None)
+        .unwrap();
+
+    let t0 = Utc.with_ymd_and_hms(2026, 11, 2, 14, 0, 0).unwrap();
+    let timer = storage.start_timer_at("BUG-0001", t0, None).unwrap();
+
+    let t1 = Utc.with_ymd_and_hms(2026, 11, 2, 14, 30, 0).unwrap();
+    let first_stop = storage.stop_timer_at(t1).unwrap();
+    assert_eq!(first_stop.elapsed_minutes, 30);
+    assert_eq!(first_stop.total_logged_minutes, 30);
+
+    storage.write_active_timer(&timer).unwrap();
+    let second_stop = storage.stop_timer_at(t1).unwrap();
+    assert_eq!(second_stop.elapsed_minutes, 0);
+    assert_eq!(second_stop.total_logged_minutes, 30);
+    assert!(!storage.timer_toml_path().exists());
+
+    let (_, detail) = storage.load_item_detail_by_id("BUG-0001").unwrap();
+    assert_eq!(detail.manifest.effort.logged_time_minutes, 30);
+}
+
+#[test]
+fn stop_syncs_scope_stub() {
+    let (_dir, storage) = init_temp_tracker();
+    storage
+        .create_bug("Sync scope stub test", None, None, Severity::Medium, None)
+        .unwrap();
+
+    let t0 = Utc.with_ymd_and_hms(2026, 11, 2, 14, 0, 0).unwrap();
+    storage.start_timer_at("BUG-0001", t0, None).unwrap();
+
+    let t1 = Utc.with_ymd_and_hms(2026, 11, 2, 14, 45, 0).unwrap();
+    storage.stop_timer_at(t1).unwrap();
+
+    let (_, detail) = storage.load_item_detail_by_id("BUG-0001").unwrap();
+    let indexed = storage.load_index().unwrap().find_item("BUG-0001").unwrap();
+    assert_eq!(indexed.stub, detail.manifest.to_stub());
 }
