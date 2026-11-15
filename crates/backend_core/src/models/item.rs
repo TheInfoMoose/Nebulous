@@ -287,6 +287,9 @@ pub struct ItemMetadata {
     pub created_at: String,
     #[serde(deserialize_with = "deserialize_datetime_string")]
     pub updated_at: String,
+    /// Plan step this item was imported from (e.g. `STEP 23A`); set only by `neb plan import`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
 }
 
 impl ItemMetadata {
@@ -308,6 +311,7 @@ impl ItemMetadata {
             scope_ref: scope_ref.into(),
             created_at: timestamp.clone(),
             updated_at: timestamp,
+            source_ref: None,
         }
     }
 
@@ -359,6 +363,35 @@ impl PreviousFix {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SAMPLE_ITEM_TOML: &str = r#"[item]
+id = "TASK-0001"
+type = "task"
+title = "Sample task"
+status = "open"
+severity = "medium"
+scope_ref = "inbox"
+created_at = "2026-01-01T00:00:00Z"
+updated_at = "2026-01-01T00:00:00Z"
+"#;
+
+    #[test]
+    fn item_source_ref_absent_loads_none_and_is_not_serialized() {
+        let manifest = ItemManifest::from_toml_str(SAMPLE_ITEM_TOML).unwrap();
+        assert_eq!(manifest.item.source_ref, None);
+        let serialized = manifest.to_toml_string().unwrap();
+        assert!(!serialized.contains("source_ref"));
+    }
+
+    #[test]
+    fn item_source_ref_round_trips() {
+        let mut manifest = ItemManifest::from_toml_str(SAMPLE_ITEM_TOML).unwrap();
+        manifest.item.source_ref = Some("STEP 23A".to_string());
+        let serialized = manifest.to_toml_string().unwrap();
+        let round_tripped = ItemManifest::from_toml_str(&serialized).unwrap();
+        assert_eq!(round_tripped.item.source_ref.as_deref(), Some("STEP 23A"));
+        assert_eq!(round_tripped, manifest);
+    }
 
     #[test]
     fn item_metadata_new_sets_every_field() {
