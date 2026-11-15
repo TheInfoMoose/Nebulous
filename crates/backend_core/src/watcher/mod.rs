@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use notify::event::ModifyKind;
@@ -14,7 +14,14 @@ use crate::storage::{ReconcileReport, TrackerStorage};
 #[derive(Debug, Clone)]
 pub struct TrackerWatchEvent {
     pub changed_paths: Vec<PathBuf>,
+    pub rescan: bool,
     pub reconcile_report: Option<ReconcileReport>,
+    pub reconcile_error: Option<String>,
+}
+
+enum RawSignal {
+    Paths(Vec<PathBuf>),
+    Rescan,
 }
 
 /// Filesystem watcher around `.tracker/` backed by `notify`.
@@ -23,7 +30,8 @@ pub struct TrackerWatchEvent {
 /// (`.tmp.`), reconciles `.tracker/` indexes on external changes, and forwards [`TrackerWatchEvent`]
 /// notifications to subscribers (such as the `libcosmic` GUI subscription loop).
 pub struct TrackerWatcher {
-    _watcher: RecommendedWatcher,
+    watcher: Option<RecommendedWatcher>,
+    worker: Option<JoinHandle<()>>,
     watched_dir: PathBuf,
 }
 
@@ -42,13 +50,19 @@ impl TrackerWatcher {
     ) -> Result<(Self, Receiver<TrackerWatchEvent>)> {
         let watched_dir = storage.tracker_dir().to_path_buf();
         let (tx, rx) = mpsc::channel::<TrackerWatchEvent>();
-        let (raw_tx, raw_rx) = mpsc::channel::<Vec<PathBuf>>();
+        let (raw_tx, raw_rx) = mpsc::channel::<RawSignal>();
 
         let mut watcher = RecommendedWatcher::new(
             move |res: notify::Result<Event>| {
                 let Ok(event) = res else {
+                    let _ = raw_tx.send(RawSignal::Rescan);
                     return;
                 };
+
+                if event.need_rescan() || matches!(event.kind, EventKind::Other) {
+                    let _ = raw_tx.send(RawSignal::Rescan);
+                    return;
+                }
 
                 if !is_mutating_event_kind(&event.kind) {
                     return;
@@ -61,7 +75,7 @@ impl TrackerWatcher {
                     .collect();
 
                 if !relevant_paths.is_empty() {
-                    let _ = raw_tx.send(relevant_paths);
+                    let _ = raw_tx.send(RawSignal::Paths(relevant_paths));
                 }
             },
             Config::default(),
@@ -70,15 +84,23 @@ impl TrackerWatcher {
         watcher.watch(&watched_dir, RecursiveMode::Recursive)?;
 
         let storage_for_worker = storage;
-        thread::spawn(move || {
+        let watched_dir_for_worker = watched_dir.clone();
+        let worker = thread::spawn(move || {
             let mut last_internal_reconcile: Option<Instant> = None;
             let mut pending_batch: Option<Vec<PathBuf>> = None;
+            let mut pending_rescan = false;
 
             loop {
+                let mut rescan = std::mem::take(&mut pending_rescan);
                 let mut batch = match pending_batch.take() {
                     Some(b) => b,
+                    None if rescan => Vec::new(),
                     None => match raw_rx.recv() {
-                        Ok(b) => b,
+                        Ok(RawSignal::Paths(b)) => b,
+                        Ok(RawSignal::Rescan) => {
+                            rescan = true;
+                            Vec::new()
+                        }
                         Err(_) => break,
                     },
                 };
@@ -89,62 +111,94 @@ impl TrackerWatcher {
 
                 // 1. Coalesce additional paths arriving within a 50ms quiet/debounce window.
                 while let Ok(more) = raw_rx.recv_timeout(Duration::from_millis(50)) {
-                    extend_unique(&mut batch, more);
+                    match more {
+                        RawSignal::Paths(paths) => extend_unique(&mut batch, paths),
+                        RawSignal::Rescan => rescan = true,
+                    }
                 }
 
-                if batch.is_empty() {
+                if !rescan && batch.is_empty() {
                     continue;
                 }
 
-                // 2. Suppress echo batches consisting solely of derived index files (`project.toml`,
-                // `phase.toml`, `scope.toml`) within 1000ms of an internal auto-reconcile.
-                let all_are_index_files = batch.iter().all(|p| is_derived_index_file(p));
-                if all_are_index_files
-                    && last_internal_reconcile
-                        .map(|last| last.elapsed() < Duration::from_millis(1000))
-                        .unwrap_or(false)
-                {
-                    continue;
-                }
+                if !rescan {
+                    // 2. Suppress echo batches consisting solely of derived index files (`project.toml`,
+                    // `phase.toml`, `scope.toml`) within 1000ms of an internal auto-reconcile.
+                    let all_are_index_files = batch.iter().all(|p| is_derived_index_file(p));
+                    if all_are_index_files
+                        && last_internal_reconcile
+                            .map(|last| last.elapsed() < Duration::from_millis(1000))
+                            .unwrap_or(false)
+                    {
+                        continue;
+                    }
 
-                // 3. In-flight item directory settlement: if any path refers to or resides inside
-                // an existing `.../items/<ITEM_ID>` directory whose `item.toml` is not yet in place
-                // or still has an active `.tmp.` atomic write file, poll up to 300ms (in 15ms steps).
-                let settle_start = Instant::now();
-                while settle_start.elapsed() < Duration::from_millis(300) {
+                    // 3. In-flight item directory settlement: if any path refers to or resides inside
+                    // an existing `.../items/<ITEM_ID>` directory whose `item.toml` is not yet in place
+                    // or still has an active `.tmp.` atomic write file, poll up to 300ms (in 15ms steps).
+                    let settle_start = Instant::now();
+                    while settle_start.elapsed() < Duration::from_millis(300) {
+                        while let Ok(more) = raw_rx.try_recv() {
+                            match more {
+                                RawSignal::Paths(paths) => extend_unique(&mut batch, paths),
+                                RawSignal::Rescan => rescan = true,
+                            }
+                        }
+                        if rescan || !has_unsettled_item_dirs(&batch) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(15));
+                    }
                     while let Ok(more) = raw_rx.try_recv() {
-                        extend_unique(&mut batch, more);
+                        match more {
+                            RawSignal::Paths(paths) => extend_unique(&mut batch, paths),
+                            RawSignal::Rescan => rescan = true,
+                        }
                     }
-                    if !has_unsettled_item_dirs(&batch) {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(15));
                 }
-                while let Ok(more) = raw_rx.try_recv() {
-                    extend_unique(&mut batch, more);
-                }
+
+                let changed_paths = if rescan {
+                    let mut paths = vec![watched_dir_for_worker.clone()];
+                    extend_unique(&mut paths, batch);
+                    paths
+                } else {
+                    batch
+                };
 
                 // 4. Reconcile indexes if enabled, record completion timestamp, drain immediate
                 // index-only echo events, and emit TrackerWatchEvent.
-                let reconcile_report = if auto_reconcile {
-                    let report = storage_for_worker.reconcile_indexes().ok();
+                let (reconcile_report, reconcile_error) = if auto_reconcile {
+                    // Why: errors were silently swallowed.
+                    let (report, error) = match storage_for_worker.reconcile_indexes() {
+                        Ok(r) => (Some(r), None),
+                        Err(e) => (None, Some(e.to_string())),
+                    };
                     last_internal_reconcile = Some(Instant::now());
                     while let Ok(more) = raw_rx.try_recv() {
-                        if more.iter().all(|p| is_derived_index_file(p)) {
-                            continue;
+                        match more {
+                            RawSignal::Paths(paths) => {
+                                if paths.iter().all(|p| is_derived_index_file(p)) {
+                                    continue;
+                                }
+                                let entry = pending_batch.get_or_insert_with(Vec::new);
+                                extend_unique(entry, paths);
+                            }
+                            RawSignal::Rescan => {
+                                pending_rescan = true;
+                            }
                         }
-                        let entry = pending_batch.get_or_insert_with(Vec::new);
-                        extend_unique(entry, more);
                     }
-                    report
+                    (report, error)
                 } else {
-                    None
+                    (None, None)
                 };
 
                 if tx
                     .send(TrackerWatchEvent {
-                        changed_paths: batch,
+                        changed_paths,
+                        rescan,
                         reconcile_report,
+                        reconcile_error,
                     })
                     .is_err()
                 {
@@ -155,7 +209,8 @@ impl TrackerWatcher {
 
         Ok((
             Self {
-                _watcher: watcher,
+                watcher: Some(watcher),
+                worker: Some(worker),
                 watched_dir,
             },
             rx,
@@ -165,6 +220,15 @@ impl TrackerWatcher {
     /// Returns the `.tracker/` directory path being watched.
     pub fn watched_dir(&self) -> &Path {
         &self.watched_dir
+    }
+}
+
+impl Drop for TrackerWatcher {
+    fn drop(&mut self) {
+        drop(self.watcher.take());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
