@@ -306,20 +306,13 @@ impl McpServer {
             }
             let mut responses = Vec::new();
             for item in batch {
-                match serde_json::from_value::<JsonRpcRequest>(item) {
+                match parse_request(item) {
                     Ok(req) => {
                         if let Some(resp) = self.handle_request(req) {
                             responses.push(resp);
                         }
                     }
-                    Err(err) => {
-                        responses.push(JsonRpcResponse::error(
-                            Value::Null,
-                            -32600,
-                            format!("Invalid Request: {err}"),
-                            None,
-                        ));
-                    }
+                    Err(resp) => responses.push(*resp),
                 }
             }
             if responses.is_empty() {
@@ -328,17 +321,9 @@ impl McpServer {
             return serde_json::to_string(&responses).ok();
         }
 
-        let request: JsonRpcRequest = match serde_json::from_value(parsed) {
+        let request = match parse_request(parsed) {
             Ok(req) => req,
-            Err(err) => {
-                let resp = JsonRpcResponse::error(
-                    Value::Null,
-                    -32600,
-                    format!("Invalid Request: {err}"),
-                    None,
-                );
-                return serde_json::to_string(&resp).ok();
-            }
+            Err(resp) => return serde_json::to_string(&resp).ok(),
         };
 
         let response = self.handle_request(request)?;
@@ -349,16 +334,8 @@ impl McpServer {
     pub fn handle_request(&mut self, request: JsonRpcRequest) -> Option<JsonRpcResponse> {
         let method = request.method.trim();
 
-        // Standard MCP notifications do not expect a response frame when `id` is omitted
-        if request.id.is_none()
-            && (method.starts_with("notifications/")
-                || method == "initialized"
-                || method == "cancelled")
-        {
-            return None;
-        }
-
-        let req_id = request.id.clone().unwrap_or(Value::Null);
+        // A request without `id` is a JSON-RPC notification: no reply, and it is not dispatched.
+        let req_id = request.id.clone()?;
         let params = request.params.unwrap_or_else(|| json!({}));
 
         match method {
@@ -390,11 +367,7 @@ impl McpServer {
                 ))
             }
             "notifications/initialized" | "initialized" => {
-                if request.id.is_some() {
-                    Some(JsonRpcResponse::success(req_id, json!({})))
-                } else {
-                    None
-                }
+                Some(JsonRpcResponse::success(req_id, json!({})))
             }
             "ping" => Some(JsonRpcResponse::success(req_id, json!({}))),
             "tools/list" => Some(JsonRpcResponse::success(
@@ -2515,6 +2488,41 @@ fn mcp_auth_request(auth_override: Option<&str>, pat: Option<&Value>) -> Result<
 
 fn non_empty(val: Option<&str>) -> Option<&str> {
     val.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Checks one incoming message and, on failure, returns the `-32600` reply carrying the message's
+/// `id` when that `id` is a string or number, otherwise `null`.
+fn parse_request(message: Value) -> std::result::Result<JsonRpcRequest, Box<JsonRpcResponse>> {
+    let id = match message.get("id") {
+        None | Some(Value::Null) => Value::Null,
+        Some(id @ (Value::String(_) | Value::Number(_))) => id.clone(),
+        Some(_) => {
+            return Err(Box::new(JsonRpcResponse::error(
+                Value::Null,
+                -32600,
+                "Invalid Request: id must be a string, number or null",
+                None,
+            )));
+        }
+    };
+
+    if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err(Box::new(JsonRpcResponse::error(
+            id,
+            -32600,
+            "Invalid Request: jsonrpc must be \"2.0\"",
+            None,
+        )));
+    }
+
+    serde_json::from_value(message).map_err(|err| {
+        Box::new(JsonRpcResponse::error(
+            id,
+            -32600,
+            format!("Invalid Request: {err}"),
+            None,
+        ))
+    })
 }
 
 fn default_jsonrpc_version() -> String {

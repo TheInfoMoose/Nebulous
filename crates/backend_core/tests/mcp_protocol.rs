@@ -110,3 +110,103 @@ fn non_content_length_header_lines_are_ignored() {
     assert_eq!(replies[0]["id"], 7);
     assert!(replies[0].get("error").is_none());
 }
+
+fn reply(raw: &str) -> Option<Value> {
+    McpServer::new(None)
+        .handle_raw_message(raw)
+        .map(|out| serde_json::from_str(&out).expect("reply should be valid JSON"))
+}
+
+#[test]
+fn idless_requests_get_no_reply() {
+    assert_eq!(reply(r#"{"jsonrpc":"2.0","method":"ping"}"#), None);
+    assert_eq!(
+        reply(r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"no_such_tool"}}"#),
+        None
+    );
+    assert_eq!(
+        reply(r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#),
+        None
+    );
+}
+
+#[test]
+fn notification_only_batch_gets_no_reply() {
+    assert_eq!(
+        reply(
+            r#"[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","method":"ping"}]"#
+        ),
+        None
+    );
+}
+
+#[test]
+fn mixed_batch_replies_only_to_requests_with_id() {
+    let out =
+        reply(r#"[{"jsonrpc":"2.0","method":"ping"},{"jsonrpc":"2.0","id":"a","method":"ping"}]"#)
+            .expect("expected batch reply");
+    let arr = out.as_array().expect("batch reply should be an array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["id"], "a");
+    assert!(arr[0].get("error").is_none());
+}
+
+#[test]
+fn invalid_request_keeps_readable_id() {
+    let r1 = reply(r#"{"jsonrpc":"2.0","id":9}"#).expect("expected error reply");
+    assert_eq!(r1["error"]["code"], -32600);
+    assert_eq!(r1["id"], 9);
+
+    let r2 = reply(r#"{"jsonrpc":"2.0","id":"x","method":5}"#).expect("expected error reply");
+    assert_eq!(r2["error"]["code"], -32600);
+    assert_eq!(r2["id"], "x");
+
+    let r3 = reply(r#"{"jsonrpc":"2.0","method":5}"#).expect("expected error reply");
+    assert_eq!(r3["error"]["code"], -32600);
+    assert_eq!(r3["id"], Value::Null);
+}
+
+#[test]
+fn missing_or_wrong_jsonrpc_is_rejected() {
+    let r1 = reply(r#"{"id":3,"method":"ping"}"#).expect("expected error reply");
+    assert_eq!(r1["error"]["code"], -32600);
+    assert_eq!(r1["id"], 3);
+    assert!(r1["error"]["message"]
+        .as_str()
+        .expect("error message string")
+        .contains("jsonrpc"));
+
+    let r2 = reply(r#"{"jsonrpc":"1.0","id":4,"method":"ping"}"#).expect("expected error reply");
+    assert_eq!(r2["error"]["code"], -32600);
+    assert_eq!(r2["id"], 4);
+
+    let r3 = reply(r#"[{"id":5,"method":"ping"}]"#).expect("expected batch error reply");
+    let arr = r3.as_array().expect("batch reply should be an array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["error"]["code"], -32600);
+    assert_eq!(arr[0]["id"], 5);
+}
+
+#[test]
+fn unreadable_id_is_rejected_with_null_id() {
+    for raw in [
+        r#"{"jsonrpc":"2.0","id":{"a":1},"method":"ping"}"#,
+        r#"{"jsonrpc":"2.0","id":true,"method":"ping"}"#,
+    ] {
+        let r = reply(raw).expect("expected error reply");
+        assert_eq!(r["error"]["code"], -32600);
+        assert_eq!(r["id"], Value::Null);
+    }
+}
+
+#[test]
+fn invalid_batch_entries_each_get_an_error() {
+    let out =
+        reply(r#"[1,{"jsonrpc":"2.0","id":2,"method":"ping"}]"#).expect("expected batch reply");
+    let arr = out.as_array().expect("batch reply should be an array");
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["error"]["code"], -32600);
+    assert_eq!(arr[0]["id"], Value::Null);
+    assert_eq!(arr[1]["id"], 2);
+    assert!(arr[1].get("error").is_none());
+}
