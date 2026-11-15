@@ -18,6 +18,7 @@ pub struct ReconcileReport {
     pub completed_items: u32,
     pub counters: ProjectCounters,
     pub skipped_unsupported: Vec<String>,
+    pub skipped_malformed: Vec<String>,
     pub duplicate_ids: Vec<String>,
 }
 
@@ -158,6 +159,7 @@ impl TrackerStorage {
                         &items_dir,
                         &mut max_counters,
                         &mut report.skipped_unsupported,
+                        &mut report.skipped_malformed,
                         &mut id_counts,
                     )?;
 
@@ -203,6 +205,7 @@ impl TrackerStorage {
             project.counters.merge_max(&max_counters);
             report.counters = project.counters.clone();
             report.skipped_unsupported.sort();
+            report.skipped_malformed.sort();
             report.duplicate_ids = id_counts
                 .into_iter()
                 .filter_map(|(id, count)| (count > 1).then_some(id))
@@ -218,11 +221,21 @@ impl TrackerStorage {
     }
 }
 
+fn tracker_relative(storage: &TrackerStorage, path: &Path) -> String {
+    path.strip_prefix(storage.tracker_dir())
+        .unwrap_or(path)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn collect_authoritative_items(
     storage: &TrackerStorage,
     items_dir: &Path,
     max_counters: &mut ProjectCounters,
     skipped: &mut Vec<String>,
+    malformed: &mut Vec<String>,
     id_counts: &mut HashMap<String, u32>,
 ) -> Result<(ScopeItems, u32)> {
     let mut items = ScopeItems::default();
@@ -266,14 +279,11 @@ fn collect_authoritative_items(
         let manifest = match storage.read_versioned::<ItemManifest>(&item_toml_path) {
             Ok(manifest) => manifest,
             Err(TrackerError::UnsupportedSchema { .. }) => {
-                let rel = item_toml_path
-                    .strip_prefix(storage.tracker_dir())
-                    .unwrap_or(&item_toml_path)
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("/");
-                skipped.push(rel);
+                skipped.push(tracker_relative(storage, &item_toml_path));
+                continue;
+            }
+            Err(TrackerError::TomlDeserialize { .. }) => {
+                malformed.push(tracker_relative(storage, &item_toml_path));
                 continue;
             }
             Err(err) => return Err(err),

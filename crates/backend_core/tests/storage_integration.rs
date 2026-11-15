@@ -2945,3 +2945,28 @@ fn concurrent_mixed_type_creators_get_unique_ids() {
         50
     );
 }
+
+#[test]
+fn reconcile_skips_malformed_item_toml() {
+    let temp = TempTrackerDir::new("reconcile_skips_malformed");
+    let storage = TrackerStorage::init_standard(temp.path(), "MalformedItemTest").unwrap();
+
+    storage
+        .create_bug("Valid bug one", None, None, Severity::Medium, None)
+        .unwrap();
+    let (loc2, _) = storage
+        .create_bug("Valid bug two", None, None, Severity::Medium, None)
+        .unwrap();
+
+    let bug2_toml = storage
+        .item_toml_path(&loc2.phase_id, &loc2.scope_id, "BUG-0002")
+        .unwrap();
+    fs::write(&bug2_toml, "not = [valid").unwrap();
+
+    let report = storage.reconcile_indexes().unwrap();
+    assert_eq!(report.skipped_malformed.len(), 1);
+    assert!(report.skipped_malformed[0].ends_with("BUG-0002/item.toml"));
+
+    let index = storage.load_index().unwrap();
+    assert!(index.find_item("BUG-0001").is_some());
+}
