@@ -23,6 +23,9 @@ use crate::workflow::CreateItemInput;
 /// Default MCP protocol version advertised by the Nebulous stdio server.
 pub const DEFAULT_MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// Signature shared by every MCP tool handler.
+type ToolHandler = fn(&mut McpServer, Value) -> Result<Value>;
+
 /// Standard JSON-RPC 2.0 request envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -575,35 +578,9 @@ impl McpServer {
         }))
     }
 
-    /// Returns `true` if `name` is a supported MCP tool.
+    /// Returns `true` if `name` is a supported MCP tool in [`Self::tool_handler`].
     pub fn is_known_tool(name: &str) -> bool {
-        matches!(
-            name.trim(),
-            "get_active_task"
-                | "list_items"
-                | "get_item_context"
-                | "list_crate_boundaries"
-                | "create_item"
-                | "update_item_status"
-                | "close_item_with_fix"
-                | "record_regression"
-                | "list_projects"
-                | "switch_project"
-                | "ingest_project_directory"
-                | "upsert_component_manifest"
-                | "promote_component_to_scope"
-                | "plan_import"
-                | "record_rolling_update"
-                | "record_verification_run"
-                | "pin_stable_release"
-                | "rollback_to_pinned_release"
-                | "git_status"
-                | "git_fetch"
-                | "git_pull"
-                | "git_push"
-                | "git_commit_documented"
-                | "git_sync"
-        )
+        Self::tool_handler(name).is_some()
     }
 
     /// Returns the complete catalog of MCP tools across all 4 tool suites.
@@ -933,39 +910,49 @@ impl McpServer {
 
     /// Invokes a named MCP tool with the given JSON arguments and returns the structured JSON result.
     pub fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value> {
-        match name.trim() {
-            // Suite 1: Core Agentic Task & Boundary Tools
-            "get_active_task" => self.tool_get_active_task(arguments),
-            "list_items" => self.tool_list_items(arguments),
-            "get_item_context" => self.tool_get_item_context(arguments),
-            "list_crate_boundaries" => self.tool_list_crate_boundaries(arguments),
-            "create_item" => self.tool_create_item(arguments),
-            "update_item_status" => self.tool_update_item_status(arguments),
-            "close_item_with_fix" => self.tool_close_item_with_fix(arguments),
-            "record_regression" => self.tool_record_regression(arguments),
-            // Suite 2: Project & Ingestion Tools
-            "list_projects" => self.tool_list_projects(arguments),
-            "switch_project" => self.tool_switch_project(arguments),
-            "ingest_project_directory" => self.tool_ingest_project_directory(arguments),
-            "upsert_component_manifest" => self.tool_upsert_component_manifest(arguments),
-            "promote_component_to_scope" => self.tool_promote_component_to_scope(arguments),
-            "plan_import" => self.tool_plan_import(arguments),
-            // Suite 3: Release Engineering & Self-Healing CI Tools
-            "record_rolling_update" => self.tool_record_rolling_update(arguments),
-            "record_verification_run" => self.tool_record_verification_run(arguments),
-            "pin_stable_release" => self.tool_pin_stable_release(arguments),
-            "rollback_to_pinned_release" => self.tool_rollback_to_pinned_release(arguments),
-            // Suite 4: Git & Documentation Tools
-            "git_status" => self.tool_git_status(arguments),
-            "git_fetch" => self.tool_git_fetch(arguments),
-            "git_pull" => self.tool_git_pull(arguments),
-            "git_push" => self.tool_git_push(arguments),
-            "git_commit_documented" => self.tool_git_commit_documented(arguments),
-            "git_sync" => self.tool_git_sync(arguments),
-            other => Err(TrackerError::ValidationError(format!(
-                "Unknown MCP tool '{other}'"
+        match Self::tool_handler(name) {
+            Some(handler) => handler(self, arguments),
+            None => Err(TrackerError::ValidationError(format!(
+                "Unknown MCP tool '{}'",
+                name.trim()
             ))),
         }
+    }
+
+    /// Single name-to-handler dispatch table read by both [`Self::call_tool`] and [`Self::is_known_tool`].
+    fn tool_handler(name: &str) -> Option<ToolHandler> {
+        let handler: ToolHandler = match name.trim() {
+            // Suite 1: Core Agentic Task & Boundary Tools
+            "get_active_task" => Self::tool_get_active_task,
+            "list_items" => Self::tool_list_items,
+            "get_item_context" => Self::tool_get_item_context,
+            "list_crate_boundaries" => Self::tool_list_crate_boundaries,
+            "create_item" => Self::tool_create_item,
+            "update_item_status" => Self::tool_update_item_status,
+            "close_item_with_fix" => Self::tool_close_item_with_fix,
+            "record_regression" => Self::tool_record_regression,
+            // Suite 2: Project & Ingestion Tools
+            "list_projects" => Self::tool_list_projects,
+            "switch_project" => Self::tool_switch_project,
+            "ingest_project_directory" => Self::tool_ingest_project_directory,
+            "upsert_component_manifest" => Self::tool_upsert_component_manifest,
+            "promote_component_to_scope" => Self::tool_promote_component_to_scope,
+            "plan_import" => Self::tool_plan_import,
+            // Suite 3: Release Engineering & Self-Healing CI Tools
+            "record_rolling_update" => Self::tool_record_rolling_update,
+            "record_verification_run" => Self::tool_record_verification_run,
+            "pin_stable_release" => Self::tool_pin_stable_release,
+            "rollback_to_pinned_release" => Self::tool_rollback_to_pinned_release,
+            // Suite 4: Git & Documentation Tools
+            "git_status" => Self::tool_git_status,
+            "git_fetch" => Self::tool_git_fetch,
+            "git_pull" => Self::tool_git_pull,
+            "git_push" => Self::tool_git_push,
+            "git_commit_documented" => Self::tool_git_commit_documented,
+            "git_sync" => Self::tool_git_sync,
+            _ => return None,
+        };
+        Some(handler)
     }
 
     fn tool_plan_import(&mut self, args: Value) -> Result<Value> {
@@ -2412,4 +2399,43 @@ fn default_rolling_dep_kind() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn every_listed_tool_has_a_handler_and_names_are_unique() {
+        let tools = McpServer::tools_list();
+        assert_eq!(tools.len(), 24);
+        let mut seen = HashSet::new();
+        for tool in &tools {
+            assert!(
+                McpServer::is_known_tool(&tool.name),
+                "listed tool '{}' has no handler",
+                tool.name
+            );
+            assert!(
+                seen.insert(tool.name.as_str()),
+                "duplicate tool name '{}'",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_tool_is_rejected_by_is_known_tool_and_call_tool() {
+        assert!(!McpServer::is_known_tool("no_such_tool"));
+        assert!(McpServer::is_known_tool("  plan_import  "));
+        let err = McpServer::new(None)
+            .call_tool("no_such_tool", json!({}))
+            .expect_err("unknown tool must be rejected");
+        assert!(
+            err.to_string().contains("Unknown MCP tool 'no_such_tool'"),
+            "unexpected error: {err}"
+        );
+    }
 }
