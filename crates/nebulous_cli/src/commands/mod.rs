@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use backend_core::planning::{import_plan, parse_roadmap, ImportEntry};
 use backend_core::{
     load_global_registry, normalize_relative_path_str, register_project, remove_project,
     set_active_project, AgentContextBundle, ComponentDependency, ComponentManifest, ComponentType,
@@ -14,8 +15,8 @@ use backend_core::{
 use serde::Serialize;
 
 use crate::args::{
-    Cli, Commands, ComponentCommand, GitCommand, PhaseCommand, ProjectCommand, ScopeCommand,
-    TimerCommand,
+    Cli, Commands, ComponentCommand, GitCommand, PhaseCommand, PlanCommand, ProjectCommand,
+    ScopeCommand, TimerCommand,
 };
 
 /// Executes a parsed [`Cli`] command and prints the resulting output to `stdout`
@@ -274,6 +275,10 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
         Some(Commands::Scope { action }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_scope(&storage, action, cli.json)
+        }
+        Some(Commands::Plan { action }) => {
+            let storage = resolve_storage(cli.root.as_deref())?;
+            handle_plan(&storage, action, cli.json)
         }
         Some(Commands::Project { action }) => handle_project(action, cli.json),
         Some(Commands::Ingest {
@@ -2059,6 +2064,41 @@ fn handle_scope(storage: &TrackerStorage, action: &ScopeCommand, json: bool) -> 
                 "Created scope '{}' (target: '{}') in phase '{}'",
                 scope_manifest.scope.id, scope_manifest.scope.target, resolved_phase
             ))
+        }
+    }
+}
+
+fn handle_plan(storage: &TrackerStorage, action: &PlanCommand, json: bool) -> Result<String> {
+    match action {
+        PlanCommand::Import { path, phase, write } => {
+            let markdown = std::fs::read_to_string(path).map_err(|source| TrackerError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            let steps = parse_roadmap(&markdown)?;
+            let report = import_plan(storage, &steps, phase.as_deref(), *write)?;
+
+            if json {
+                return to_json_pretty(&report);
+            }
+
+            let mut out = String::new();
+            let write_entries = |out: &mut String, verb: &str, entries: &[ImportEntry]| {
+                for entry in entries {
+                    let id = entry.item_id.as_deref().unwrap_or("(new)");
+                    let _ = writeln!(out, "{verb} {id} ← {}", entry.step_id);
+                }
+            };
+
+            write_entries(&mut out, "CREATE", &report.created);
+            write_entries(&mut out, "RETITLE", &report.retitled);
+            write_entries(&mut out, "CLOSE", &report.closed);
+            let _ = writeln!(out, "UNCHANGED {}", report.unchanged.len());
+            if !*write {
+                let _ = writeln!(out, "dry run: nothing written; re-run with --write");
+            }
+
+            Ok(out.trim_end().to_string())
         }
     }
 }

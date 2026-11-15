@@ -2477,3 +2477,83 @@ fn test_tui_t_key_opens_task_capture_and_creates_task() {
     assert!(app.modal.is_none());
     assert!(app.items.iter().any(|i| i.id == "TASK-0001"));
 }
+
+#[test]
+fn test_plan_import_dry_run_write_and_rerun() {
+    let temp = TempDir::new().expect("should create temp dir for plan import test");
+    let root_str = temp.path().to_str().unwrap();
+    run_neb_ok(&["--root", root_str, "init", "--name", "PlanCliTest"], None);
+
+    let plan_path = temp.path().join("PLAN.md");
+    let plan_str = plan_path.to_str().unwrap();
+    fs::write(
+        &plan_path,
+        r#"# Synthetic Plan
+
+## Step Execution Roadmap
+
+### Up Next
+
+| # | Step | Command | Scope | Target Files | Waits on |
+| :---: | :--- | :---: | :--- | :--- | :--- |
+| 1 | **STEP 2A** | `/goal` | Build widget module | `src/widget.rs` (NEW) | — |
+| 2 | **STEP 2B** | `/boost` | Wire app loop | `src/app.rs` | — |
+
+### Completed
+
+| Step ID | Status | Command | Scope | Target Files |
+| :--- | :---: | :---: | :--- | :--- |
+| **STEP 1A** | **COMPLETED** (`abc1234`) | `/goal` | Bootstrap workspace | `Cargo.toml` |
+"#,
+    )
+    .expect("should write synthetic plan file");
+
+    let dry_stdout = run_neb_ok(&["--root", root_str, "plan", "import", plan_str], None);
+    assert!(dry_stdout.contains("CREATE (new) ← STEP 2A"));
+    assert!(dry_stdout.contains("dry run: nothing written; re-run with --write"));
+
+    let list_json = run_neb_json(&["--root", root_str, "list"], None);
+    assert_eq!(list_json["total"], 0);
+
+    let write_json = run_neb_json(
+        &["--root", root_str, "plan", "import", plan_str, "--write"],
+        None,
+    );
+    let created = write_json["created"]
+        .as_array()
+        .expect("created should be array");
+    assert_eq!(created.len(), 3);
+    assert_eq!(created[0]["step_id"], "STEP 2A");
+    assert!(created[0]["item_id"]
+        .as_str()
+        .expect("item_id should be string")
+        .starts_with("TASK-"));
+
+    let rerun_stdout = run_neb_ok(
+        &["--root", root_str, "plan", "import", plan_str, "--write"],
+        None,
+    );
+    assert!(!rerun_stdout.contains("CREATE"));
+    assert!(rerun_stdout.contains("UNCHANGED 3"));
+    assert!(!rerun_stdout.contains("dry run"));
+}
+
+#[test]
+fn test_plan_import_missing_roadmap_section_fails_with_heading() {
+    let temp = TempDir::new().expect("should create temp dir for invalid plan import test");
+    let root_str = temp.path().to_str().unwrap();
+    run_neb_ok(&["--root", root_str, "init", "--name", "PlanCliTest"], None);
+
+    let plan_path = temp.path().join("INVALID_PLAN.md");
+    let plan_str = plan_path.to_str().unwrap();
+    fs::write(&plan_path, "# Synthetic Plan\n\nNo roadmap section here.\n")
+        .expect("should write invalid plan file");
+
+    let output = run_neb(&["--root", root_str, "plan", "import", plan_str], None);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("## Step Execution Roadmap"),
+        "expected stderr to mention '## Step Execution Roadmap', got: {stderr}"
+    );
+}

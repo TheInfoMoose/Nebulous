@@ -334,6 +334,12 @@ pub enum Commands {
         action: ScopeCommand,
     },
 
+    /// Import roadmap steps from a stepped plan file as task items. Dry run unless --write.
+    Plan {
+        #[command(subcommand)]
+        action: PlanCommand,
+    },
+
     /// Manage the global multi-project registry (`list`, `add`, `switch`, `remove`).
     Project {
         #[command(subcommand)]
@@ -432,6 +438,23 @@ pub enum PhaseCommand {
     Use {
         /// Target phase identifier.
         id: String,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum PlanCommand {
+    /// Import roadmap steps from a plan Markdown file as task items.
+    Import {
+        /// Path to the plan Markdown file.
+        path: PathBuf,
+
+        /// Phase for new tasks (default `active_phase`).
+        #[arg(short, long)]
+        phase: Option<String>,
+
+        /// Apply the changes, otherwise nothing is written.
+        #[arg(long)]
+        write: bool,
     },
 }
 
