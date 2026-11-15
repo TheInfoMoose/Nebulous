@@ -23,6 +23,9 @@ use crate::workflow::CreateItemInput;
 /// Default MCP protocol version advertised by the Nebulous stdio server.
 pub const DEFAULT_MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// Largest JSON-RPC message accepted on stdio (header line, raw JSON line, or `Content-Length` body).
+pub const MAX_MCP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+
 /// Signature shared by every MCP tool handler.
 type ToolHandler = fn(&mut McpServer, Value) -> Result<Value>;
 
@@ -224,13 +227,26 @@ impl McpServer {
 
     /// Runs the JSON-RPC 2.0 loop over arbitrary buffered reader and writer streams.
     pub fn serve_io<R: BufRead, W: Write>(&mut self, mut reader: R, mut writer: W) -> Result<()> {
-        while let Some((raw_message, used_content_length)) = read_next_jsonrpc_message(&mut reader)
-            .map_err(|source| TrackerError::Io {
+        while let Some(frame) =
+            read_next_jsonrpc_message(&mut reader).map_err(|source| TrackerError::Io {
                 path: PathBuf::from("<stdio>"),
                 source,
             })?
         {
-            if let Some(response_str) = self.handle_raw_message(&raw_message) {
+            let (maybe_response_str, used_content_length) = match frame {
+                IncomingFrame::Message { body, framed } => (self.handle_raw_message(&body), framed),
+                IncomingFrame::Rejected { reason, framed } => {
+                    let resp = JsonRpcResponse::error(
+                        Value::Null,
+                        -32600,
+                        format!("Invalid Request: {reason}"),
+                        None,
+                    );
+                    (serde_json::to_string(&resp).ok(), framed)
+                }
+            };
+
+            if let Some(response_str) = maybe_response_str {
                 if used_content_length {
                     write!(
                         writer,
@@ -2313,50 +2329,174 @@ fn select_best_active_item(
     Ok(candidates.first().map(|loc| loc.stub.id.clone()))
 }
 
-fn read_next_jsonrpc_message<R: BufRead>(reader: &mut R) -> io::Result<Option<(String, bool)>> {
+/// Result of reading one frame or line from the MCP stdio stream.
+enum IncomingFrame {
+    /// A well-formed JSON-RPC message body ready for dispatch.
+    Message { body: String, framed: bool },
+    /// A malformed or oversized frame/line that must be answered with `-32600`.
+    Rejected { reason: String, framed: bool },
+}
+
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    limit: usize,
+) -> io::Result<Option<(Vec<u8>, bool)>> {
+    let mut line = Vec::new();
+    let mut overflowed = false;
+    let mut read_any = false;
+
     loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line)?;
-        if bytes_read == 0 {
-            return Ok(None);
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            if !read_any {
+                return Ok(None);
+            }
+            return Ok(Some((line, overflowed)));
+        }
+        read_any = true;
+
+        let newline_pos = buf.iter().position(|&b| b == b'\n');
+        let content = match newline_pos {
+            Some(pos) => &buf[..pos],
+            None => buf,
+        };
+
+        if !overflowed {
+            if line.len() + content.len() > limit {
+                overflowed = true;
+                line.clear();
+                line.shrink_to_fit();
+            } else {
+                line.extend_from_slice(content);
+            }
         }
 
-        let trimmed = line.trim();
+        let consumed = match newline_pos {
+            Some(pos) => pos + 1,
+            None => buf.len(),
+        };
+        reader.consume(consumed);
+
+        if newline_pos.is_some() {
+            return Ok(Some((line, overflowed)));
+        }
+    }
+}
+
+fn is_header_line(line: &str) -> bool {
+    let Some((name, _)) = line.split_once(':') else {
+        return false;
+    };
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+fn read_next_jsonrpc_message<R: BufRead>(reader: &mut R) -> io::Result<Option<IncomingFrame>> {
+    loop {
+        let Some((raw_line, overflowed)) = read_bounded_line(reader, MAX_MCP_MESSAGE_BYTES)? else {
+            return Ok(None);
+        };
+        if overflowed {
+            return Ok(Some(IncomingFrame::Rejected {
+                reason: format!("line length exceeds maximum of {MAX_MCP_MESSAGE_BYTES} bytes"),
+                framed: false,
+            }));
+        }
+
+        let Ok(line_str) = std::str::from_utf8(&raw_line) else {
+            return Ok(Some(IncomingFrame::Rejected {
+                reason: "invalid UTF-8 in JSON-RPC line".to_string(),
+                framed: false,
+            }));
+        };
+
+        let trimmed = line_str.trim();
         if trimmed.is_empty() {
             continue;
         }
 
-        // Support optional LSP/MCP Content-Length header framing
-        let lower = trimmed.to_ascii_lowercase();
-        if let Some(rest) = lower.strip_prefix("content-length:") {
-            let content_len: usize = rest.trim().parse().map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Invalid Content-Length header: {err}"),
-                )
-            })?;
-
-            loop {
-                let mut header_line = String::new();
-                let n = reader.read_line(&mut header_line)?;
-                if n == 0 || header_line.trim().is_empty() {
-                    break;
-                }
-            }
-
-            let mut buf = vec![0u8; content_len];
-            reader.read_exact(&mut buf)?;
-            let payload = String::from_utf8(buf).map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Invalid UTF-8 in JSON-RPC body: {err}"),
-                )
-            })?;
-            return Ok(Some((payload, true)));
+        if !is_header_line(trimmed) {
+            return Ok(Some(IncomingFrame::Message {
+                body: trimmed.to_string(),
+                framed: false,
+            }));
         }
 
-        // Standard newline-delimited JSON-RPC message
-        return Ok(Some((trimmed.to_string(), false)));
+        let mut content_length: Option<std::result::Result<usize, String>> = None;
+
+        if let Some((name, value)) = trimmed.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                content_length = Some(
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|err| format!("Invalid Content-Length header: {err}")),
+                );
+            }
+        }
+
+        while let Some((hdr_bytes, hdr_overflow)) =
+            read_bounded_line(reader, MAX_MCP_MESSAGE_BYTES)?
+        {
+            if hdr_overflow {
+                continue;
+            }
+            let Ok(hdr_str) = std::str::from_utf8(&hdr_bytes) else {
+                continue;
+            };
+            let hdr_trimmed = hdr_str.trim();
+            if hdr_trimmed.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = hdr_trimmed.split_once(':') {
+                if name.trim().eq_ignore_ascii_case("content-length") {
+                    content_length = Some(
+                        value
+                            .trim()
+                            .parse::<usize>()
+                            .map_err(|err| format!("Invalid Content-Length header: {err}")),
+                    );
+                }
+            }
+        }
+
+        let len = match content_length {
+            Some(Ok(len)) => len,
+            Some(Err(reason)) => {
+                return Ok(Some(IncomingFrame::Rejected {
+                    reason,
+                    framed: true,
+                }));
+            }
+            None => {
+                return Ok(Some(IncomingFrame::Rejected {
+                    reason: "missing Content-Length header".to_string(),
+                    framed: true,
+                }));
+            }
+        };
+
+        if len > MAX_MCP_MESSAGE_BYTES {
+            io::copy(
+                &mut io::Read::take(&mut *reader, len as u64),
+                &mut io::sink(),
+            )?;
+            return Ok(Some(IncomingFrame::Rejected {
+                reason: format!(
+                    "Content-Length {len} exceeds maximum of {MAX_MCP_MESSAGE_BYTES} bytes"
+                ),
+                framed: true,
+            }));
+        }
+
+        let mut buf = vec![0u8; len];
+        reader.read_exact(&mut buf)?;
+        let Ok(body) = String::from_utf8(buf) else {
+            return Ok(Some(IncomingFrame::Rejected {
+                reason: "Invalid UTF-8 in JSON-RPC body".to_string(),
+                framed: true,
+            }));
+        };
+        return Ok(Some(IncomingFrame::Message { body, framed: true }));
     }
 }
 
