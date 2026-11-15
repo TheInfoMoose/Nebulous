@@ -916,7 +916,7 @@ fn infer_scope_from_git_dirty_files(
         .and_then(|(scope_id, (count, _))| if count > 0 { Some(scope_id) } else { None })
 }
 
-fn match_file_to_best_scope(
+pub(crate) fn match_file_to_best_scope(
     scopes: &[ScopeIndex],
     default_scope: &str,
     rel_file: &str,

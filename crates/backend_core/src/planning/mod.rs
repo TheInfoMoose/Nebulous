@@ -2,6 +2,10 @@ use std::collections::HashSet;
 
 use crate::error::{Result, TrackerError};
 
+pub mod import;
+
+pub use import::{import_plan, ImportEntry, ImportReport};
+
 /// A single step parsed from a plan file's `## Step Execution Roadmap` tables.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanStep {
