@@ -22,6 +22,8 @@ pub struct CreateItemInput {
     pub scope_id: Option<String>,
     pub severity: Severity,
     pub description: Option<String>,
+    /// Plan step the item is imported from; written to `item.source_ref` in the same write as the rest of `item.toml`.
+    pub source_ref: Option<String>,
 }
 
 impl CreateItemInput {
@@ -35,6 +37,7 @@ impl CreateItemInput {
             scope_id: None,
             severity: Severity::Medium,
             description: None,
+            source_ref: None,
         }
     }
 
@@ -55,6 +58,11 @@ impl CreateItemInput {
 
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    pub fn with_source_ref(mut self, source_ref: impl Into<String>) -> Self {
+        self.source_ref = Some(source_ref.into());
         self
     }
 }
@@ -116,6 +124,7 @@ impl TrackerStorage {
                 item: ItemMetadata {
                     status: ItemStatus::Open,
                     severity: input.severity,
+                    source_ref: input.source_ref.clone(),
                     ..ItemMetadata::new(
                         item_id.clone(),
                         input.item_type,
@@ -170,12 +179,11 @@ impl TrackerStorage {
         description: Option<&str>,
     ) -> Result<(ItemLocation, ItemDetail)> {
         self.create_item(CreateItemInput {
-            item_type: ItemType::Bug,
-            title: title.into(),
             phase_id: phase_id.map(str::to_string),
             scope_id: scope_id.map(str::to_string),
             severity,
             description: description.map(str::to_string),
+            ..CreateItemInput::new(ItemType::Bug, title)
         })
     }
 
@@ -189,12 +197,11 @@ impl TrackerStorage {
         description: Option<&str>,
     ) -> Result<(ItemLocation, ItemDetail)> {
         self.create_item(CreateItemInput {
-            item_type: ItemType::Feature,
-            title: title.into(),
             phase_id: phase_id.map(str::to_string),
             scope_id: scope_id.map(str::to_string),
             severity,
             description: description.map(str::to_string),
+            ..CreateItemInput::new(ItemType::Feature, title)
         })
     }
 

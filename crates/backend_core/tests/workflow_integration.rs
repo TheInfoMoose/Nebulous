@@ -2286,3 +2286,26 @@ fn mcp_create_item_accepts_task_and_reports_tasks_count() {
     assert_eq!(boundaries["scopes"][0]["scope_id"], json!("inbox"));
     assert_eq!(boundaries["scopes"][0]["tasks_count"], json!(1));
 }
+
+#[test]
+fn create_item_with_source_ref_writes_it_in_item_toml() {
+    let dir = TempDir::new().unwrap();
+    let storage = TrackerStorage::init_standard(dir.path(), "SourceRefTest").unwrap();
+
+    let (loc, detail) = storage
+        .create_item(
+            CreateItemInput::new(ItemType::Task, "Imported task").with_source_ref("STEP 9Z"),
+        )
+        .unwrap();
+    assert_eq!(detail.manifest.item.source_ref.as_deref(), Some("STEP 9Z"));
+
+    let on_disk = storage
+        .read_item_manifest(&loc.phase_id, &loc.scope_id, &loc.stub.id)
+        .unwrap();
+    assert_eq!(on_disk.item.source_ref.as_deref(), Some("STEP 9Z"));
+
+    let (_, plain) = storage
+        .create_item(CreateItemInput::new(ItemType::Task, "Hand-made task"))
+        .unwrap();
+    assert_eq!(plain.manifest.item.source_ref, None);
+}
