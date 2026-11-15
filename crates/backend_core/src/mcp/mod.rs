@@ -404,38 +404,30 @@ impl McpServer {
                     Ok(payload) => {
                         let text = serde_json::to_string_pretty(&payload)
                             .unwrap_or_else(|_| payload.to_string());
-                        let mut result_obj = serde_json::Map::new();
-                        if let Value::Object(ref map) = payload {
-                            for (k, v) in map {
-                                result_obj.insert(k.clone(), v.clone());
-                            }
-                        }
-                        result_obj.insert(
-                            "content".to_string(),
-                            json!([
-                                {
-                                    "type": "text",
-                                    "text": text
-                                }
-                            ]),
-                        );
-                        result_obj.insert("structuredContent".to_string(), payload);
-                        result_obj.insert("isError".to_string(), Value::Bool(false));
-                        Some(JsonRpcResponse::success(req_id, Value::Object(result_obj)))
+                        Some(JsonRpcResponse::success(
+                            req_id,
+                            json!({
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": text
+                                    }
+                                ],
+                                "structuredContent": payload,
+                                "isError": false
+                            }),
+                        ))
                     }
                     Err(err) => {
-                        let err_msg = err.to_string();
                         let err_payload = json!({
                             "status": "error",
-                            "error": err_msg,
+                            "error": err.to_string(),
                         });
                         let text = serde_json::to_string_pretty(&err_payload)
                             .unwrap_or_else(|_| err_payload.to_string());
                         Some(JsonRpcResponse::success(
                             req_id,
                             json!({
-                                "status": "error",
-                                "error": err.to_string(),
                                 "content": [
                                     {
                                         "type": "text",

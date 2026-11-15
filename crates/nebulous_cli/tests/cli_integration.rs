@@ -1329,65 +1329,114 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
     // 3. ingest_project_directory
     assert_eq!(responses[2]["id"], 3);
     assert_eq!(responses[2]["result"]["isError"], false);
-    assert_eq!(responses[2]["result"]["total_components"], 2);
+    assert_eq!(
+        responses[2]["result"]["structuredContent"]["total_components"],
+        2
+    );
+    let mut result_keys: Vec<&str> = responses[2]["result"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    result_keys.sort_unstable();
+    assert_eq!(result_keys, ["content", "isError", "structuredContent"]);
 
     // 4. list_crate_boundaries
     assert_eq!(responses[3]["id"], 4);
-    let boundaries = responses[3]["result"]["boundaries"].as_array().unwrap();
+    let boundaries = responses[3]["result"]["structuredContent"]["boundaries"]
+        .as_array()
+        .unwrap();
     assert!(boundaries.iter().any(|b| b["scope_id"] == "iso"));
     assert!(boundaries.iter().any(|b| b["scope_id"] == "kernel_mgr"));
 
     // 5. pin_stable_release
     assert_eq!(responses[4]["id"], 5);
     assert_eq!(
-        responses[4]["result"]["last_known_good"]["commit_sha"],
+        responses[4]["result"]["structuredContent"]["last_known_good"]["commit_sha"],
         "stable01"
     );
     assert_eq!(
-        responses[4]["result"]["last_known_good"]["dependency_pins"]["linux-custom"],
+        responses[4]["result"]["structuredContent"]["last_known_good"]["dependency_pins"]
+            ["linux-custom"],
         "6.12.4-1"
     );
 
     // 6. record_rolling_update -> auto-created tracking item FEAT-0001
     assert_eq!(responses[5]["id"], 6);
-    assert_eq!(responses[5]["result"]["tracked_item_id"], "FEAT-0001");
     assert_eq!(
-        responses[5]["result"]["rolling_update"]["new_version"],
+        responses[5]["result"]["structuredContent"]["tracked_item_id"],
+        "FEAT-0001"
+    );
+    assert_eq!(
+        responses[5]["result"]["structuredContent"]["rolling_update"]["new_version"],
         "6.13.0-rc2"
     );
 
     // 7. get_active_task -> returns FEAT-0001 with Bounded Agent Prompt
     assert_eq!(responses[6]["id"], 7);
-    assert_eq!(responses[6]["result"]["active"], true);
-    assert_eq!(responses[6]["result"]["item_id"], "FEAT-0001");
-    assert_eq!(responses[6]["result"]["scope_id"], "iso");
-    assert!(responses[6]["result"]["bounded_prompt"]
-        .as_str()
-        .unwrap()
-        .contains("Bounded Agent Task: FEAT-0001"));
+    assert_eq!(responses[6]["result"]["structuredContent"]["active"], true);
+    assert_eq!(
+        responses[6]["result"]["structuredContent"]["item_id"],
+        "FEAT-0001"
+    );
+    assert_eq!(
+        responses[6]["result"]["structuredContent"]["scope_id"],
+        "iso"
+    );
+    assert!(
+        responses[6]["result"]["structuredContent"]["bounded_prompt"]
+            .as_str()
+            .unwrap()
+            .contains("Bounded Agent Task: FEAT-0001")
+    );
 
     // 8. record_verification_run -> records failure on iso and FEAT-0001
     assert_eq!(responses[7]["id"], 8);
-    assert_eq!(responses[7]["result"]["passed"], false);
-    assert_eq!(responses[7]["result"]["exit_code"], 134);
-    assert_eq!(responses[7]["result"]["tracked_item_id"], "FEAT-0001");
+    assert_eq!(responses[7]["result"]["structuredContent"]["passed"], false);
+    assert_eq!(
+        responses[7]["result"]["structuredContent"]["exit_code"],
+        134
+    );
+    assert_eq!(
+        responses[7]["result"]["structuredContent"]["tracked_item_id"],
+        "FEAT-0001"
+    );
 
     // 9. rollback_to_pinned_release -> restores 6.12.4-1 and records regression on FEAT-0001
     assert_eq!(responses[8]["id"], 9);
-    assert_eq!(responses[8]["result"]["restored"], true);
-    assert_eq!(responses[8]["result"]["regression_recorded"], true);
-    assert_eq!(responses[8]["result"]["item_id"], "FEAT-0001");
-    assert_eq!(responses[8]["result"]["recurrence_count"], 1);
     assert_eq!(
-        responses[8]["result"]["last_known_good"]["commit_sha"],
+        responses[8]["result"]["structuredContent"]["restored"],
+        true
+    );
+    assert_eq!(
+        responses[8]["result"]["structuredContent"]["regression_recorded"],
+        true
+    );
+    assert_eq!(
+        responses[8]["result"]["structuredContent"]["item_id"],
+        "FEAT-0001"
+    );
+    assert_eq!(
+        responses[8]["result"]["structuredContent"]["recurrence_count"],
+        1
+    );
+    assert_eq!(
+        responses[8]["result"]["structuredContent"]["last_known_good"]["commit_sha"],
         "stable01"
     );
 
     // 10. git_commit_documented -> commits workspace + .tracker/ and updates FEAT-0001
     assert_eq!(responses[9]["id"], 10);
     assert_eq!(responses[9]["result"]["isError"], false);
-    assert_eq!(responses[9]["result"]["item_id"], "FEAT-0001");
-    assert_eq!(responses[9]["result"]["documentation_updated"], true);
+    assert_eq!(
+        responses[9]["result"]["structuredContent"]["item_id"],
+        "FEAT-0001"
+    );
+    assert_eq!(
+        responses[9]["result"]["structuredContent"]["documentation_updated"],
+        true
+    );
 
     // 11. unknown tool -> JSON-RPC error -32602
     assert_eq!(responses[10]["id"], 11);
@@ -1600,6 +1649,18 @@ fn test_mcp_remaining_tools_resources_content_length_and_error_paths() {
     )
     .unwrap();
     assert_eq!(unpinned_rollback["result"]["isError"], true);
+    let mut error_keys: Vec<&str> = unpinned_rollback["result"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    error_keys.sort_unstable();
+    assert_eq!(error_keys, ["content", "isError", "structuredContent"]);
+    assert_eq!(
+        unpinned_rollback["result"]["structuredContent"]["status"],
+        "error"
+    );
 
     // 7. record_rolling_update on a brand-new dependency without previous_version keeps previous_version = null
     let rolling_new_dep = server
