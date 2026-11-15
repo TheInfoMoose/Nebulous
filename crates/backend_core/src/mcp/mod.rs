@@ -826,21 +826,23 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "git_pull".to_string(),
-                description: "Pulls the current HEAD branch (fast-forward or merge with automatic .tracker/ index conflict resolution) from the configured remote and reconciles .tracker/ indexes. Errors if HEAD is not on the configured [git] branch; aborts without writing when local uncommitted changes would be overwritten. The result's `duplicate_ids` lists item IDs the post-pull reconcile found in more than one item directory (likely a merge from two clones).".to_string(),
+                description: "Pulls the current HEAD branch (fast-forward or merge with automatic .tracker/ index conflict resolution) from the configured remote and reconciles .tracker/ indexes. Errors if HEAD is not on the configured [git] branch; aborts without writing when local uncommitted changes would be overwritten. The result's `duplicate_ids` lists item IDs the post-pull reconcile found in more than one item directory (likely a merge from two clones). Defaults to dry_run: true.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "auth_override": { "type": "string", "description": "Optional vault credential account name; must be bound to this project in the local registry. PATs and key file paths are not accepted." }
+                        "auth_override": { "type": "string", "description": "Optional vault credential account name; must be bound to this project in the local registry. PATs and key file paths are not accepted." },
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), reports git status and what would happen without network access or commits. Pass false to run." }
                     }
                 }),
             },
             McpToolDefinition {
                 name: "git_push".to_string(),
-                description: "Pushes the current HEAD branch to the remote repository using SecureStorage PAT or SSH credentials. Errors if HEAD is not on the configured [git] branch.".to_string(),
+                description: "Pushes the current HEAD branch to the remote repository using SecureStorage PAT or SSH credentials. Errors if HEAD is not on the configured [git] branch. Defaults to dry_run: true.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "auth_override": { "type": "string", "description": "Optional vault credential account name; must be bound to this project in the local registry. PATs and key file paths are not accepted." }
+                        "auth_override": { "type": "string", "description": "Optional vault credential account name; must be bound to this project in the local registry. PATs and key file paths are not accepted." },
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), reports git status and what would happen without network access or commits. Pass false to run." }
                     }
                 }),
             },
@@ -862,13 +864,14 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "git_sync".to_string(),
-                description: "Stages and commits dirty .tracker/ state, then pulls and pushes if a remote is configured. The result's `duplicate_ids` lists item IDs the post-pull reconcile found in more than one item directory (empty with commit_only or when nothing was pulled).".to_string(),
+                description: "Stages and commits dirty .tracker/ state, then pulls and pushes if a remote is configured. The result's `duplicate_ids` lists item IDs the post-pull reconcile found in more than one item directory (empty with commit_only or when nothing was pulled). Defaults to dry_run: true.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "message": { "type": "string", "description": "Optional commit message for .tracker/ state." },
                         "auth_override": { "type": "string", "description": "Optional vault credential account name; must be bound to this project in the local registry. PATs and key file paths are not accepted." },
-                        "commit_only": { "type": "boolean", "description": "When true, commits .tracker/ locally without pushing or pulling." }
+                        "commit_only": { "type": "boolean", "description": "When true, commits .tracker/ locally without pushing or pulling." },
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), reports git status and what would happen without network access or commits. Pass false to run." }
                     }
                 }),
             },
@@ -2096,15 +2099,32 @@ impl McpServer {
             auth_override: Option<String>,
             #[serde(default)]
             pat: Option<Value>,
+            #[serde(default = "default_true")]
+            dry_run: bool,
         }
 
         let parsed: Args = serde_json::from_value(args)
             .map_err(|e| TrackerError::ValidationError(format!("Invalid git_pull args: {e}")))?;
         let auth = mcp_auth_request(parsed.auth_override.as_deref(), parsed.pat.as_ref())?;
         let storage = self.resolve_active_storage()?;
+        if parsed.dry_run {
+            let status = storage.git_status()?;
+            let branch = status.branch.as_deref().unwrap_or("<none>");
+            let remote = status.remote_url.as_deref().unwrap_or("<none>");
+            let behind = status.behind_count;
+            let would = format!(
+                "pull {branch} from {remote}; {behind} commit(s) behind as of the last fetch"
+            );
+            return Ok(json!({
+                "dry_run": true,
+                "status": status,
+                "would": would
+            }));
+        }
         let outcome = storage.git_pull_with_report(&auth)?;
         let status = storage.git_status()?;
         Ok(json!({
+            "dry_run": false,
             "updated": outcome.updated,
             "status": status,
             "duplicate_ids": outcome.duplicate_ids
@@ -2118,15 +2138,30 @@ impl McpServer {
             auth_override: Option<String>,
             #[serde(default)]
             pat: Option<Value>,
+            #[serde(default = "default_true")]
+            dry_run: bool,
         }
 
         let parsed: Args = serde_json::from_value(args)
             .map_err(|e| TrackerError::ValidationError(format!("Invalid git_push args: {e}")))?;
         let auth = mcp_auth_request(parsed.auth_override.as_deref(), parsed.pat.as_ref())?;
         let storage = self.resolve_active_storage()?;
+        if parsed.dry_run {
+            let status = storage.git_status()?;
+            let branch = status.branch.as_deref().unwrap_or("<none>");
+            let remote = status.remote_url.as_deref().unwrap_or("<none>");
+            let ahead = status.ahead_count;
+            let would = format!("push {branch} to {remote}; {ahead} local commit(s) ahead");
+            return Ok(json!({
+                "dry_run": true,
+                "status": status,
+                "would": would
+            }));
+        }
         storage.git_push(&auth)?;
         let status = storage.git_status()?;
         Ok(json!({
+            "dry_run": false,
             "pushed": true,
             "status": status
         }))
@@ -2178,12 +2213,35 @@ impl McpServer {
             pat: Option<Value>,
             #[serde(default)]
             commit_only: bool,
+            #[serde(default = "default_true")]
+            dry_run: bool,
         }
 
         let parsed: Args = serde_json::from_value(args)
             .map_err(|e| TrackerError::ValidationError(format!("Invalid git_sync args: {e}")))?;
         let auth = mcp_auth_request(parsed.auth_override.as_deref(), parsed.pat.as_ref())?;
         let storage = self.resolve_active_storage()?;
+        if parsed.dry_run {
+            let status = storage.git_status()?;
+            let mut would = Vec::new();
+            if status.tracker_dirty {
+                would.push(format!(
+                    "commit {} .tracker/ file(s)",
+                    status.dirty_tracker_files.len()
+                ));
+            }
+            if !parsed.commit_only {
+                let branch = status.branch.as_deref().unwrap_or("<none>");
+                let remote = status.remote_url.as_deref().unwrap_or("<none>");
+                would.push(format!("pull then push {branch} with {remote}"));
+            }
+            return Ok(json!({
+                "dry_run": true,
+                "commit_only": parsed.commit_only,
+                "status": status,
+                "would": would
+            }));
+        }
         let (sha, duplicate_ids) = if parsed.commit_only {
             (
                 storage.git_commit_tracker(non_empty(parsed.message.as_deref()))?,
@@ -2200,6 +2258,7 @@ impl McpServer {
             .unwrap_or(false);
 
         Ok(json!({
+            "dry_run": false,
             "commit_only": parsed.commit_only,
             "committed_or_head_sha": sha,
             "tracker_dirty_after": tracker_dirty_after,

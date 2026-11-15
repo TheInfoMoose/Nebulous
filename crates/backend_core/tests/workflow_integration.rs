@@ -2213,7 +2213,9 @@ fn mcp_git_pull_and_sync_report_duplicate_item_ids() {
     let mut server = McpServer::new(Some(TrackerStorage::new(clone_dir.path())));
 
     // Idle pull
-    let idle = server.call_tool("git_pull", json!({})).unwrap();
+    let idle = server
+        .call_tool("git_pull", json!({"dry_run": false}))
+        .unwrap();
     assert_eq!(idle["updated"], json!(false));
     assert_eq!(idle["duplicate_ids"], json!([]));
 
@@ -2231,14 +2233,16 @@ fn mcp_git_pull_and_sync_report_duplicate_item_ids() {
         .unwrap();
     storage.git_push(&GitAuthRequest::default()).unwrap();
 
-    let pulled = server.call_tool("git_pull", json!({})).unwrap();
+    let pulled = server
+        .call_tool("git_pull", json!({"dry_run": false}))
+        .unwrap();
     assert_eq!(pulled["updated"], json!(true));
     assert_eq!(pulled["duplicate_ids"], json!([id]));
     assert!(pulled.get("status").is_some());
 
     // commit_only
     let commit_only = server
-        .call_tool("git_sync", json!({"commit_only": true}))
+        .call_tool("git_sync", json!({"commit_only": true, "dry_run": false}))
         .unwrap();
     assert_eq!(commit_only["duplicate_ids"], json!([]));
 
@@ -2251,9 +2255,87 @@ fn mcp_git_pull_and_sync_report_duplicate_item_ids() {
         .unwrap();
     storage.git_push(&GitAuthRequest::default()).unwrap();
 
-    let synced = server.call_tool("git_sync", json!({})).unwrap();
+    let synced = server
+        .call_tool("git_sync", json!({"dry_run": false}))
+        .unwrap();
     assert!(synced["committed_or_head_sha"].is_string());
     assert_eq!(synced["duplicate_ids"], json!([id]));
+}
+
+#[test]
+fn mcp_git_tools_default_to_dry_run() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let dir = TempDir::new().unwrap();
+    let storage = TrackerStorage::init_standard(dir.path(), "McpDryRunProject").unwrap();
+    let repo = Repository::init(dir.path()).unwrap();
+    {
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "testuser").unwrap();
+        cfg.set_str("user.email", "testuser@example.com").unwrap();
+    }
+
+    let bare_dir = TempDir::new().unwrap();
+    let bare_repo = Repository::init_bare(bare_dir.path()).unwrap();
+    let bare_url = bare_dir.path().to_str().unwrap().to_string();
+    repo.remote("origin", &bare_url).unwrap();
+
+    storage
+        .git_commit_tracker(Some("chore: init tracker"))
+        .unwrap();
+    let current_branch = repo
+        .head()
+        .unwrap()
+        .shorthand()
+        .unwrap_or("main")
+        .to_string();
+
+    let mut project = storage.read_project().unwrap();
+    project.git.remote = "origin".to_string();
+    project.git.branch = current_branch.clone();
+    storage.write_project(&project).unwrap();
+    storage
+        .git_commit_tracker(Some("chore: configure remote"))
+        .unwrap();
+    storage.git_push(&GitAuthRequest::default()).unwrap();
+
+    storage
+        .create_bug("dirty bug", None, None, Severity::Medium, None)
+        .unwrap();
+    assert!(storage.git_status().unwrap().tracker_dirty);
+
+    let head_before = repo.head().unwrap().peel_to_commit().unwrap().id();
+    let remote_head_before = bare_repo
+        .find_reference(&format!("refs/heads/{current_branch}"))
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+
+    let mut server = McpServer::new(Some(storage.clone()));
+
+    let sync_res = server.call_tool("git_sync", json!({})).unwrap();
+    assert_eq!(sync_res["dry_run"], json!(true));
+    assert!(!sync_res["would"].as_array().unwrap().is_empty());
+    assert_eq!(
+        repo.head().unwrap().peel_to_commit().unwrap().id(),
+        head_before
+    );
+    assert!(storage.git_status().unwrap().tracker_dirty);
+
+    let push_res = server.call_tool("git_push", json!({})).unwrap();
+    assert_eq!(push_res["dry_run"], json!(true));
+    let remote_head_after = bare_repo
+        .find_reference(&format!("refs/heads/{current_branch}"))
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    assert_eq!(remote_head_after, remote_head_before);
+
+    let pull_res = server.call_tool("git_pull", json!({})).unwrap();
+    assert_eq!(pull_res["dry_run"], json!(true));
 }
 
 #[test]
