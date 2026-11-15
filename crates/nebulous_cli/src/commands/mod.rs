@@ -673,12 +673,11 @@ fn handle_create_item(
     };
 
     let input = CreateItemInput {
-        item_type,
-        title: title.to_string(),
         phase_id: phase.map(str::to_string),
         scope_id: resolved_scope,
         severity,
         description: desc.map(str::to_string),
+        ..CreateItemInput::new(item_type, title)
     };
 
     let (loc, detail) = storage.create_item(input)?;

@@ -640,12 +640,11 @@ impl TuiApp {
                 };
 
                 let (loc, detail) = match self.storage.create_item(CreateItemInput {
-                    item_type: create.item_type,
-                    title: create.title.trim().to_string(),
                     phase_id: Some(stage_id.clone()),
                     scope_id: Some(scope_id),
                     severity: create.severity,
                     description: desc_opt,
+                    ..CreateItemInput::new(create.item_type, create.title.trim())
                 }) {
                     Ok(res) => res,
                     Err(err) => {

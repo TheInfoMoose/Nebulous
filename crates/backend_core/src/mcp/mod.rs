@@ -1300,12 +1300,11 @@ impl McpServer {
         let severity = Severity::from_str(&parsed.severity)?;
 
         let (loc, detail) = storage.create_item(CreateItemInput {
-            item_type,
-            title: parsed.title,
             phase_id: non_empty(parsed.phase_id.as_deref()).map(str::to_string),
             scope_id: non_empty(parsed.scope_id.as_deref()).map(str::to_string),
             severity,
             description: non_empty(parsed.description.as_deref()).map(str::to_string),
+            ..CreateItemInput::new(item_type, parsed.title)
         })?;
 
         let item_toml = storage
@@ -1788,12 +1787,11 @@ impl McpServer {
             );
 
             let (loc, _) = storage.create_item(CreateItemInput {
-                item_type: kind,
-                title,
                 phase_id: Some(target_phase),
                 scope_id: target_scope,
                 severity: sev,
                 description: Some(desc),
+                ..CreateItemInput::new(kind, title)
             })?;
             linked_item_id = Some(loc.stub.id);
         }
