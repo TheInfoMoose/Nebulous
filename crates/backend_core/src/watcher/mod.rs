@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::fs;
+use std::hash::{DefaultHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
@@ -86,7 +88,7 @@ impl TrackerWatcher {
         let storage_for_worker = storage;
         let watched_dir_for_worker = watched_dir.clone();
         let worker = thread::spawn(move || {
-            let mut last_internal_reconcile: Option<Instant> = None;
+            let mut own_index_hashes: HashMap<PathBuf, u64> = HashMap::new();
             let mut pending_batch: Option<Vec<PathBuf>> = None;
             let mut pending_rescan = false;
 
@@ -123,13 +125,9 @@ impl TrackerWatcher {
 
                 if !rescan {
                     // 2. Suppress echo batches consisting solely of derived index files (`project.toml`,
-                    // `phase.toml`, `scope.toml`) within 1000ms of an internal auto-reconcile.
-                    let all_are_index_files = batch.iter().all(|p| is_derived_index_file(p));
-                    if all_are_index_files
-                        && last_internal_reconcile
-                            .map(|last| last.elapsed() < Duration::from_millis(1000))
-                            .unwrap_or(false)
-                    {
+                    // `phase.toml`, `scope.toml`) whose contents match our last internal reconcile.
+                    // Why: an external edit to scope.toml right after an internal reconcile was being dropped.
+                    if is_own_index_echo(&batch, &own_index_hashes) {
                         continue;
                     }
 
@@ -165,7 +163,7 @@ impl TrackerWatcher {
                     batch
                 };
 
-                // 4. Reconcile indexes if enabled, record completion timestamp, drain immediate
+                // 4. Reconcile indexes if enabled, record index file content hashes, drain immediate
                 // index-only echo events, and emit TrackerWatchEvent.
                 let (reconcile_report, reconcile_error) = if auto_reconcile {
                     // Why: errors were silently swallowed.
@@ -173,11 +171,11 @@ impl TrackerWatcher {
                         Ok(r) => (Some(r), None),
                         Err(e) => (None, Some(e.to_string())),
                     };
-                    last_internal_reconcile = Some(Instant::now());
+                    own_index_hashes = hash_index_files(&watched_dir_for_worker);
                     while let Ok(more) = raw_rx.try_recv() {
                         match more {
                             RawSignal::Paths(paths) => {
-                                if paths.iter().all(|p| is_derived_index_file(p)) {
+                                if is_own_index_echo(&paths, &own_index_hashes) {
                                     continue;
                                 }
                                 let entry = pending_batch.get_or_insert_with(Vec::new);
@@ -321,4 +319,49 @@ fn is_derived_index_file(path: &Path) -> bool {
         path.file_name().and_then(|n| n.to_str()),
         Some("project.toml" | "phase.toml" | "scope.toml")
     )
+}
+
+/// Hashes all derived index files (`project.toml`, `phase.toml`, `scope.toml`) under `dir`.
+///
+/// Not a security hash; only detects our own writes.
+fn hash_index_files(dir: &Path) -> HashMap<PathBuf, u64> {
+    let mut hashes = HashMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if is_derived_index_file(&path) {
+                if let Some(hash) = hash_file_bytes(&path) {
+                    hashes.insert(path, hash);
+                }
+            }
+        }
+    }
+    hashes
+}
+
+fn hash_file_bytes(path: &Path) -> Option<u64> {
+    if !path.is_file() {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let mut hasher = DefaultHasher::new();
+    hasher.write(&bytes);
+    Some(hasher.finish())
+}
+
+fn is_own_index_echo(paths: &[PathBuf], own_index_hashes: &HashMap<PathBuf, u64>) -> bool {
+    !paths.is_empty()
+        && paths.iter().all(|p| {
+            is_derived_index_file(p)
+                && match (own_index_hashes.get(p), hash_file_bytes(p)) {
+                    (Some(&expected), Some(actual)) => actual == expected,
+                    _ => false,
+                }
+        })
 }
