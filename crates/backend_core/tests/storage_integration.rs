@@ -178,14 +178,10 @@ fn sample_item_detail(
     ItemDetail {
         manifest: ItemManifest {
             item: ItemMetadata {
-                id: id.to_string(),
-                item_type,
-                title: title.to_string(),
                 status,
                 severity,
-                scope_ref: scope_ref.to_string(),
-                created_at: "2026-11-02T10:00:00Z".to_string(),
                 updated_at: "2026-11-02T12:00:00Z".to_string(),
+                ..ItemMetadata::new(id, item_type, title, scope_ref, "2026-11-02T10:00:00Z")
             },
             effort: ItemEffort {
                 logged_time_minutes: 25,

@@ -328,14 +328,15 @@ fn test_metrics_engine_valuation_stagnant_items_and_recurring_hotspots() {
     let bug1 = ItemDetail {
         manifest: ItemManifest {
             item: ItemMetadata {
-                id: "BUG-0001".to_string(),
-                item_type: ItemType::Bug,
-                title: "Stagnant high-severity bug".to_string(),
-                status: ItemStatus::Open,
                 severity: Severity::High,
-                scope_ref: "backend_core".to_string(),
-                created_at: "2026-11-01T12:00:00Z".to_string(),
                 updated_at: "2026-11-04T12:00:00Z".to_string(), // 6 days before `now`
+                ..ItemMetadata::new(
+                    "BUG-0001",
+                    ItemType::Bug,
+                    "Stagnant high-severity bug",
+                    "backend_core",
+                    "2026-11-01T12:00:00Z",
+                )
             },
             effort: ItemEffort {
                 logged_time_minutes: 120,
@@ -364,14 +365,15 @@ fn test_metrics_engine_valuation_stagnant_items_and_recurring_hotspots() {
     let feat1 = ItemDetail {
         manifest: ItemManifest {
             item: ItemMetadata {
-                id: "FEAT-0001".to_string(),
-                item_type: ItemType::Feature,
-                title: "Threshold boundary feature".to_string(),
                 status: ItemStatus::InProgress,
-                severity: Severity::Medium,
-                scope_ref: "inbox".to_string(),
-                created_at: "2026-11-01T12:00:00Z".to_string(),
                 updated_at: "2026-11-06T12:00:00Z".to_string(), // 4 days before `now`
+                ..ItemMetadata::new(
+                    "FEAT-0001",
+                    ItemType::Feature,
+                    "Threshold boundary feature",
+                    "inbox",
+                    "2026-11-01T12:00:00Z",
+                )
             },
             effort: ItemEffort {
                 logged_time_minutes: 60,
@@ -386,14 +388,16 @@ fn test_metrics_engine_valuation_stagnant_items_and_recurring_hotspots() {
     let bug2 = ItemDetail {
         manifest: ItemManifest {
             item: ItemMetadata {
-                id: "BUG-0002".to_string(),
-                item_type: ItemType::Bug,
-                title: "Old closed bug".to_string(),
                 status: ItemStatus::Closed,
                 severity: Severity::Critical,
-                scope_ref: "backend_core".to_string(),
-                created_at: "2026-11-01T00:00:00Z".to_string(),
                 updated_at: "2026-11-01T12:00:00Z".to_string(), // 9 days ago, but closed
+                ..ItemMetadata::new(
+                    "BUG-0002",
+                    ItemType::Bug,
+                    "Old closed bug",
+                    "backend_core",
+                    "2026-11-01T00:00:00Z",
+                )
             },
             effort: ItemEffort {
                 logged_time_minutes: 180,
@@ -737,14 +741,16 @@ fn test_watcher_detects_external_changes_and_auto_reconciles_indexes() {
     let external_bug = ItemDetail {
         manifest: ItemManifest {
             item: ItemMetadata {
-                id: "BUG-0007".to_string(),
-                item_type: ItemType::Bug,
-                title: "Externally created bug".to_string(),
                 status: ItemStatus::Closed,
                 severity: Severity::High,
-                scope_ref: "backend_core".to_string(),
-                created_at: "2026-11-02T10:00:00Z".to_string(),
                 updated_at: "2026-11-02T11:00:00Z".to_string(),
+                ..ItemMetadata::new(
+                    "BUG-0007",
+                    ItemType::Bug,
+                    "Externally created bug",
+                    "backend_core",
+                    "2026-11-02T10:00:00Z",
+                )
             },
             effort: ItemEffort {
                 logged_time_minutes: 15,
