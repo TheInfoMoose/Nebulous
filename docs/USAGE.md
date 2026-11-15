@@ -41,7 +41,7 @@ neb move FEAT-0001 post
 
 ---
 
-### 2. Predictive Capture & Zero-ID Daily Flow (`neb bug`, `neb feat`, `neb next`, `neb start`, `neb done`)
+### 2. Predictive Capture & Zero-ID Daily Flow (`neb bug`, `neb feat`, `neb task`, `neb next`, `neb start`, `neb done`)
 
 When `--scope` is omitted, `neb bug` and `neb feat` automatically infer the target domain scope from:
 1. Your current working directory (`cwd` inside a scope's `target` directory),
@@ -49,10 +49,16 @@ When `--scope` is omitted, `neb bug` and `neb feat` automatically infer the targ
 3. The currently running `.timer.toml` session, or
 4. A single non-`inbox` scope in the active stage (falling back to `inbox`).
 
+When to use each item type:
+- **Bug (`neb bug`)**: something broken.
+- **Feature (`neb feat`)**: new capability for the user.
+- **Task (`neb task`, alias `neb chore`)**: any other planned change.
+
 ```bash
 # Capture a bug or feature (scope is inferred automatically when -s/--scope is omitted)
 neb bug "TOML parser panics on unquoted local datetime" --severity high
 neb feat "Add horizontal scroll window for compact modal fields" --severity medium
+neb task "Extract roadmap parser into planning module"
 
 # Compute and display the ranked "What's Next" queue, inferred scope, active timer, and stage advancement hints
 neb next
@@ -163,6 +169,42 @@ neb sync -i BUG-0001 -m "Fix unquoted TOML datetime deserialization" --all
 
 ---
 
+### 6. Plan Import (`neb plan import`)
+
+`neb plan import <PATH>` reads the `## Step Execution Roadmap` section of a stepped Markdown plan file and synchronizes its steps as `task` items:
+- **Roadmap tables**: reads `### Up Next` (columns `# | Step | Command | Scope | Target Files | Waits on`) followed by `### Completed` (columns `Step ID | Status | Command | Scope | Target Files`). Rows whose `Step` cell starts with `[USER]` are skipped; an `Up Next` row whose `Waits on` cell starts with `COMPLETED` counts as completed.
+- **Dry run by default**: running `neb plan import <PATH>` without `--write` previews all planned actions without modifying `.tracker/`. Pass `--write` to apply changes, and `-p` / `--phase <ID>` to choose the stage where newly created tasks land (defaults to `active_phase`).
+- **Output format**: prints all `CREATE <ID|(new)> ← <STEP>` lines first, then all `RETITLE <ID> ← <STEP>` lines, then all `CLOSE <ID> ← <STEP>` lines (each group in roadmap order), followed by `UNCHANGED <n>` and (when not writing) `dry run: nothing written; re-run with --write`. Pass `--json` to emit the structured `ImportReport`.
+- **Idempotency & field ownership (`source_ref`)**: each imported task stores the plan step ID in `item.source_ref` (for example `source_ref = "STEP 2A"`), so re-running `neb plan import` matches existing items and reports `UNCHANGED` when nothing changed. The plan sets `title` (from `Scope`), `type` (`task`), and `scope` at creation, updates `title` on re-import if the plan's `Scope` cell changed, and closes an open item when its row is `COMPLETED`. Import never reopens a closed item and never changes stage, scope, severity, effort, or `desc.md`.
+- **Scope selection**: for new tasks, the target scope is the scope in the import stage matching the most `Target Files` entries (by longest `target` path prefix or exact `tracked_files` match); a tie or zero matches falls back to `default_scope` (`inbox`).
+
+```bash
+# Dry-run preview against a stepped plan file (nothing written)
+neb plan import STEPPED_IMPLEMENTATION_PLAN.md
+
+# Apply the import into the production stage
+neb plan import STEPPED_IMPLEMENTATION_PLAN.md --phase prod --write
+```
+
+---
+
+### 7. Item IDs
+
+By default, Nebulous allocates sequential item IDs (`BUG-0001`, `FEAT-0001`, `TASK-0001`) using monotonic per-type counters in `.tracker/project.toml`.
+
+To opt into collision-resistant random hash IDs across branches, set `id_scheme = "hash"` under `[project]` in `.tracker/project.toml` (when the key is absent, `"sequential"` is used):
+
+```toml
+[project]
+id_scheme = "hash"
+```
+
+- **Format**: `<PREFIX>-<6 uppercase hex digits>` (for example `BUG-7F3A2C`, `FEAT-4B19E0`, `TASK-9C04D2`), always containing at least one hex letter (`A`–`F`) so hash IDs are unambiguous from sequential IDs.
+- **Immutability**: switching `id_scheme` affects newly allocated items only; existing item IDs never change.
+- **Duplicate-ID warnings**: `neb sync-index` (as well as `neb sync` and `neb git pull`) warns if the same item ID exists in more than one item directory across stages or scopes.
+
+---
+
 ## Part 2: Retro Amber-on-Black TUI (`neb` / `neb tui`)
 
 Running bare `neb` or `neb tui` (`neb ui`) in an interactive terminal launches the retro CRT Amber-on-Black dashboard:
@@ -199,6 +241,7 @@ neb tui
 | `j` / `k` or `↑` / `↓` | Move selection up/down in active list/table, or scroll Details inspector |
 | `PgUp` / `PgDn` or `J` / `K` | Scroll the Inspector / `desc.md` / Fix History pane |
 | `b` / `f` | Open predictive `New Bug` / `New Feature` modal |
+| `t` | Open predictive `New Task` modal |
 | `s` | Start work on selected/recommended item (marks `in_progress`, starts timer, copies prompt) |
 | `d` | Open `Done / Close` modal pre-filled with `"Resolved <ID>: <title>"` and Git `HEAD` SHA |
 | `m` | Open 1-key Stage Move modal (`1` Pre-Production, `2` Production, `3` Post-Production) |
@@ -234,3 +277,12 @@ neb tui
 command = "neb"
 args = ["mcp", "--root", "/abs/path/to/workspace"]
 ```
+
+### `plan_import` MCP Tool
+
+The `plan_import` MCP tool imports roadmap steps from a stepped plan file using the same engine as `neb plan import`:
+- **Arguments**:
+  - `path` (required string): path to the plan Markdown file, relative to the project root (paths escaping the project root are rejected).
+  - `phase` (optional string): target stage for newly created tasks (defaults to `active_phase`).
+  - `dry_run` (optional boolean, default `true`): when `true`, previews changes without modifying `.tracker/`; set `dry_run: false` to write changes.
+- **Strict validation & response**: unknown arguments are rejected, and the tool returns the same JSON `ImportReport` (`created`, `retitled`, `closed`, `unchanged`) as `neb plan import --json`.

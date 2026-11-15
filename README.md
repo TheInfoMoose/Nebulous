@@ -100,6 +100,10 @@ neb init
 # Capture a bug or feature (scope is inferred automatically from your CWD or dirty Git files!)
 neb bug "Fix empty array deserialization" --severity high
 neb feat "Implement bounded agent prompt export" --severity medium
+# Capture a planned task (or use the alias `neb chore`)
+neb task "Extract roadmap parser into planning module"
+# Preview importing roadmap steps from a stepped plan file (pass --write to apply)
+neb plan import STEPPED_IMPLEMENTATION_PLAN.md
 
 # Inspect the ranked "What's Next" queue
 neb next
