@@ -11,10 +11,10 @@ use crate::error::{Result, TrackerError};
 use crate::git_sync::{DocumentedCommitInput, GitAuthRequest};
 use crate::ingestion::IngestionOptions;
 use crate::models::{
-    load_global_registry, load_global_registry_from, register_project, register_project_in,
-    set_active_project, set_active_project_in, ComponentDependency, ComponentManifest,
-    ComponentType, GlobalProjectRegistry, ItemStatus, ItemType, PinnedReleaseConfig,
-    RegisteredProject, RollingUpdateEntry, Severity, VerificationRecord,
+    load_global_registry, load_global_registry_from, set_active_project, set_active_project_in,
+    ComponentDependency, ComponentManifest, ComponentType, GlobalProjectRegistry, ItemStatus,
+    ItemType, PinnedReleaseConfig, RegisteredProject, RollingUpdateEntry, Severity,
+    VerificationRecord,
 };
 use crate::planning::{import_plan, parse_roadmap};
 use crate::storage::{contained_path, normalize_relative_path_str, ItemLocation, TrackerStorage};
@@ -192,21 +192,6 @@ impl McpServer {
         match &self.registry_path_override {
             Some(path) => load_global_registry_from(path),
             None => load_global_registry(),
-        }
-    }
-
-    fn register_in_registry(
-        &self,
-        root_or_tracker_path: &Path,
-        name_override: Option<&str>,
-        tags: Vec<String>,
-        set_active: bool,
-    ) -> Result<RegisteredProject> {
-        match &self.registry_path_override {
-            Some(path) => {
-                register_project_in(path, root_or_tracker_path, name_override, tags, set_active)
-            }
-            None => register_project(root_or_tracker_path, name_override, tags, set_active),
         }
     }
 
@@ -1436,21 +1421,9 @@ impl McpServer {
         }))
     }
 
+    /// Read-only: reports `projects.toml` as stored and never registers or activates anything.
     fn tool_list_projects(&mut self, _args: Value) -> Result<Value> {
-        let mut registry = self.load_registry()?;
-        // If this MCP server was started with an explicit workspace that isn't registered yet, include it
-        if registry.projects.is_empty() {
-            if let Some(ref storage) = self.storage {
-                if storage.project_toml_path().is_file() {
-                    if let Ok(entry) =
-                        self.register_in_registry(&storage.project_root(), None, Vec::new(), true)
-                    {
-                        registry.active_project_id = Some(entry.id.clone());
-                        registry.projects.push(entry);
-                    }
-                }
-            }
-        }
+        let registry = self.load_registry()?;
         Ok(json!({
             "active_project_id": registry.active_project_id,
             "total": registry.projects.len(),

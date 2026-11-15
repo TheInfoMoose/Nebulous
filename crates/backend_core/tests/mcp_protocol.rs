@@ -1,7 +1,9 @@
+use std::fs;
 use std::io::Cursor;
 
 use backend_core::{
-    McpServer, DEFAULT_MCP_PROTOCOL_VERSION, MAX_MCP_MESSAGE_BYTES, SUPPORTED_MCP_PROTOCOL_VERSIONS,
+    register_project_in, McpServer, TrackerStorage, DEFAULT_MCP_PROTOCOL_VERSION,
+    MAX_MCP_MESSAGE_BYTES, SUPPORTED_MCP_PROTOCOL_VERSIONS,
 };
 use serde_json::Value;
 
@@ -252,4 +254,53 @@ fn default_protocol_version_is_newest_supported() {
         DEFAULT_MCP_PROTOCOL_VERSION,
         SUPPORTED_MCP_PROTOCOL_VERSIONS[0]
     );
+}
+
+#[test]
+fn list_projects_with_empty_registry_writes_nothing() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let storage =
+        TrackerStorage::init(temp.path().join("proj"), "ProjOne", "01_core", "Core Phase")
+            .expect("init storage");
+    let cfg_dir = temp.path().join("cfg");
+
+    let mut server = McpServer::from_storage(storage).with_registry_path(&cfg_dir);
+    let out = server
+        .call_tool("list_projects", serde_json::json!({}))
+        .expect("list_projects");
+
+    assert_eq!(out["total"], 0);
+    assert_eq!(out["projects"], serde_json::json!([]));
+    assert!(out["active_project_id"].is_null());
+    assert!(!cfg_dir.exists());
+}
+
+#[test]
+fn list_projects_leaves_an_existing_registry_byte_for_byte() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let storage =
+        TrackerStorage::init(temp.path().join("proj"), "ProjOne", "01_core", "Core Phase")
+            .expect("init storage");
+    let cfg_dir = temp.path().join("cfg");
+
+    register_project_in(
+        &cfg_dir,
+        storage.project_root(),
+        Some("ProjOne"),
+        vec![],
+        true,
+    )
+    .expect("register project");
+    let reg_file = cfg_dir.join("projects.toml");
+    let before = fs::read(&reg_file).expect("read before");
+
+    let mut server = McpServer::from_storage(storage).with_registry_path(&cfg_dir);
+    let out = server
+        .call_tool("list_projects", serde_json::json!({}))
+        .expect("list_projects");
+
+    assert_eq!(out["total"], 1);
+    assert_eq!(out["active_project_id"], "projone");
+    let after = fs::read(&reg_file).expect("read after");
+    assert_eq!(after, before);
 }
