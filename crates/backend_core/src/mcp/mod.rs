@@ -16,7 +16,8 @@ use crate::models::{
     ComponentType, GlobalProjectRegistry, ItemStatus, ItemType, PinnedReleaseConfig,
     RegisteredProject, RollingUpdateEntry, Severity, VerificationRecord,
 };
-use crate::storage::{normalize_relative_path_str, ItemLocation, TrackerStorage};
+use crate::planning::{import_plan, parse_roadmap};
+use crate::storage::{contained_path, normalize_relative_path_str, ItemLocation, TrackerStorage};
 use crate::workflow::CreateItemInput;
 
 /// Default MCP protocol version advertised by the Nebulous stdio server.
@@ -591,6 +592,7 @@ impl McpServer {
                 | "ingest_project_directory"
                 | "upsert_component_manifest"
                 | "promote_component_to_scope"
+                | "plan_import"
                 | "record_rolling_update"
                 | "record_verification_run"
                 | "pin_stable_release"
@@ -778,6 +780,20 @@ impl McpServer {
                     "required": ["component_id"]
                 }),
             },
+            McpToolDefinition {
+                name: "plan_import".to_string(),
+                description: "Imports the roadmap tables as task items matched by source_ref (create, retitle, close; never reopens, moves or re-scopes). Runs as a dry run unless dry_run is false.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Plan Markdown file, relative to the project root." },
+                        "phase": { "type": "string", "description": "Optional target phase ID (defaults to project.active_phase)." },
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), previews changes without modifying .tracker/." }
+                    },
+                    "required": ["path"],
+                    "additionalProperties": false
+                }),
+            },
             // Suite 3: Release Engineering & Self-Healing CI Tools
             McpToolDefinition {
                 name: "record_rolling_update".to_string(),
@@ -933,6 +949,7 @@ impl McpServer {
             "ingest_project_directory" => self.tool_ingest_project_directory(arguments),
             "upsert_component_manifest" => self.tool_upsert_component_manifest(arguments),
             "promote_component_to_scope" => self.tool_promote_component_to_scope(arguments),
+            "plan_import" => self.tool_plan_import(arguments),
             // Suite 3: Release Engineering & Self-Healing CI Tools
             "record_rolling_update" => self.tool_record_rolling_update(arguments),
             "record_verification_run" => self.tool_record_verification_run(arguments),
@@ -949,6 +966,35 @@ impl McpServer {
                 "Unknown MCP tool '{other}'"
             ))),
         }
+    }
+
+    fn tool_plan_import(&mut self, args: Value) -> Result<Value> {
+        #[derive(Debug, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            path: String,
+            #[serde(default, alias = "phase_id")]
+            phase: Option<String>,
+            #[serde(default = "default_true")]
+            dry_run: bool,
+        }
+
+        let parsed: Args = serde_json::from_value(args)
+            .map_err(|e| TrackerError::ValidationError(format!("Invalid plan_import args: {e}")))?;
+        let storage = self.resolve_active_storage()?;
+        let plan_path = contained_path(&storage.project_root(), &parsed.path)?;
+        let markdown = std::fs::read_to_string(&plan_path).map_err(|source| TrackerError::Io {
+            path: plan_path,
+            source,
+        })?;
+        let steps = parse_roadmap(&markdown)?;
+        let report = import_plan(
+            &storage,
+            &steps,
+            non_empty(parsed.phase.as_deref()),
+            !parsed.dry_run,
+        )?;
+        serde_json::to_value(report).map_err(|e| TrackerError::ValidationError(e.to_string()))
     }
 
     fn tool_get_active_task(&mut self, args: Value) -> Result<Value> {

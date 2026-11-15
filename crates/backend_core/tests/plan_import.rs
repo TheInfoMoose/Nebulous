@@ -380,3 +380,87 @@ fn target_files_under_a_scope_land_in_that_scope() {
         "error should name second ID: {err_msg}"
     );
 }
+
+fn mcp_tracker_with_plan() -> (TempDir, TrackerStorage) {
+    let (dir, storage) = init_test_tracker();
+    fs::write(dir.path().join("PLAN.md"), SAMPLE_PLAN).expect("should write PLAN.md");
+    (dir, storage)
+}
+
+#[test]
+fn mcp_plan_import_defaults_to_dry_run() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let (dir, storage) = mcp_tracker_with_plan();
+    let tracker_dir = dir.path().join(".tracker");
+    let before = snapshot_directory(&tracker_dir);
+
+    let mut server = McpServer::new(Some(storage));
+    let res = server
+        .call_tool("plan_import", json!({ "path": "PLAN.md" }))
+        .expect("should run plan_import in dry run mode");
+
+    let after = snapshot_directory(&tracker_dir);
+    assert_eq!(before, after, "dry run must leave .tracker/ byte-identical");
+
+    let created = res["created"].as_array().expect("created should be array");
+    assert_eq!(created.len(), 3);
+    assert_eq!(created[0]["step_id"].as_str(), Some("STEP 2A"));
+    assert!(created.iter().all(|entry| entry["item_id"].is_null()));
+}
+
+#[test]
+fn mcp_plan_import_dry_run_false_creates_tasks() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let (_dir, storage) = mcp_tracker_with_plan();
+    let mut server = McpServer::new(Some(storage.clone()));
+    let res = server
+        .call_tool(
+            "plan_import",
+            json!({ "path": "PLAN.md", "dry_run": false }),
+        )
+        .expect("should run plan_import with dry_run false");
+
+    let created = res["created"].as_array().expect("created should be array");
+    assert_eq!(created.len(), 3);
+    let item_id = created[0]["item_id"]
+        .as_str()
+        .expect("created[0].item_id should be present");
+    assert!(item_id.starts_with("TASK-"));
+
+    let (_, detail) = storage
+        .load_item_detail_by_id(item_id)
+        .expect("should load created task item");
+    assert_eq!(detail.manifest.item.source_ref.as_deref(), Some("STEP 2A"));
+}
+
+#[test]
+fn mcp_plan_import_rejects_path_outside_project_root() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let (_dir, storage) = mcp_tracker_with_plan();
+    let mut server = McpServer::new(Some(storage));
+    let err = server
+        .call_tool("plan_import", json!({ "path": "../outside.md" }))
+        .expect_err("path outside project root must fail");
+    let msg = err.to_string();
+    assert!(msg.contains("escapes"), "expected 'escapes' in: {msg}");
+}
+
+#[test]
+fn mcp_plan_import_rejects_unknown_arguments() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let (_dir, storage) = mcp_tracker_with_plan();
+    let mut server = McpServer::new(Some(storage));
+    let err = server
+        .call_tool("plan_import", json!({ "path": "PLAN.md", "write": true }))
+        .expect_err("unknown argument must fail");
+    let msg = err.to_string();
+    assert!(msg.contains("write"), "expected 'write' in: {msg}");
+}
