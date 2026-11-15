@@ -4,11 +4,14 @@ pub mod id;
 pub mod reconcile;
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
+
+#[cfg(test)]
+use std::cell::Cell;
 
 use chrono::Utc;
 
@@ -24,6 +27,17 @@ pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 
 thread_local! {
     static HELD_WRITE_LOCKS: RefCell<HashSet<PathBuf>> = RefCell::new(HashSet::new());
+
+    /// Holds the parsed `project.toml`, keyed by lock path, only while this thread holds that
+    /// tracker's write lock. Inside the lock no other process can write `project.toml`, and
+    /// `create_item` otherwise re-parses it ~6 times (`resolve_phase_and_scope`, `phase_dir` via
+    /// `read_phase`/`scope_dir`/`item_dir`, `allocate_next_id`, `scan_max_counters`).
+    static PROJECT_CACHE: RefCell<HashMap<PathBuf, ProjectManifest>> = RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+thread_local! {
+    static PROJECT_DISK_READS: Cell<u32> = const { Cell::new(0) };
 }
 
 struct ReentrantLockGuard {
@@ -43,6 +57,9 @@ impl Drop for ReentrantLockGuard {
     fn drop(&mut self) {
         HELD_WRITE_LOCKS.with(|held| {
             held.borrow_mut().remove(&self.path);
+        });
+        PROJECT_CACHE.with(|cache| {
+            cache.borrow_mut().remove(&self.path);
         });
     }
 }
@@ -470,6 +487,11 @@ impl TrackerStorage {
         self.tracker_dir.join(LOCK_FILE_NAME)
     }
 
+    fn holds_write_lock(&self) -> bool {
+        let lock_path = self.lock_path();
+        HELD_WRITE_LOCKS.with(|held| held.borrow().contains(&lock_path))
+    }
+
     /// Acquires an exclusive, thread-reentrant advisory lock on `.tracker/.lock` with
     /// [`DEFAULT_LOCK_TIMEOUT`] and executes `f`.
     pub fn with_write_lock<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
@@ -692,12 +714,28 @@ impl TrackerStorage {
 
     /// Reads and parses Tier 1 `.tracker/project.toml`.
     pub fn read_project(&self) -> Result<ProjectManifest> {
+        let lock_path = self.lock_path();
+        let locked = self.holds_write_lock();
+        if locked {
+            if let Some(cached) =
+                PROJECT_CACHE.with(|cache| cache.borrow().get(&lock_path).cloned())
+            {
+                return Ok(cached);
+            }
+        }
+        #[cfg(test)]
+        PROJECT_DISK_READS.with(|reads| reads.set(reads.get() + 1));
         let path = self.project_toml_path();
         if !path.is_file() {
             return Err(TrackerError::TrackerRootNotFound(self.tracker_dir.clone()));
         }
         let mut manifest: ProjectManifest = self.read_versioned(&path)?;
         normalize_project_manifest_paths(&mut manifest);
+        if locked {
+            PROJECT_CACHE.with(|cache| {
+                cache.borrow_mut().insert(lock_path, manifest.clone());
+            });
+        }
         Ok(manifest)
     }
 
@@ -705,7 +743,23 @@ impl TrackerStorage {
     pub fn write_project(&self, manifest: &ProjectManifest) -> Result<()> {
         let mut normalized = manifest.clone();
         normalize_project_manifest_paths(&mut normalized);
-        self.write_versioned(&self.project_toml_path(), &normalized, 1)
+        let lock_path = self.lock_path();
+        match self.write_versioned(&self.project_toml_path(), &normalized, 1) {
+            Ok(()) => {
+                if self.holds_write_lock() {
+                    PROJECT_CACHE.with(|cache| {
+                        cache.borrow_mut().insert(lock_path, normalized);
+                    });
+                }
+                Ok(())
+            }
+            Err(err) => {
+                PROJECT_CACHE.with(|cache| {
+                    cache.borrow_mut().remove(&lock_path);
+                });
+                Err(err)
+            }
+        }
     }
 
     /// Reads and parses Tier 2 `.tracker/phases/<phase_id>/phase.toml`.
@@ -1650,5 +1704,50 @@ mod lock_tests {
             .with_write_lock(|_| Ok("recovered"))
             .expect("subsequent lock after error");
         assert_eq!(after, "recovered");
+    }
+
+    #[test]
+    fn create_item_reads_project_toml_at_most_twice() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = TrackerStorage::init_standard(dir.path(), "t").expect("init_standard");
+        PROJECT_DISK_READS.with(|reads| reads.set(0));
+        storage
+            .create_bug("x", None, None, crate::models::Severity::Medium, None)
+            .expect("create_bug");
+        let count = PROJECT_DISK_READS.with(|reads| reads.get());
+        assert!(count <= 2, "expected <= 2 disk reads, got {count}");
+    }
+
+    #[test]
+    fn project_cache_is_dropped_when_lock_releases() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = TrackerStorage::init_standard(dir.path(), "t").expect("init_standard");
+        storage
+            .with_write_lock(|s| s.read_project())
+            .expect("read_project inside lock");
+
+        let project_path = storage.project_toml_path();
+        let raw = fs::read_to_string(&project_path).expect("read project.toml");
+        let updated = raw.replace("name = \"t\"", "name = \"u\"");
+        fs::write(&project_path, updated).expect("write project.toml");
+
+        let reread = storage.read_project().expect("read_project outside lock");
+        assert_eq!(reread.project.name, "u");
+    }
+
+    #[test]
+    fn write_inside_lock_updates_cache() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = TrackerStorage::init_standard(dir.path(), "t").expect("init_standard");
+        storage
+            .with_write_lock(|s| {
+                let mut proj = s.read_project()?;
+                proj.project.name = "v".to_string();
+                s.write_project(&proj)?;
+                let reread = s.read_project()?;
+                assert_eq!(reread.project.name, "v");
+                Ok(())
+            })
+            .expect("write inside lock updates cache");
     }
 }
