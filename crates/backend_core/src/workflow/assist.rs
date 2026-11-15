@@ -12,7 +12,8 @@ use crate::ingestion::ECOSYSTEM_MANIFEST_FILES;
 use crate::models::scope::cmp_item_ids;
 use crate::models::{resolve_phase_alias, ItemStatus, ItemType, Severity, CANONICAL_PHASES};
 use crate::storage::{
-    normalize_relative_path, normalize_relative_path_str, PhaseIndex, ScopeIndex, TrackerStorage,
+    normalize_relative_path, normalize_relative_path_str, PhaseIndex, ScopeIndex, TrackerIndex,
+    TrackerStorage,
 };
 use crate::workflow::TimerStatus;
 
@@ -132,6 +133,10 @@ impl TrackerStorage {
     /// 5. Falls back to `project.default_scope` (`"inbox"`).
     pub fn infer_scope_from_context(&self, cwd: Option<&Path>) -> Result<String> {
         let index = self.load_index()?;
+        self.infer_scope_with_index(&index, cwd)
+    }
+
+    fn infer_scope_with_index(&self, index: &TrackerIndex, cwd: Option<&Path>) -> Result<String> {
         let default_scope = {
             let trimmed = index.project.project.default_scope.trim();
             if trimmed.is_empty() {
@@ -329,7 +334,7 @@ impl TrackerStorage {
             }
         };
         let active_phase_id = resolve_phase_alias(&index.project.project.active_phase).to_string();
-        let inferred_scope = self.infer_scope_from_context(cwd)?;
+        let inferred_scope = self.infer_scope_with_index(&index, cwd)?;
         let active_timer = self.timer_status_at(now)?;
         let stagnant_threshold_days = index.project.metrics.stagnant_item_threshold_days;
 

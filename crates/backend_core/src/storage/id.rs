@@ -1,5 +1,6 @@
+use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rand::{rngs::OsRng, RngCore};
 
@@ -36,6 +37,7 @@ impl TrackerStorage {
     /// sequence numbers on disk.
     pub fn scan_max_counters(&self) -> Result<ProjectCounters> {
         let mut counters = ProjectCounters::default();
+        let mut scanned_dirs: HashSet<PathBuf> = HashSet::new();
 
         if let Ok(project) = self.read_project() {
             counters.merge_max(&project.counters);
@@ -43,7 +45,10 @@ impl TrackerStorage {
             for phase_entry in &project.phases.registry {
                 let phase_dir =
                     self.resolve_phase_path(&phase_entry.id, Some(&phase_entry.path))?;
-                self.scan_phase_dir(&phase_dir, &mut counters);
+                let key = fs::canonicalize(&phase_dir).unwrap_or_else(|_| phase_dir.clone());
+                if scanned_dirs.insert(key) {
+                    self.scan_phase_dir(&phase_dir, &mut counters);
+                }
             }
         }
 
@@ -53,7 +58,10 @@ impl TrackerStorage {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_dir() {
-                        self.scan_phase_dir(&path, &mut counters);
+                        let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                        if scanned_dirs.insert(key) {
+                            self.scan_phase_dir(&path, &mut counters);
+                        }
                     }
                 }
             }
