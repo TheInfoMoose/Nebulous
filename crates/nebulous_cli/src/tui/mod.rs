@@ -57,12 +57,16 @@ pub fn render_to_string(app: &mut TuiApp, width: u16, height: u16) -> String {
     out
 }
 
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+}
+
 struct TerminalCleanupGuard;
 
 impl Drop for TerminalCleanupGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        restore_terminal();
     }
 }
 
@@ -76,6 +80,15 @@ pub fn run_tui(storage: TrackerStorage, cwd: Option<PathBuf>) -> Result<()> {
             None
         }
     };
+
+    // Restore the terminal before the default panic hook runs; otherwise the panic
+    // text is printed into the alternate screen and lost, leaving the shell in raw mode.
+    // Both calls are idempotent, so TerminalCleanupGuard running after the hook is harmless.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        previous(info);
+    }));
 
     enable_raw_mode().map_err(|source| TrackerError::Io {
         path: PathBuf::from("/dev/tty"),
