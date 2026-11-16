@@ -19,7 +19,8 @@ fi
 
 abs_path() {
   local target="$1"
-  if command -v realpath >/dev/null 2>&1; then
+  # BSD/macOS realpath has no -m flag.
+  if realpath -m / >/dev/null 2>&1; then
     realpath -m "${target}"
   elif [[ "${target}" == /* ]]; then
     echo "${target%/}"
@@ -106,9 +107,14 @@ fi
 
 BINDIR="${PREFIX}/bin"
 
+SUDO=""
+if [[ ! -w "$(dirname "${BINDIR}")" && ! -w "${BINDIR}" ]] && [[ "${EUID}" -ne 0 ]]; then
+  SUDO="sudo"
+fi
+
 if [[ "${ACTION}" == "uninstall" ]]; then
   echo "Uninstalling Nebulous CLI from ${PREFIX}..."
-  rm -f "${BINDIR}/neb"
+  ${SUDO} rm -f "${BINDIR}/neb"
   echo "Uninstalled Nebulous CLI from ${PREFIX}."
   exit 0
 fi
@@ -126,6 +132,12 @@ if [[ "${ARCHIVE_MODE}" -eq 0 ]]; then
   cd "${REPO_ROOT}"
 fi
 
+# Running under sudo would build target/ as root.
+if [[ "${EUID}" -eq 0 && -n "${SUDO_USER:-}" && "${SKIP_BUILD}" -eq 0 ]]; then
+  echo "Run install.sh without sudo; it calls sudo itself for the install step." >&2
+  exit 1
+fi
+
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
   echo "Building Nebulous CLI release binary (neb)..."
   cargo build --release -p nebulous_cli
@@ -139,8 +151,8 @@ if [[ ! -x "${NEB_BIN}" ]]; then
 fi
 
 echo "Installing Nebulous CLI to ${PREFIX}..."
-install -d "${BINDIR}"
-install -m 0755 "${NEB_BIN}" "${BINDIR}/neb"
+${SUDO} install -d "${BINDIR}"
+${SUDO} install -m 0755 "${NEB_BIN}" "${BINDIR}/neb"
 
 echo "Successfully installed:"
 echo "  CLI Binary : ${BINDIR}/neb"
