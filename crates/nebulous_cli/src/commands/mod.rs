@@ -1362,6 +1362,8 @@ struct TimerActionOutputJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     total_logged_minutes: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    capped_from: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
 }
 
@@ -1380,6 +1382,7 @@ fn handle_timer(storage: &TrackerStorage, action: &TimerCommand, json: bool) -> 
                     elapsed_minutes: Some(0),
                     elapsed_seconds: Some(0),
                     total_logged_minutes: None,
+                    capped_from: None,
                     note: timer.note,
                 });
             }
@@ -1411,13 +1414,21 @@ fn handle_timer(storage: &TrackerStorage, action: &TimerCommand, json: bool) -> 
                     elapsed_minutes: Some(session.elapsed_minutes),
                     elapsed_seconds: None,
                     total_logged_minutes: Some(session.total_logged_minutes),
+                    capped_from: session.capped_from,
                     note: session.timer.note,
                 });
             }
-            Ok(format!(
+            let mut out = format!(
                 "Stopped timer for {}: +{}m (total logged: {}m)",
                 session.timer.item_id, session.elapsed_minutes, session.total_logged_minutes
-            ))
+            );
+            if let Some(n) = session.capped_from {
+                out.push_str(&format!(
+                    "\nWarning: session ran {}m; logged {}m (metrics.max_session_minutes in project.toml).",
+                    n, session.elapsed_minutes
+                ));
+            }
+            Ok(out)
         }
         TimerCommand::Status { id } => {
             let status_opt = storage.timer_status()?;
@@ -1442,6 +1453,7 @@ fn handle_timer(storage: &TrackerStorage, action: &TimerCommand, json: bool) -> 
                             elapsed_minutes: Some(st.elapsed_minutes),
                             elapsed_seconds: Some(st.elapsed_seconds),
                             total_logged_minutes: None,
+                            capped_from: None,
                             note: st.timer.note,
                         });
                     }
@@ -1465,6 +1477,7 @@ fn handle_timer(storage: &TrackerStorage, action: &TimerCommand, json: bool) -> 
                             elapsed_minutes: None,
                             elapsed_seconds: None,
                             total_logged_minutes: None,
+                            capped_from: None,
                             note: None,
                         });
                     }

@@ -142,6 +142,9 @@ pub struct MetricsConfig {
     pub target_daily_hours: f64,
     #[serde(default = "default_stagnant_threshold_days")]
     pub stagnant_item_threshold_days: u32,
+    /// Maximum minutes a single timer stop logs (`0` disables the cap).
+    #[serde(default = "default_max_session_minutes")]
+    pub max_session_minutes: u32,
 }
 
 impl Default for MetricsConfig {
@@ -149,6 +152,7 @@ impl Default for MetricsConfig {
         Self {
             target_daily_hours: default_target_daily_hours(),
             stagnant_item_threshold_days: default_stagnant_threshold_days(),
+            max_session_minutes: default_max_session_minutes(),
         }
     }
 }
@@ -265,6 +269,10 @@ fn default_target_daily_hours() -> f64 {
 
 fn default_stagnant_threshold_days() -> u32 {
     4
+}
+
+fn default_max_session_minutes() -> u32 {
+    480
 }
 
 fn default_sync_interval_minutes() -> u32 {

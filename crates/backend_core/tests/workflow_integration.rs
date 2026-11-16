@@ -2576,3 +2576,33 @@ fn orphan_timer_stop_quarantines() {
     assert!(!storage.timer_toml_path().exists());
     assert!(storage.tracker_dir().join(".timer.toml.bak").is_file());
 }
+
+#[test]
+fn long_session_is_capped() {
+    let (_dir, storage) = init_temp_tracker();
+    storage
+        .create_bug("Cap session test", None, None, Severity::Medium, None)
+        .unwrap();
+
+    let t0 = Utc.with_ymd_and_hms(2026, 11, 2, 10, 0, 0).unwrap();
+    storage.start_timer_at("BUG-0001", t0, None).unwrap();
+
+    let t1 = t0 + chrono::Duration::minutes(600);
+    let capped = storage.stop_timer_at(t1).unwrap();
+    assert_eq!(capped.elapsed_minutes, 480);
+    assert_eq!(capped.capped_from, Some(600));
+    assert_eq!(capped.total_logged_minutes, 480);
+
+    let mut project = storage.read_project().unwrap();
+    project.metrics.max_session_minutes = 0;
+    storage.write_project(&project).unwrap();
+
+    let t2 = Utc.with_ymd_and_hms(2026, 11, 3, 10, 0, 0).unwrap();
+    storage.start_timer_at("BUG-0001", t2, None).unwrap();
+
+    let t3 = t2 + chrono::Duration::minutes(600);
+    let uncapped = storage.stop_timer_at(t3).unwrap();
+    assert_eq!(uncapped.elapsed_minutes, 600);
+    assert_eq!(uncapped.capped_from, None);
+    assert_eq!(uncapped.total_logged_minutes, 1080);
+}

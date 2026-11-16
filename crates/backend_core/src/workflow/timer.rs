@@ -21,6 +21,8 @@ pub struct StoppedTimerSession {
     pub elapsed_minutes: u32,
     pub total_logged_minutes: u32,
     pub updated_item: ItemDetail,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capped_from: Option<u32>,
 }
 
 impl TrackerStorage {
@@ -138,7 +140,16 @@ impl TrackerStorage {
                     elapsed_minutes: 0,
                     total_logged_minutes,
                     updated_item: detail,
+                    capped_from: None,
                 });
+            }
+
+            let mut elapsed_minutes = elapsed_minutes;
+            let mut capped_from = None;
+            let max_session_minutes = self.read_project()?.metrics.max_session_minutes;
+            if max_session_minutes > 0 && elapsed_minutes > max_session_minutes {
+                capped_from = Some(elapsed_minutes);
+                elapsed_minutes = max_session_minutes;
             }
 
             detail.manifest.effort.logged_time_minutes = detail
@@ -164,6 +175,7 @@ impl TrackerStorage {
                 elapsed_minutes,
                 total_logged_minutes,
                 updated_item: detail,
+                capped_from,
             })
         })
     }
