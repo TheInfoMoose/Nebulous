@@ -956,6 +956,8 @@ struct StartOutputJson {
     started_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stopped_previous_item: Option<String>,
     copied_to_clipboard: bool,
     agent_context: AgentContextBundle,
 }
@@ -967,46 +969,54 @@ fn handle_start(
     copy: bool,
     json: bool,
 ) -> Result<String> {
-    let (loc, detail, timer, context_bundle) = storage.start_work_item(id, note)?;
+    let started = storage.start_work_item(id, note, std::env::current_dir().ok().as_deref())?;
     let copied_to_clipboard = if copy {
-        try_copy_to_clipboard(&context_bundle.bounded_prompt)
+        try_copy_to_clipboard(&started.context.bounded_prompt)
     } else {
         false
     };
 
     if json {
         return to_json_pretty(&StartOutputJson {
-            id: detail.manifest.item.id,
-            item_type: detail.manifest.item.item_type,
-            title: detail.manifest.item.title,
-            status: detail.manifest.item.status,
-            severity: detail.manifest.item.severity,
-            phase_id: loc.phase_id,
-            scope_id: loc.scope_id,
+            id: started.detail.manifest.item.id,
+            item_type: started.detail.manifest.item.item_type,
+            title: started.detail.manifest.item.title,
+            status: started.detail.manifest.item.status,
+            severity: started.detail.manifest.item.severity,
+            phase_id: started.location.phase_id,
+            scope_id: started.location.scope_id,
             timer_active: true,
-            started_at: timer.started_at,
-            note: timer.note,
+            started_at: started.timer.started_at,
+            note: started.timer.note,
+            stopped_previous_item: started.stopped_previous.map(|s| s.timer.item_id),
             copied_to_clipboard,
-            agent_context: context_bundle,
+            agent_context: started.context,
         });
     }
 
     let mut out = String::new();
+    if let Some(s) = &started.stopped_previous {
+        let _ = writeln!(
+            out,
+            "Stopped timer on {} ({}m logged).",
+            s.timer.item_id, s.elapsed_minutes
+        );
+    }
     let _ = writeln!(
         out,
         "Started {} [{}] ({}/{}) — {}",
-        detail.manifest.item.id,
-        detail.manifest.item.status,
-        loc.phase_id,
-        loc.scope_id,
-        detail.manifest.item.title
+        started.detail.manifest.item.id,
+        started.detail.manifest.item.status,
+        started.location.phase_id,
+        started.location.scope_id,
+        started.detail.manifest.item.title
     );
     let _ = writeln!(
         out,
         "Timer active since {} (clipboard copied: {})",
-        timer.started_at, copied_to_clipboard
+        started.timer.started_at, copied_to_clipboard
     );
-    let _ = writeln!(out, "Agent Context Refs: {}", context_bundle.file_refs);
+    let _ = writeln!(out, "Agent Context Refs: {}", started.context.file_refs);
     let _ = write!(
         out,
         "Next Suggested Action: Implement the fix/feature, then run `neb done -m \"<summary>\"` (or `neb move prod` to advance stage)."

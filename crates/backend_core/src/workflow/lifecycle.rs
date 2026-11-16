@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 
 use chrono::Utc;
 
@@ -12,6 +13,18 @@ use crate::models::{
 };
 use crate::storage::reconcile::infer_default_scope_type;
 use crate::storage::{validate_identifier, ItemLocation, TrackerStorage};
+use crate::workflow::timer::StoppedTimerSession;
+
+/// Result of [`TrackerStorage::start_work_item`], including any timer session that was
+/// automatically stopped when switching from a previous item.
+#[derive(Debug, Clone)]
+pub struct StartedWork {
+    pub location: ItemLocation,
+    pub detail: ItemDetail,
+    pub timer: ActiveTimer,
+    pub context: AgentContextBundle,
+    pub stopped_previous: Option<StoppedTimerSession>,
+}
 
 /// Parameters for creating a new tracked bug or feature via [`TrackerStorage::create_item`].
 #[derive(Debug, Clone)]
@@ -206,48 +219,67 @@ impl TrackerStorage {
         })
     }
 
+    /// Resolves the target item ID for `neb start`: an explicit ID, or the top open item from
+    /// [`Self::compute_whats_next`] (using `cwd`), or the top recommendation, or the active/inferred item.
+    pub fn resolve_start_target(
+        &self,
+        item_id: Option<&str>,
+        cwd: Option<&Path>,
+    ) -> Result<String> {
+        let resolved_id = match item_id.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(explicit) => explicit.to_ascii_uppercase(),
+            None => {
+                let whats_next = self.compute_whats_next(cwd)?;
+                if let Some(open_id) = whats_next.top_open_item_id() {
+                    open_id.to_string()
+                } else if let Some(any_id) = whats_next.top_item_id() {
+                    any_id.to_string()
+                } else {
+                    self.resolve_active_or_inferred_item_id(None)?
+                }
+            }
+        };
+        Ok(resolved_id)
+    }
+
     /// Starts work on `item_id` (or the top recommended `open` / active item when `item_id` is `None`):
     ///
     /// 1. Resolves `item_id` (if `None`, picks the top recommended `open` item from [`Self::compute_whats_next`] or the active item).
     /// 2. If another timer is currently running for a *different* item, automatically stops that previous timer and logs its elapsed minutes (`stop_timer()`) instead of failing with `TimerAlreadyRunning`.
     /// 3. Transitions the target item's status to [`ItemStatus::InProgress`] (`update_item_status`).
     /// 4. Starts (or keeps) the active timer for the target item (`.timer.toml`).
-    /// 5. Builds and returns the [`AgentContextBundle`] so the caller can immediately display/copy the prompt.
+    /// 5. Builds and returns the [`StartedWork`] bundle so the caller can immediately display/copy the prompt and report any stopped timer.
     pub fn start_work_item(
         &self,
         item_id: Option<&str>,
         note: Option<String>,
-    ) -> Result<(ItemLocation, ItemDetail, ActiveTimer, AgentContextBundle)> {
+        cwd: Option<&Path>,
+    ) -> Result<StartedWork> {
         self.with_write_lock(|_| {
-            let resolved_id = match item_id.map(str::trim).filter(|s| !s.is_empty()) {
-                Some(explicit) => explicit.to_ascii_uppercase(),
-                None => {
-                    let whats_next = self.compute_whats_next(None)?;
-                    if let Some(open_id) = whats_next.top_open_item_id() {
-                        open_id.to_string()
-                    } else if let Some(any_id) = whats_next.top_item_id() {
-                        any_id.to_string()
-                    } else {
-                        self.resolve_active_or_inferred_item_id(None)?
-                    }
-                }
-            };
+            let resolved_id = self.resolve_start_target(item_id, cwd)?;
 
             let target_loc = self.locate_item(&resolved_id)?;
             let canonical_id = target_loc.stub.id;
 
+            let mut stopped_previous = None;
             if let Some(active) = self.read_active_timer()? {
                 if active.item_id != canonical_id {
-                    let _ = self.stop_timer()?;
+                    stopped_previous = Some(self.stop_timer()?);
                 }
             }
 
             let detail = self.update_item_status(&canonical_id, ItemStatus::InProgress)?;
             let timer = self.switch_or_start_timer(&canonical_id, note)?;
-            let loc = self.locate_item(&canonical_id)?;
-            let context_bundle = self.export_agent_context(&canonical_id)?;
+            let location = self.locate_item(&canonical_id)?;
+            let context = self.export_agent_context(&canonical_id)?;
 
-            Ok((loc, detail, timer, context_bundle))
+            Ok(StartedWork {
+                location,
+                detail,
+                timer,
+                context,
+                stopped_previous,
+            })
         })
     }
 

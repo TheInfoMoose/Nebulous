@@ -1958,14 +1958,18 @@ fn test_start_work_item_auto_timer_switch_close_stop_and_stage_advancement_hint(
 
     // 1. Call `start_work_item(None, ...)` -> automatically picks top recommended open item (`BUG-0001`),
     // transitions status to `InProgress`, starts `.timer.toml`, and returns `AgentContextBundle`.
-    let (loc1, detail1, timer1, bundle1) = storage
-        .start_work_item(None, Some("Starting critical bug fix".to_string()))
+    let started1 = storage
+        .start_work_item(None, Some("Starting critical bug fix".to_string()), None)
         .expect("start_work_item(None) should pick BUG-0001");
-    assert_eq!(loc1.stub.id, "BUG-0001");
-    assert_eq!(detail1.manifest.item.status, ItemStatus::InProgress);
-    assert_eq!(timer1.item_id, "BUG-0001");
-    assert_eq!(timer1.note.as_deref(), Some("Starting critical bug fix"));
-    assert!(bundle1.bounded_prompt.contains("BUG-0001"));
+    assert_eq!(started1.location.stub.id, "BUG-0001");
+    assert_eq!(started1.detail.manifest.item.status, ItemStatus::InProgress);
+    assert_eq!(started1.timer.item_id, "BUG-0001");
+    assert_eq!(
+        started1.timer.note.as_deref(),
+        Some("Starting critical bug fix")
+    );
+    assert!(started1.context.bounded_prompt.contains("BUG-0001"));
+    assert!(started1.stopped_previous.is_none());
 
     // `resolve_active_or_inferred_item_id(None)` now resolves `BUG-0001` via active timer
     assert_eq!(
@@ -1982,14 +1986,25 @@ fn test_start_work_item_auto_timer_switch_close_stop_and_stage_advancement_hint(
     // 2. Call `start_work_item(Some("FEAT-0001"), ...)` while `BUG-0001` timer is running:
     // Must automatically stop `BUG-0001`'s timer, log ~30 minutes onto `BUG-0001`, transition
     // `FEAT-0001` to `InProgress`, and start `.timer.toml` on `FEAT-0001`!
-    let (loc2, detail2, timer2, bundle2) = storage
-        .start_work_item(Some("feat-0001"), Some("Switching to feature".to_string()))
+    let started2 = storage
+        .start_work_item(
+            Some("feat-0001"),
+            Some("Switching to feature".to_string()),
+            None,
+        )
         .expect("start_work_item on FEAT-0001 should auto-switch timer without error");
-    assert_eq!(loc2.stub.id, "FEAT-0001");
-    assert_eq!(detail2.manifest.item.status, ItemStatus::InProgress);
-    assert_eq!(timer2.item_id, "FEAT-0001");
-    assert_eq!(timer2.note.as_deref(), Some("Switching to feature"));
-    assert!(bundle2.bounded_prompt.contains("FEAT-0001"));
+    assert_eq!(started2.location.stub.id, "FEAT-0001");
+    assert_eq!(started2.detail.manifest.item.status, ItemStatus::InProgress);
+    assert_eq!(started2.timer.item_id, "FEAT-0001");
+    assert_eq!(started2.timer.note.as_deref(), Some("Switching to feature"));
+    assert!(started2.context.bounded_prompt.contains("FEAT-0001"));
+    assert_eq!(
+        started2
+            .stopped_previous
+            .as_ref()
+            .map(|s| s.timer.item_id.as_str()),
+        Some("BUG-0001")
+    );
 
     let (_, bug1_after_switch) = storage.load_item_detail_by_id("BUG-0001").unwrap();
     assert!(
@@ -2605,4 +2620,37 @@ fn long_session_is_capped() {
     assert_eq!(uncapped.elapsed_minutes, 600);
     assert_eq!(uncapped.capped_from, None);
     assert_eq!(uncapped.total_logged_minutes, 1080);
+}
+
+#[test]
+fn zero_id_start_matches_next_with_cwd() {
+    let dir = TempDir::new().unwrap();
+    let storage = TrackerStorage::init_standard(dir.path(), "ZeroIdStartCwdTest").unwrap();
+
+    storage
+        .create_scope(None, "api", "crates/api", vec!["rust".to_string()], None)
+        .unwrap();
+    storage
+        .create_scope(None, "web", "crates/web", vec!["rust".to_string()], None)
+        .unwrap();
+
+    storage
+        .create_bug("API bug", None, Some("api"), Severity::High, None)
+        .unwrap();
+    storage
+        .create_bug("Web bug", None, Some("web"), Severity::High, None)
+        .unwrap();
+
+    let cwd = dir.path().join("crates/web");
+    fs::create_dir_all(&cwd).unwrap();
+
+    let next_id = storage
+        .compute_whats_next(Some(&cwd))
+        .unwrap()
+        .top_open_item_id()
+        .unwrap()
+        .to_string();
+    let started = storage.start_work_item(None, None, Some(&cwd)).unwrap();
+    assert_eq!(started.detail.manifest.item.id, next_id);
+    assert_eq!(started.detail.manifest.item.id, "BUG-0002");
 }

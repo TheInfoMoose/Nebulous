@@ -1159,18 +1159,24 @@ impl TuiApp {
 
     fn action_start_work(&mut self) -> Result<()> {
         let explicit_id = self.items.get(self.selected_item_idx).map(|r| r.id.clone());
-        let Ok((loc, detail, _, bundle)) =
-            self.storage.start_work_item(explicit_id.as_deref(), None)
+        let Ok(started) =
+            self.storage
+                .start_work_item(explicit_id.as_deref(), None, self.cwd.as_deref())
         else {
             self.status_message = Some("No open or selected item to start.".to_string());
             return Ok(());
         };
-        let _ = arboard::Clipboard::new().and_then(|mut cb| cb.set_text(bundle.bounded_prompt));
-        self.active_stage = loc.phase_id.clone();
+        let _ = arboard::Clipboard::new()
+            .and_then(|mut cb| cb.set_text(started.context.bounded_prompt));
+        self.active_stage = started.location.phase_id.clone();
         self.refresh()?;
+        let stopped_prefix = match &started.stopped_previous {
+            Some(prev) => format!("Stopped timer on {}. ", prev.timer.item_id),
+            None => String::new(),
+        };
         self.status_message = Some(format!(
-            "Started {} [in_progress] in {}/{} (timer running, agent context copied)",
-            detail.manifest.item.id, loc.phase_id, loc.scope_id
+            "{stopped_prefix}Started {} [in_progress] in {}/{} (timer running, agent context copied)",
+            started.detail.manifest.item.id, started.location.phase_id, started.location.scope_id
         ));
         Ok(())
     }
