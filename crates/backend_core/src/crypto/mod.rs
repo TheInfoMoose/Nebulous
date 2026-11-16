@@ -3,7 +3,7 @@ pub mod keys;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -30,6 +30,9 @@ pub const VAULT_FILE_NAME: &str = "vault.enc";
 /// Default master key seed filename inside [`nebulous_config_dir`].
 pub const VAULT_KEY_FILE_NAME: &str = "vault.key";
 
+/// Advisory lock file name inside [`nebulous_config_dir`].
+const VAULT_LOCK_FILE_NAME: &str = "vault.lock";
+
 /// AES-256 key size in bytes (256 bits).
 pub const AES256_KEY_LEN: usize = 32;
 
@@ -45,10 +48,48 @@ const VAULT_HEADER_MAGIC: &[u8; 5] = b"NEBV\x01";
 /// Domain-separation context used when deriving a 256-bit AES-GCM key via SHA-256.
 const VAULT_KDF_CONTEXT: &[u8] = b"nebulous-simply-transfer-crypto-aes256gcm-v1";
 
-static VAULT_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+/// Acquires an exclusive advisory file lock on `<config_dir>/vault.lock` while running `f`.
+///
+/// The vault is a read-modify-write of one encrypted file; an in-process Mutex doesn't stop a
+/// second `neb` process from losing a vault entry or racing `vault.key` creation.
+fn with_vault_lock<T>(config_dir: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    ensure_secure_dir(config_dir)?;
+    let lock_path = config_dir.join(VAULT_LOCK_FILE_NAME);
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|source| TrackerError::Io {
+            path: lock_path.clone(),
+            source,
+        })?;
 
-fn vault_lock() -> &'static Mutex<()> {
-    VAULT_FILE_LOCK.get_or_init(|| Mutex::new(()))
+    let mut rw_lock = fd_lock::RwLock::new(file);
+    let start = Instant::now();
+    let _fd_guard = loop {
+        match rw_lock.try_write() {
+            Ok(guard) => break guard,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                let elapsed = start.elapsed();
+                if elapsed >= crate::storage::DEFAULT_LOCK_TIMEOUT {
+                    return Err(TrackerError::LockTimeout {
+                        path: lock_path,
+                        waited_ms: elapsed.as_millis() as u64,
+                    });
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(source) => {
+                return Err(TrackerError::Io {
+                    path: lock_path,
+                    source,
+                });
+            }
+        }
+    };
+
+    f()
 }
 
 /// Name of the legacy plaintext SSH key export directory (`<config_dir>/ssh_cache`).
@@ -429,48 +470,44 @@ impl SecureStorage {
 
     /// Lists all account keys currently stored in the encrypted vault.
     pub fn list_vault_keys(&self) -> Result<Vec<String>> {
-        let _guard = vault_lock()
-            .lock()
-            .map_err(|e| TrackerError::KeyringError(e.to_string()))?;
-        let payload = self.load_vault_unlocked()?;
-        Ok(payload.entries.keys().cloned().collect())
+        with_vault_lock(&self.config_dir, || {
+            let payload = self.load_vault_unlocked()?;
+            Ok(payload.entries.keys().cloned().collect())
+        })
     }
 
     fn write_vault_entry(&self, key: &str, secret: &str) -> Result<()> {
-        let _guard = vault_lock()
-            .lock()
-            .map_err(|e| TrackerError::KeyringError(e.to_string()))?;
-        let mut payload = self.load_vault_unlocked()?;
-        payload.version = 1;
-        payload.entries.insert(key.to_string(), secret.to_string());
-        self.save_vault_unlocked(&payload)
+        with_vault_lock(&self.config_dir, || {
+            let mut payload = self.load_vault_unlocked()?;
+            payload.version = 1;
+            payload.entries.insert(key.to_string(), secret.to_string());
+            self.save_vault_unlocked(&payload)
+        })
     }
 
     fn read_vault_entry(&self, key: &str) -> Result<Option<Zeroizing<String>>> {
-        let _guard = vault_lock()
-            .lock()
-            .map_err(|e| TrackerError::KeyringError(e.to_string()))?;
-        let payload = self.load_vault_unlocked()?;
-        Ok(payload.entries.get(key).cloned().map(Zeroizing::new))
+        with_vault_lock(&self.config_dir, || {
+            let payload = self.load_vault_unlocked()?;
+            Ok(payload.entries.get(key).cloned().map(Zeroizing::new))
+        })
     }
 
     fn remove_vault_entry(&self, key: &str) -> Result<bool> {
-        let _guard = vault_lock()
-            .lock()
-            .map_err(|e| TrackerError::KeyringError(e.to_string()))?;
-        if !self.vault_path.is_file() {
-            return Ok(false);
-        }
-        let mut payload = self.load_vault_unlocked()?;
-        let existed = payload
-            .entries
-            .remove(key)
-            .map(|mut v| v.zeroize())
-            .is_some();
-        if existed {
-            self.save_vault_unlocked(&payload)?;
-        }
-        Ok(existed)
+        with_vault_lock(&self.config_dir, || {
+            if !self.vault_path.is_file() {
+                return Ok(false);
+            }
+            let mut payload = self.load_vault_unlocked()?;
+            let existed = payload
+                .entries
+                .remove(key)
+                .map(|mut v| v.zeroize())
+                .is_some();
+            if existed {
+                self.save_vault_unlocked(&payload)?;
+            }
+            Ok(existed)
+        })
     }
 
     fn load_vault_unlocked(&self) -> Result<VaultStorePayload> {
@@ -529,43 +566,45 @@ fn load_or_create_vault_master_key(key_path: &Path) -> Result<Zeroizing<[u8; AES
         }
     }
 
-    let _guard = vault_lock()
-        .lock()
-        .map_err(|e| TrackerError::KeyringError(e.to_string()))?;
+    let parent = key_path.parent().ok_or_else(|| {
+        TrackerError::ValidationError("vault.key path has no parent directory".to_string())
+    })?;
 
-    if key_path.is_file() {
-        let raw =
-            Zeroizing::new(
-                fs::read_to_string(key_path).map_err(|source| TrackerError::Io {
+    // Two processes creating vault.key at once would each write a different key, and one
+    // process's vault becomes undecryptable.
+    with_vault_lock(parent, || {
+        if key_path.is_file() {
+            let raw = Zeroizing::new(fs::read_to_string(key_path).map_err(|source| {
+                TrackerError::Io {
                     path: key_path.to_path_buf(),
                     source,
-                })?,
-            );
-        let decoded = Zeroizing::new(
-            BASE64_STANDARD
-                .decode(raw.trim())
-                .map_err(|e| TrackerError::KeyringError(format!("Corrupted vault.key: {e}")))?,
-        );
-        if decoded.len() < AES256_KEY_LEN {
-            return Err(TrackerError::KeyringError(format!(
-                "Corrupted vault.key: decoded seed is {} bytes, expected at least {AES256_KEY_LEN}",
-                decoded.len()
-            )));
+                }
+            })?);
+            let decoded =
+                Zeroizing::new(BASE64_STANDARD.decode(raw.trim()).map_err(|e| {
+                    TrackerError::KeyringError(format!("Corrupted vault.key: {e}"))
+                })?);
+            if decoded.len() < AES256_KEY_LEN {
+                return Err(TrackerError::KeyringError(format!(
+                    "Corrupted vault.key: decoded seed is {} bytes, expected at least {AES256_KEY_LEN}",
+                    decoded.len()
+                )));
+            }
+            return Ok(derive_key_sha256(&decoded, VAULT_KDF_CONTEXT));
         }
-        return Ok(derive_key_sha256(&decoded, VAULT_KDF_CONTEXT));
-    }
 
-    let mut random_seed = Zeroizing::new([0u8; AES256_KEY_LEN]);
-    OsRng.fill_bytes(&mut *random_seed);
-    let encoded = Zeroizing::new(BASE64_STANDARD.encode(*random_seed));
+        let mut random_seed = Zeroizing::new([0u8; AES256_KEY_LEN]);
+        OsRng.fill_bytes(&mut *random_seed);
+        let encoded = Zeroizing::new(BASE64_STANDARD.encode(*random_seed));
 
-    if let Some(parent) = key_path.parent() {
-        ensure_secure_dir(parent)?;
-    }
-    atomic_write_bytes(key_path, encoded.as_bytes())?;
-    set_secure_file_permissions(key_path)?;
+        if let Some(parent) = key_path.parent() {
+            ensure_secure_dir(parent)?;
+        }
+        atomic_write_bytes(key_path, encoded.as_bytes())?;
+        set_secure_file_permissions(key_path)?;
 
-    Ok(derive_key_sha256(&*random_seed, VAULT_KDF_CONTEXT))
+        Ok(derive_key_sha256(&*random_seed, VAULT_KDF_CONTEXT))
+    })
 }
 
 pub(crate) fn ensure_secure_dir(dir: &Path) -> Result<()> {
@@ -597,4 +636,40 @@ pub(crate) fn set_secure_file_permissions(path: &Path) -> Result<()> {
         let _ = path;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn vault_write_waits_for_vault_file_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = SecureStorage::vault_only(dir.path()).unwrap();
+        let path = dir.path().to_path_buf();
+        let (tx, rx) = mpsc::channel();
+
+        let handle = std::thread::spawn(move || {
+            with_vault_lock(&path, || {
+                tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(400));
+                Ok(())
+            })
+            .unwrap();
+        });
+
+        rx.recv().unwrap();
+        let start = Instant::now();
+        storage.store_secret("testuser", "s3cret").unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(300),
+            "expected store_secret to wait on vault.lock, elapsed={elapsed:?}"
+        );
+        assert_eq!(storage.get_secret_string("testuser").unwrap(), "s3cret");
+        assert!(dir.path().join("vault.lock").is_file());
+        handle.join().unwrap();
+    }
 }
