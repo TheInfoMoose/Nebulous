@@ -545,8 +545,8 @@ fn to_json_pretty<T: Serialize>(value: &T) -> Result<String> {
 /// Attempts to copy `text` to the system clipboard via `arboard`, falling back gracefully on
 /// headless CI or container environments without failing command execution.
 fn try_copy_to_clipboard(text: &str) -> bool {
-    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text.to_owned())) {
-        Ok(()) => true,
+    match crate::clipboard::copy_text(text) {
+        Ok(_) => true,
         Err(err) => {
             eprintln!("Warning: unable to copy context to system clipboard: {err}");
             false

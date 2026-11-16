@@ -1180,8 +1180,11 @@ impl TuiApp {
             self.status_message = Some("No open or selected item to start.".to_string());
             return Ok(());
         };
-        let _ = arboard::Clipboard::new()
-            .and_then(|mut cb| cb.set_text(started.context.bounded_prompt));
+        let copy_status = match crate::clipboard::copy_text(&started.context.bounded_prompt) {
+            Ok(crate::clipboard::CopyMethod::System) => "agent context copied".to_string(),
+            Ok(crate::clipboard::CopyMethod::Osc52) => "agent context sent via OSC 52".to_string(),
+            Err(err) => format!("clipboard unavailable: {err}"),
+        };
         self.active_stage = started.location.phase_id.clone();
         self.refresh()?;
         let stopped_prefix = match &started.stopped_previous {
@@ -1189,7 +1192,7 @@ impl TuiApp {
             None => String::new(),
         };
         self.status_message = Some(format!(
-            "{stopped_prefix}Started {} [in_progress] in {}/{} (timer running, agent context copied)",
+            "{stopped_prefix}Started {} [in_progress] in {}/{} (timer running, {copy_status})",
             started.detail.manifest.item.id, started.location.phase_id, started.location.scope_id
         ));
         Ok(())
@@ -1208,15 +1211,17 @@ impl TuiApp {
         };
 
         if let Ok(bundle) = self.storage.export_agent_context(&id) {
-            let copied = arboard::Clipboard::new()
-                .and_then(|mut cb| cb.set_text(bundle.bounded_prompt.clone()))
-                .is_ok();
+            let copy_status = match crate::clipboard::copy_text(&bundle.bounded_prompt) {
+                Ok(crate::clipboard::CopyMethod::System) => "agent context copied".to_string(),
+                Ok(crate::clipboard::CopyMethod::Osc52) => {
+                    "agent context sent via OSC 52".to_string()
+                }
+                Err(err) => format!("clipboard unavailable: {err}"),
+            };
             self.selected_agent_prompt = Some(bundle.bounded_prompt);
-            self.status_message = Some(if copied {
-                format!("Copied bounded agent context for {id} to clipboard.")
-            } else {
-                format!("Prepared bounded agent context for {id} (clipboard unavailable).")
-            });
+            self.status_message = Some(format!(
+                "Prepared bounded agent context for {id} ({copy_status})."
+            ));
         }
     }
 
