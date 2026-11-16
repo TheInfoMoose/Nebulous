@@ -11,16 +11,22 @@ env:
 
 jobs:
   verify:
-    name: Format, Clippy, Test & CLI Smoke Check (Linux x86_64)
-    runs-on: ubuntu-latest
+    name: Format, Clippy, Test & CLI Smoke Check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Neutrality check (no distro-specific names)
+        if: runner.os == 'Linux'
         run: bash scripts/check-neutral.sh
 
       - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -40,11 +46,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Supply-chain advisory gate (cargo deny)
+        if: runner.os == 'Linux'
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans
 
       - name: Check formatting (cargo fmt)
+        if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
 
       - name: Lint workspace (cargo clippy)
