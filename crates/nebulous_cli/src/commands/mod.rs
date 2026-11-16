@@ -10,7 +10,7 @@ use backend_core::{
     CreateItemInput, DocumentedCommitInput, GitAuthRequest, GlobalProjectRegistry,
     IngestionOptions, ItemDetail, ItemStatus, ItemType, McpServer, PhaseStatus,
     PinnedReleaseConfig, PreviousFix, ProjectCounters, RegisteredProject, Result, ScopeManifest,
-    Severity, TrackerError, TrackerStorage, Zeroizing,
+    Severity, StoppedTimerSession, TrackerError, TrackerStorage, Zeroizing,
 };
 use serde::Serialize;
 
@@ -982,6 +982,29 @@ struct StartDryRunOutputJson {
     title: String,
 }
 
+fn warn_if_capped(stopped: Option<&StoppedTimerSession>) {
+    if let Some(s) = stopped {
+        if let Some(n) = s.capped_from {
+            let item = &s.timer.item_id;
+            let logged = s.elapsed_minutes;
+            eprintln!(
+                "Warning: {item} session ran {n}m; logged {logged}m (metrics.max_session_minutes in project.toml)."
+            );
+        }
+    }
+}
+
+fn note_quarantined_timer(storage: &TrackerStorage) {
+    if let Some(p) = storage.quarantined_timer_path() {
+        let root = storage.project_root();
+        let rel = p.strip_prefix(&root).unwrap_or(&p);
+        let p = rel.display();
+        eprintln!(
+            "Note: a corrupt or orphaned timer was moved to {p}. Check it, log any lost time with `neb log`, then delete the file."
+        );
+    }
+}
+
 fn handle_start(
     storage: &TrackerStorage,
     id: Option<&str>,
@@ -995,14 +1018,17 @@ fn handle_start(
         let resolved_id = storage.resolve_start_target(id, cwd.as_deref())?;
         let loc = storage.locate_item(&resolved_id)?;
         if json {
-            return to_json_pretty(&StartDryRunOutputJson {
+            let out = to_json_pretty(&StartDryRunOutputJson {
                 dry_run: true,
                 id: loc.stub.id,
                 phase_id: loc.phase_id,
                 scope_id: loc.scope_id,
                 title: loc.stub.title,
-            });
+            })?;
+            note_quarantined_timer(storage);
+            return Ok(out);
         }
+        note_quarantined_timer(storage);
         return Ok(format!(
             "Would start {} ({}/{}): {}",
             loc.stub.id, loc.phase_id, loc.scope_id, loc.stub.title
@@ -1017,7 +1043,7 @@ fn handle_start(
     };
 
     if json {
-        return to_json_pretty(&StartOutputJson {
+        let out = to_json_pretty(&StartOutputJson {
             id: started.detail.manifest.item.id,
             item_type: started.detail.manifest.item.item_type,
             title: started.detail.manifest.item.title,
@@ -1031,7 +1057,9 @@ fn handle_start(
             stopped_previous_item: started.stopped_previous.map(|s| s.timer.item_id),
             copied_to_clipboard,
             agent_context: started.context,
-        });
+        })?;
+        note_quarantined_timer(storage);
+        return Ok(out);
     }
 
     let mut out = String::new();
@@ -1061,13 +1089,16 @@ fn handle_start(
         out,
         "Next Suggested Action: Implement the fix/feature, then run `neb done -m \"<summary>\"` (or `neb move prod` to advance stage)."
     );
+    note_quarantined_timer(storage);
     Ok(out)
 }
 
 fn handle_next(storage: &TrackerStorage, cwd: Option<&Path>, json: bool) -> Result<String> {
     let report = storage.compute_whats_next(cwd)?;
     if json {
-        return to_json_pretty(&report);
+        let out = to_json_pretty(&report)?;
+        note_quarantined_timer(storage);
+        return Ok(out);
     }
 
     let mut out = String::new();
@@ -1124,6 +1155,7 @@ fn handle_next(storage: &TrackerStorage, cwd: Option<&Path>, json: bool) -> Resu
         .map(|r| r.suggested_command.as_str())
         .unwrap_or("neb feat \"<title>\"");
     let _ = write!(out, "\nNext Suggested Action: Run `{top_cmd}`");
+    note_quarantined_timer(storage);
     Ok(out)
 }
 
@@ -1215,7 +1247,9 @@ fn handle_status(
     json: bool,
 ) -> Result<String> {
     let loc = storage.locate_item(id)?;
-    let detail = storage.update_item_status(id, status)?;
+    let change = storage.update_item_status_reporting(id, status)?;
+    warn_if_capped(change.stopped_timer.as_ref());
+    let detail = change.detail;
 
     if json {
         return to_json_pretty(&StatusUpdateOutputJson {
@@ -1264,7 +1298,9 @@ fn handle_close(
     let loc = storage.locate_item(&resolved_id)?;
 
     if !commit_changes {
-        let detail = storage.close_item(&resolved_id, summary, commit, merged)?;
+        let change = storage.close_item_reporting(&resolved_id, summary, commit, merged)?;
+        warn_if_capped(change.stopped_timer.as_ref());
+        let detail = change.detail;
         return render_close(detail, None, summary, json);
     }
 
@@ -1284,7 +1320,9 @@ fn handle_close(
     let (_, snapshot) = storage.load_item_detail_by_id(&resolved_id)?;
     let timer_snapshot = storage.read_active_timer().ok().flatten();
 
-    let mut detail = storage.close_item(&resolved_id, summary, commit, merged)?;
+    let change = storage.close_item_reporting(&resolved_id, summary, commit, merged)?;
+    warn_if_capped(change.stopped_timer.as_ref());
+    let mut detail = change.detail;
     let auto_append = storage
         .read_project()
         .map(|p| p.git.commit_policy.auto_append_to_desc)
@@ -1490,10 +1528,10 @@ fn handle_timer(storage: &TrackerStorage, action: &TimerCommand, json: bool) -> 
                 (other, _) => other,
             };
 
-            match filtered {
+            let out = match filtered {
                 Some(st) => {
                     if json {
-                        return to_json_pretty(&TimerActionOutputJson {
+                        to_json_pretty(&TimerActionOutputJson {
                             action: "status",
                             active: true,
                             item_id: Some(st.timer.item_id),
@@ -1505,19 +1543,20 @@ fn handle_timer(storage: &TrackerStorage, action: &TimerCommand, json: bool) -> 
                             total_logged_minutes: None,
                             capped_from: None,
                             note: st.timer.note,
-                        });
+                        })?
+                    } else {
+                        format!(
+                            "Active timer: {} ({}m / {}s elapsed since {})",
+                            st.timer.item_id,
+                            st.elapsed_minutes,
+                            st.elapsed_seconds,
+                            st.timer.started_at
+                        )
                     }
-                    Ok(format!(
-                        "Active timer: {} ({}m / {}s elapsed since {})",
-                        st.timer.item_id,
-                        st.elapsed_minutes,
-                        st.elapsed_seconds,
-                        st.timer.started_at
-                    ))
                 }
                 None => {
                     if json {
-                        return to_json_pretty(&TimerActionOutputJson {
+                        to_json_pretty(&TimerActionOutputJson {
                             action: "status",
                             active: false,
                             item_id: None,
@@ -1529,11 +1568,14 @@ fn handle_timer(storage: &TrackerStorage, action: &TimerCommand, json: bool) -> 
                             total_logged_minutes: None,
                             capped_from: None,
                             note: None,
-                        });
+                        })?
+                    } else {
+                        "No active timer.".to_string()
                     }
-                    Ok("No active timer.".to_string())
                 }
-            }
+            };
+            note_quarantined_timer(storage);
+            Ok(out)
         }
     }
 }

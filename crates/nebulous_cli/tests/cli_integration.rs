@@ -2752,3 +2752,29 @@ fn tui_stage_keys_do_not_change_active_phase() {
         "production"
     );
 }
+
+#[test]
+fn quarantined_timer_note_on_next() {
+    let temp = TempDir::new().expect("should create temp dir for quarantined timer note test");
+    let root_str = temp.path().to_str().unwrap();
+
+    TrackerStorage::init_standard(temp.path(), "QuarantineNoteTest").unwrap();
+    fs::write(temp.path().join(".tracker/.timer.toml"), "garbage = [")
+        .expect("should write corrupt .timer.toml");
+
+    let output = run_neb(&["--root", root_str, "next"], None);
+    assert!(
+        output.status.success(),
+        "neb next should succeed even with corrupt timer"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(".timer.toml.bak"),
+        "expected stderr to contain '.timer.toml.bak', got: {stderr}"
+    );
+    assert!(
+        !stdout.contains(".timer.toml.bak"),
+        "expected stdout not to contain '.timer.toml.bak', got: {stdout}"
+    );
+}

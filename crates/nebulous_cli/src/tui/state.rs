@@ -249,6 +249,10 @@ impl TuiApp {
         let mut item_table_state = TableState::default();
         item_table_state.select(Some(0));
 
+        let status_message = storage.quarantined_timer_path().map(|_| {
+            "Timer quarantined to .tracker/.timer.toml.bak — check it, then delete it.".to_string()
+        });
+
         let mut app = Self {
             storage,
             index,
@@ -272,7 +276,7 @@ impl TuiApp {
             filter_query: String::new(),
             filter_editing: false,
             modal: None,
-            status_message: None,
+            status_message,
             should_quit: false,
         };
         app.refresh()?;
@@ -721,18 +725,26 @@ impl TuiApp {
                         Some(trimmed)
                     }
                 };
-                let detail = self.storage.close_item(
+                let change = self.storage.close_item_reporting(
                     &close.item_id,
                     close.summary.trim(),
                     commit_opt,
                     close.merged,
                 )?;
+                let detail = change.detail;
                 self.modal = None;
                 self.refresh()?;
-                self.status_message = Some(format!(
+                let mut msg = format!(
                     "Closed {} as {}",
                     detail.manifest.item.id, detail.manifest.item.status
-                ));
+                );
+                if let Some(stopped) = &change.stopped_timer {
+                    if let Some(n) = stopped.capped_from {
+                        let logged = stopped.elapsed_minutes;
+                        msg.push_str(&format!(" Session capped: ran {n}m, logged {logged}m."));
+                    }
+                }
+                self.status_message = Some(msg);
             }
             ActiveModal::Move(mv) => {
                 let target_stage = CANONICAL_PHASES
