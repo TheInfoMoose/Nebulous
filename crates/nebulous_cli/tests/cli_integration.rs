@@ -2733,3 +2733,22 @@ fn unknown_scope_needs_second_enter() {
         .iter()
         .any(|i| i.id == "BUG-0001" && i.scope_id == "newscope"));
 }
+
+#[test]
+fn tui_stage_keys_do_not_change_active_phase() {
+    use nebulous_cli::tui::TuiApp;
+
+    let temp = TempDir::new().expect("should create temp dir for TUI stage keys test");
+    let storage = TrackerStorage::init_standard(temp.path(), "TuiStageKeysTest").unwrap();
+    storage.set_active_phase("production").unwrap();
+
+    let mut app = TuiApp::new(storage.clone(), None).unwrap();
+    assert_eq!(app.active_stage, "production");
+
+    app.press_char('3').unwrap();
+    assert_eq!(app.active_stage, "post_production");
+    assert_eq!(
+        storage.read_project().unwrap().project.active_phase,
+        "production"
+    );
+}

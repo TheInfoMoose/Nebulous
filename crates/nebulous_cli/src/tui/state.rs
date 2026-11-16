@@ -479,17 +479,14 @@ impl TuiApp {
     /// Switches to one of the 3 canonical stages (`pre_production`, `production`, `post_production`).
     pub fn switch_stage(&mut self, stage_alias: &str) -> Result<()> {
         let canonical = resolve_phase_alias(stage_alias).to_string();
-        if self.storage.set_active_phase(&canonical).is_err() {
-            if let Some((_, title)) = CANONICAL_PHASES.iter().find(|(id, _)| *id == canonical) {
-                let _ = self.storage.create_phase(&canonical, *title, true);
-            }
-        }
         self.active_stage = canonical.clone();
         self.detail_scroll = 0;
         *self.item_table_state.offset_mut() = 0;
         *self.scope_list_state.offset_mut() = 0;
         self.refresh()?;
-        self.status_message = Some(format!("Switched active stage -> {canonical}"));
+        self.status_message = Some(format!(
+            "Viewing {canonical} (active stage unchanged; use `neb stage`)"
+        ));
         Ok(())
     }
 
@@ -686,7 +683,6 @@ impl TuiApp {
 
                 self.modal = None;
                 self.active_stage = loc.phase_id.clone();
-                let _ = self.storage.set_active_phase(&self.active_stage);
                 self.refresh()?;
                 if let Some(pos) = self
                     .items
@@ -746,7 +742,6 @@ impl TuiApp {
                 let (loc, _) = self.storage.move_item_to_phase(&mv.item_id, target_stage)?;
                 self.modal = None;
                 self.active_stage = loc.phase_id.clone();
-                let _ = self.storage.set_active_phase(&self.active_stage);
                 self.refresh()?;
                 if let Some(pos) = self.items.iter().position(|i| i.id == mv.item_id) {
                     self.selected_item_idx = pos;
@@ -1271,7 +1266,6 @@ impl TuiApp {
         if let Some(ref phase_id) = top_rec.phase_id {
             if phase_id != &self.active_stage {
                 self.active_stage = phase_id.clone();
-                let _ = self.storage.set_active_phase(&self.active_stage);
             }
         }
         self.selected_scope_idx = 0; // ALL SCOPES
