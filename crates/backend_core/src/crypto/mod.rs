@@ -607,6 +607,7 @@ fn load_or_create_vault_master_key(key_path: &Path) -> Result<Zeroizing<[u8; AES
     })
 }
 
+/// Creates `dir` and sets `0700` on Unix; on Windows, relies on inherited directory ACLs.
 pub(crate) fn ensure_secure_dir(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).map_err(|source| TrackerError::Io {
         path: dir.to_path_buf(),
@@ -621,6 +622,10 @@ pub(crate) fn ensure_secure_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// On Unix, sets file permissions to `0600`. On Windows, this does nothing and the file is
+/// protected only by the ACLs it inherits from its directory: under the default
+/// `%APPDATA%\nebulous`, those allow only the user, SYSTEM and Administrators; a
+/// `NEBULOUS_CONFIG_DIR` outside the user profile gets that directory's ACLs instead.
 pub(crate) fn set_secure_file_permissions(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {

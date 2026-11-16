@@ -50,7 +50,7 @@ flowchart TD
 The foundational library crate with zero UI dependencies:
 - **`models`**: Strongly typed Serde structs and enums for all 4 tiers (`ProjectManifest`, `PhaseManifest`, `ScopeManifest`, `ItemManifest`, `ItemDetail`, `ActiveTimer`), canonical 3-stage definitions (`CANONICAL_PHASES`: `pre_production`, `production`, `post_production`, `resolve_phase_alias`), `GlobalProjectRegistry` (`projects.toml`), and `ComponentManifest` (`nebulous.component.toml`).
 - **`crypto`**:
-  - **`SecureStorage`**: Cross-platform secret storage using native OS keyrings (`linux-native`, `apple-native`, `windows-native`) paired with an authenticated **AES-256-GCM encrypted file vault fallback** (`<config_dir>/nebulous/vault.enc`, `0600` Unix permissions, `Zeroize` memory scrubbing).
+  - **`SecureStorage`**: Cross-platform secret storage using native OS keyrings (`linux-native`, `apple-native`, `windows-native`) paired with an authenticated **AES-256-GCM encrypted file vault fallback** (`<config_dir>/nebulous/vault.enc`, `0600` on Unix; on Windows, the inherited `%APPDATA%` ACLs (point `NEBULOUS_CONFIG_DIR` only at a directory inside your user profile), `Zeroize` memory scrubbing).
   - **`KeyPairManager`**: Generates, imports, retrieves, and deletes Ed25519 OpenSSH keypairs (`ssh-key`) and HTTPS Personal Access Tokens (PATs) per project/remote.
 - **`ingestion`**:
   - **Two-Stage Directory Scanner**: Walks project directories using `ignore::WalkBuilder` (respecting `.gitignore` and skipping `.git/`, `.tracker/`, `target/`, `node_modules/`, `dist/`, `build/`, `__pycache__/`, `.venv/`).
@@ -85,7 +85,7 @@ A CLI-first terminal and agent interface built with `clap`, `ratatui`, and `cros
 ```text
 <os_config_dir>/nebulous/                             # ~/.config/nebulous (Linux) | ~/Library/Application Support/nebulous (macOS) | %APPDATA%\nebulous (Windows)
 ├── projects.toml                                     # Global Multi-Project Registry
-└── vault.enc                                         # AES-256-GCM encrypted credential vault fallback (0600)
+└── vault.enc                                         # AES-256-GCM encrypted credential vault fallback (0600 on Unix)
 
 <workspace_root>/
 ├── nebulous.component.toml                           # Optional root or per-subdirectory component & pin manifest
