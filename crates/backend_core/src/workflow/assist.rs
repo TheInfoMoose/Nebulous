@@ -491,12 +491,14 @@ impl TrackerStorage {
         }
 
         // 3. Recurring Critical/High Bugs (open items with recurrence_count > 0, ranked by highest severity, then highest recurrence)
+        // Items in other stages were showing up as "stagnant"/"recurring" work for the current stage.
         let mut recurring_open: Vec<&CandidateItem> = candidates
             .iter()
             .filter(|c| {
                 c.status == ItemStatus::Open
                     && c.recurrence_count > 0
                     && !seen_items.contains(&c.id)
+                    && c.phase_id == active_phase_id
             })
             .collect();
         recurring_open.sort_by(|a, b| {
@@ -540,6 +542,7 @@ impl TrackerStorage {
             .filter(|c| {
                 c.days_since_update >= i64::from(stagnant_threshold_days)
                     && !seen_items.contains(&c.id)
+                    && c.phase_id == active_phase_id
             })
             .collect();
         stagnant.sort_by(|a, b| {

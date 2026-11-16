@@ -2654,3 +2654,42 @@ fn zero_id_start_matches_next_with_cwd() {
     assert_eq!(started.detail.manifest.item.id, next_id);
     assert_eq!(started.detail.manifest.item.id, "BUG-0002");
 }
+
+#[test]
+fn stagnant_and_recurring_are_stage_scoped() {
+    let dir = TempDir::new().unwrap();
+    let storage = TrackerStorage::init_standard(dir.path(), "StageScopedStagnantTest").unwrap();
+    storage.set_active_phase("production").unwrap();
+
+    let (prod_bug, _) = storage
+        .create_bug(
+            "Production bug",
+            Some("production"),
+            None,
+            Severity::High,
+            None,
+        )
+        .unwrap();
+    let (post_bug, _) = storage
+        .create_bug(
+            "Post-production bug",
+            Some("post_production"),
+            None,
+            Severity::High,
+            None,
+        )
+        .unwrap();
+
+    let report = storage
+        .compute_whats_next_at(None, Utc::now() + chrono::Duration::days(365))
+        .unwrap();
+    let stagnant_ids: Vec<&str> = report
+        .recommendations
+        .iter()
+        .filter(|r| r.kind == NextActionKind::StagnantItem)
+        .filter_map(|r| r.item_id.as_deref())
+        .collect();
+
+    assert!(stagnant_ids.contains(&prod_bug.stub.id.as_str()));
+    assert!(!stagnant_ids.contains(&post_bug.stub.id.as_str()));
+}
