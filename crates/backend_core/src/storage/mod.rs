@@ -889,15 +889,33 @@ impl TrackerStorage {
         Ok(())
     }
 
+    /// Moves `.tracker/.timer.toml` to `.tracker/.timer.toml.bak` (overwriting any previous backup)
+    /// and returns the `.bak` path.
+    pub(crate) fn quarantine_active_timer(&self) -> Result<PathBuf> {
+        let src = self.guard_tracker_path(&self.timer_toml_path())?;
+        let dst = self.guard_tracker_path(&self.tracker_dir.join(".timer.toml.bak"))?;
+        fs::rename(&src, &dst).map_err(|source| TrackerError::Io { path: src, source })?;
+        Ok(dst)
+    }
+
     /// Reads `.tracker/.timer.toml` if an active timer is currently running.
+    ///
+    /// If `.timer.toml` cannot be parsed as an [`ActiveTimer`], it is quarantined to
+    /// `.timer.toml.bak` (preserving the raw data for the user) and `Ok(None)` is returned so a
+    /// corrupt timer file never blocks tracker reads or commands.
     pub fn read_active_timer(&self) -> Result<Option<ActiveTimer>> {
         let path = self.timer_toml_path();
         if !path.is_file() {
             return Ok(None);
         }
         let raw = self.read_tracker_file(&path)?;
-        let timer = ActiveTimer::from_toml_str(&raw).map_err(|err| attach_toml_path(err, path))?;
-        Ok(Some(timer))
+        match ActiveTimer::from_toml_str(&raw) {
+            Ok(timer) => Ok(Some(timer)),
+            Err(_) => {
+                self.quarantine_active_timer()?;
+                Ok(None)
+            }
+        }
     }
 
     /// Atomically writes `.tracker/.timer.toml`.

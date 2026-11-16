@@ -2543,3 +2543,36 @@ fn stop_syncs_scope_stub() {
     let indexed = storage.load_index().unwrap().find_item("BUG-0001").unwrap();
     assert_eq!(indexed.stub, detail.manifest.to_stub());
 }
+
+#[test]
+fn corrupt_timer_file_does_not_block_reads() {
+    let (_dir, storage) = init_temp_tracker();
+    fs::write(storage.timer_toml_path(), "garbage = [").unwrap();
+
+    assert!(storage.compute_whats_next(None).is_ok());
+    assert_eq!(storage.timer_status().unwrap(), None);
+
+    let bak = storage.tracker_dir().join(".timer.toml.bak");
+    assert!(bak.is_file());
+    assert!(fs::read_to_string(&bak).unwrap().contains("garbage"));
+}
+
+#[test]
+fn orphan_timer_stop_quarantines() {
+    let (_dir, storage) = init_temp_tracker();
+    let (loc, _) = storage
+        .create_bug("Orphan timer test", None, None, Severity::Medium, None)
+        .unwrap();
+    storage.start_timer("BUG-0001", None).unwrap();
+
+    let item_dir = storage
+        .item_dir(&loc.phase_id, &loc.scope_id, &loc.stub.id)
+        .unwrap();
+    fs::remove_dir_all(&item_dir).unwrap();
+    storage.reconcile_indexes().unwrap();
+
+    let res = storage.stop_timer();
+    assert!(matches!(res, Err(TrackerError::NotFound { .. })));
+    assert!(!storage.timer_toml_path().exists());
+    assert!(storage.tracker_dir().join(".timer.toml.bak").is_file());
+}

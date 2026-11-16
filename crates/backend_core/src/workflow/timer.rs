@@ -119,7 +119,14 @@ impl TrackerStorage {
                 .ok_or(TrackerError::NoActiveTimer)?;
 
             let elapsed_minutes = timer.elapsed_minutes_at(stopped_at)?;
-            let (loc, mut detail) = self.load_item_detail_by_id(&timer.item_id)?;
+            let (loc, mut detail) = match self.load_item_detail_by_id(&timer.item_id) {
+                Ok(found) => found,
+                Err(err @ TrackerError::NotFound { .. }) => {
+                    self.quarantine_active_timer()?;
+                    return Err(err);
+                }
+                Err(err) => return Err(err),
+            };
 
             let session_key = format!("{}@{}", timer.item_id, timer.started_at);
             if detail.manifest.effort.last_timer_session.as_deref() == Some(&session_key) {
