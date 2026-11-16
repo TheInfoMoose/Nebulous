@@ -22,7 +22,7 @@
   - Domain scopes (crates, packages, OS build modules) are automatically mirrored across all registered stages and items move cleanly between stages via `neb move <stage>` or the TUI `[m]` modal.
 - **Predictive Assist ("What's Next") & Zero-ID Workflow Shortcuts**:
   - Automatically infers the target domain `scope` from your active working directory, modified Git files, or active timer when `--scope` is omitted.
-  - Zero-ID commands (`neb start`, `neb done`, `neb show`, `neb context`, `neb move`) automatically target the active timer, sole `in_progress` item, or top-ranked `"What's Next"` recommendation (`neb next`).
+  - Zero-ID commands: `neb start` falls back to the top `neb next` item (`neb start --dry-run` previews which item it would pick without starting a timer or changing status); `neb done`, `neb show`, `neb context`, and `neb move` use the active timer or the single `in_progress` item, else stop and suggest the top item.
 - **4-Tier `.tracker/` TOML + Markdown Hierarchy**:
   - **Tier 1 (`project.toml`)**: Global project metadata, monotonic ID counters (`BUG-XXXX`, `FEAT-XXXX`), stage registry, ingested `[components]` catalog, effort/stagnation thresholds, and Git sync + `[git.commit_policy]` configuration.
   - **Tier 2 (`phases/<stage_id>/phase.toml`)**: Stage lifecycle status, registered domain scopes, and roll-up completion counts.
@@ -76,6 +76,8 @@ sudo ./scripts/install.sh --system
 ```
 
 ### Option 2: Cross-Platform Build from Source (Linux, macOS, Windows)
+
+Prebuilt release binaries are Linux (`x86_64-unknown-linux-gnu`) only; on macOS and Windows, build from source:
 
 ```bash
 cargo build --workspace --release

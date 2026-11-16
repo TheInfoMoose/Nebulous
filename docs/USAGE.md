@@ -77,6 +77,8 @@ neb context --refs-only --copy
 neb done -m "Added custom serde deserializer for unquoted TOML datetimes" -c
 ```
 
+Timer sessions are stored in `.tracker/.timer.toml`: `metrics.max_session_minutes` in `project.toml` (default `480`, `0` = off) caps one session, and a corrupt `.timer.toml` is moved to `.timer.toml.bak`.
+
 ---
 
 ### 3. Global Multi-Project Registry (`neb project`)
@@ -236,7 +238,7 @@ neb tui
 
 | Key | Action |
 | :--- | :--- |
-| `1` / `2` / `3` | Switch active stage (`Pre-Production` / `Production` / `Post-Production`) |
+| `1` / `2` / `3` | Change the viewed stage (`Pre-Production` / `Production` / `Post-Production`) only (`neb stage` changes the active stage) |
 | `Tab` / `Shift+Tab` or `h` / `l` | Cycle focus across panes (`Scopes` <-> `Items` <-> `Details`) or modal fields |
 | `j` / `k` or `↑` / `↓` | Move selection up/down in active list/table, or scroll Details inspector |
 | `PgUp` / `PgDn` or `J` / `K` | Scroll the Inspector / `desc.md` / Fix History pane |
@@ -248,8 +250,12 @@ neb tui
 | `c` | Copy Bounded Agent Prompt for selected/active item to clipboard |
 | `i` | Ingest workspace directory and promote discovered components to scopes across all stages |
 | `n` | Jump directly to the top-ranked `"What's Next"` item |
+| `r` | Reload `.tracker/` index and items |
 | `/` | Filter stage items by ID, title, or scope (`Enter`/`Esc` to exit filter input) |
-| `q` / `Esc` | Close active modal or quit the TUI |
+| `q` | Quit the TUI (inside a modal it types text) |
+| `Esc` | Close the modal or quit the TUI |
+
+The list refreshes automatically on external `.tracker/` changes.
 
 ---
 

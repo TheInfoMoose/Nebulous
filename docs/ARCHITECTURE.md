@@ -68,7 +68,7 @@ The foundational library crate with zero UI dependencies:
 - **`agent_context`**: Synthesizes `@file` reference tags and self-contained **Bounded Agent Prompts** (`export_agent_context`, `export_file_refs`, `export_bounded_prompt`) that constrain AI coding assistants to the scope's target directory and surface all prior fix attempts.
 - **`git_sync`**: Native `git2` integration supporting explicit `git_fetch`, `git_pull`, `git_push`, and `git_commit_documented` enforcing `[git.commit_policy]`.
 - **`mcp`**: Stateful JSON-RPC 2.0 `stdio` Model Context Protocol server (`McpServer`) supporting both line-delimited JSON and `Content-Length` framed transports.
-- **`watcher`**: Recursive `notify` filesystem watcher (`TrackerWatcher`) that filters out read-only events and `.tmp.` sibling files and reconciles `.tracker/` indexes on external changes.
+- **`watcher`**: Recursive `notify` filesystem watcher (`TrackerWatcher`) that filters out read-only events and `.tmp.` sibling files and reconciles `.tracker/` indexes on external changes; rescan events trigger a full reconcile, malformed `item.toml` files are skipped and reported, and the TUI subscribes for live reload.
 
 ### `crates/nebulous_cli` (`neb` binary)
 A CLI-first terminal and agent interface built with `clap`, `ratatui`, and `crossterm`:
