@@ -68,8 +68,8 @@ Builds and installs the `neb` CLI/TUI binary in release mode:
 # Install to ~/.local/bin (default --user mode)
 ./scripts/install.sh --user
 
-# Or install system-wide to /usr/local/bin
-sudo ./scripts/install.sh --system
+# Or install system-wide to /usr/local/bin (asks for sudo only for the copy)
+./scripts/install.sh --system
 
 # Uninstall
 ./scripts/install.sh --uninstall

@@ -29,6 +29,12 @@ abs_path() {
   fi
 }
 
+nearest_existing_dir() {
+  local d="$1"
+  while [[ ! -e "${d}" && "${d}" != "/" ]]; do d="$(dirname "${d}")"; done
+  echo "${d}"
+}
+
 MODE="user"
 CUSTOM_PREFIX=""
 ACTION="install"
@@ -108,7 +114,8 @@ fi
 BINDIR="${PREFIX}/bin"
 
 SUDO=""
-if [[ ! -w "$(dirname "${BINDIR}")" && ! -w "${BINDIR}" ]] && [[ "${EUID}" -ne 0 ]]; then
+# Test the nearest existing ancestor: if ~/.local does not exist yet, checking dirname(BINDIR) would use sudo and create a root-owned ~/.local/bin.
+if [[ ! -w "$(nearest_existing_dir "${BINDIR}")" && "${EUID}" -ne 0 ]]; then
   SUDO="sudo"
 fi
 
