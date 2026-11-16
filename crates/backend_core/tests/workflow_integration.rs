@@ -2742,3 +2742,59 @@ fn status_switch_reports_stopped_timer() {
     assert_eq!(stopped.timer.item_id, "BUG-0001");
     assert!(stopped.capped_from.is_some());
 }
+
+#[test]
+fn mcp_close_reports_capped_timer() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let (_dir, storage) = init_temp_tracker();
+    storage
+        .create_bug(
+            "MCP close session cap test",
+            None,
+            None,
+            Severity::Medium,
+            None,
+        )
+        .unwrap();
+
+    storage
+        .start_timer_at(
+            "BUG-0001",
+            Utc::now() - chrono::Duration::minutes(600),
+            None,
+        )
+        .unwrap();
+
+    let res = McpServer::new(Some(storage))
+        .call_tool(
+            "close_item_with_fix",
+            json!({ "item_id": "BUG-0001", "summary": "fixed" }),
+        )
+        .unwrap();
+
+    assert_eq!(res["stopped_timer"]["item_id"], "BUG-0001");
+    assert_eq!(res["stopped_timer"]["logged_minutes"], 480);
+    assert!(res["stopped_timer"]["capped_from"].is_u64());
+}
+
+#[test]
+fn mcp_status_without_timer_reports_null() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let (_dir, storage) = init_temp_tracker();
+    storage
+        .create_bug("MCP status without timer", None, None, Severity::Low, None)
+        .unwrap();
+
+    let res = McpServer::new(Some(storage))
+        .call_tool(
+            "update_item_status",
+            json!({ "item_id": "BUG-0001", "status": "in_progress" }),
+        )
+        .unwrap();
+
+    assert!(res["stopped_timer"].is_null());
+}

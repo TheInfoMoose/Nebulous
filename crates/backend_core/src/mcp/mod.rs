@@ -18,7 +18,7 @@ use crate::models::{
 };
 use crate::planning::{import_plan, parse_roadmap};
 use crate::storage::{contained_path, normalize_relative_path_str, ItemLocation, TrackerStorage};
-use crate::workflow::CreateItemInput;
+use crate::workflow::{CreateItemInput, StoppedTimerSession};
 
 /// MCP protocol versions this server speaks, newest first.
 pub const SUPPORTED_MCP_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -1350,7 +1350,8 @@ impl McpServer {
         let storage = self.resolve_active_storage()?;
         let status = ItemStatus::from_str(&parsed.status)?;
         let loc = storage.locate_item(parsed.item_id.trim())?;
-        let detail = storage.update_item_status(parsed.item_id.trim(), status)?;
+        let change = storage.update_item_status_reporting(parsed.item_id.trim(), status)?;
+        let detail = change.detail;
 
         Ok(json!({
             "id": detail.manifest.item.id,
@@ -1360,7 +1361,8 @@ impl McpServer {
             "scope_id": loc.scope_id,
             "recurrence_count": detail.manifest.history.recurrence_count,
             "iteration_count": detail.manifest.effort.iteration_count,
-            "updated_at": detail.manifest.item.updated_at
+            "updated_at": detail.manifest.item.updated_at,
+            "stopped_timer": stopped_timer_json(change.stopped_timer.as_ref())
         }))
     }
 
@@ -1381,12 +1383,13 @@ impl McpServer {
             TrackerError::ValidationError(format!("Invalid close_item_with_fix args: {e}"))
         })?;
         let storage = self.resolve_active_storage()?;
-        let detail = storage.close_item(
+        let change = storage.close_item_reporting(
             parsed.item_id.trim(),
             &parsed.summary,
             non_empty(parsed.commit.as_deref()),
             parsed.merged,
         )?;
+        let detail = change.detail;
         let latest_fix = detail.manifest.history.previous_fixes.last().cloned();
         let fixes_count = detail.manifest.history.previous_fixes.len();
 
@@ -1396,7 +1399,8 @@ impl McpServer {
             "status": detail.manifest.item.status,
             "fix": latest_fix,
             "previous_fixes_count": fixes_count,
-            "updated_at": detail.manifest.item.updated_at
+            "updated_at": detail.manifest.item.updated_at,
+            "stopped_timer": stopped_timer_json(change.stopped_timer.as_ref())
         }))
     }
 
@@ -2573,6 +2577,17 @@ fn mcp_auth_request(auth_override: Option<&str>, pat: Option<&Value>) -> Result<
 
 fn non_empty(val: Option<&str>) -> Option<&str> {
     val.map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn stopped_timer_json(stopped: Option<&StoppedTimerSession>) -> Value {
+    match stopped {
+        None => Value::Null,
+        Some(s) => json!({
+            "item_id": s.timer.item_id,
+            "logged_minutes": s.elapsed_minutes,
+            "capped_from": s.capped_from
+        }),
+    }
 }
 
 /// Checks one incoming message and, on failure, returns the `-32600` reply carrying the message's
