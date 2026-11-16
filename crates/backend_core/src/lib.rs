@@ -22,8 +22,8 @@ pub use watcher::*;
 pub use workflow::{
     format_boilerplate_description, CreateItemInput, NextActionKind, NextRecommendation,
     PhaseEffortValuation, PredictiveDefaults, ProjectMetricsReport, RecurringItemHotspot,
-    ScopeEffortValuation, ScopeHotspot, StagnantItemEntry, StoppedTimerSession, TimerStatus,
-    WhatsNextReport,
+    ScopeEffortValuation, ScopeHotspot, StagnantItemEntry, StartedWork, StoppedTimerSession,
+    TimerStatus, WhatsNextReport,
 };
 
 #[cfg(test)]
