@@ -308,4 +308,17 @@ mod tests {
             Some(Commands::Stage { stage: Some(_) })
         ));
     }
+
+    #[test]
+    fn parses_start_dry_run() {
+        let cli = Cli::try_parse_from(["neb", "start", "--dry-run"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Start {
+                id: None,
+                dry_run: true,
+                ..
+            })
+        ));
+    }
 }

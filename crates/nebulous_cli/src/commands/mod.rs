@@ -160,9 +160,21 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_show(&storage, id.as_deref(), cli.json)
         }
-        Some(Commands::Start { id, note, copy }) => {
+        Some(Commands::Start {
+            id,
+            note,
+            copy,
+            dry_run,
+        }) => {
             let storage = resolve_storage(cli.root.as_deref())?;
-            handle_start(&storage, id.as_deref(), note.clone(), *copy, cli.json)
+            handle_start(
+                &storage,
+                id.as_deref(),
+                note.clone(),
+                *copy,
+                *dry_run,
+                cli.json,
+            )
         }
         Some(Commands::Next) => {
             let storage = resolve_storage(cli.root.as_deref())?;
@@ -962,14 +974,43 @@ struct StartOutputJson {
     agent_context: AgentContextBundle,
 }
 
+#[derive(Debug, Serialize)]
+struct StartDryRunOutputJson {
+    dry_run: bool,
+    id: String,
+    phase_id: String,
+    scope_id: String,
+    title: String,
+}
+
 fn handle_start(
     storage: &TrackerStorage,
     id: Option<&str>,
     note: Option<String>,
     copy: bool,
+    dry_run: bool,
     json: bool,
 ) -> Result<String> {
-    let started = storage.start_work_item(id, note, std::env::current_dir().ok().as_deref())?;
+    let cwd = std::env::current_dir().ok();
+    if dry_run {
+        let resolved_id = storage.resolve_start_target(id, cwd.as_deref())?;
+        let loc = storage.locate_item(&resolved_id)?;
+        if json {
+            return to_json_pretty(&StartDryRunOutputJson {
+                dry_run: true,
+                id: loc.stub.id,
+                phase_id: loc.phase_id,
+                scope_id: loc.scope_id,
+                title: loc.stub.title,
+            });
+        }
+        return Ok(format!(
+            "Would start {} ({}/{}): {}",
+            loc.stub.id, loc.phase_id, loc.scope_id, loc.stub.title
+        ));
+    }
+
+    let started = storage.start_work_item(id, note, cwd.as_deref())?;
     let copied_to_clipboard = if copy {
         try_copy_to_clipboard(&started.context.bounded_prompt)
     } else {

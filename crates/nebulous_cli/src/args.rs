@@ -156,7 +156,7 @@ pub enum Commands {
 
     /// Start working on `<ID>` (or the top-ranked "What's Next" item), transition to `in_progress`, start the timer, and export bounded agent context.
     Start {
-        /// Optional item ID (e.g. `BUG-0001`); resolves to top "What's Next" item if omitted.
+        /// Optional item ID. If omitted: the top open item from `neb next`, else the top recommendation, else the item with the active timer or the single in_progress item.
         id: Option<String>,
 
         /// Optional note attached to the timer session.
@@ -173,12 +173,16 @@ pub enum Commands {
             action = clap::ArgAction::Set
         )]
         copy: bool,
+
+        /// Print the item `neb start` would pick, without starting a timer or changing status.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Compute and display the ranked "What's Next" queue, active timer, inferred scope, missing spec hints, and stage advancement recommendation.
     Next,
 
-    /// Move an item across canonical stages (`pre` / `prod` / `post`). If `<ID>` is omitted, moves the active or top inferred item.
+    /// Move an item across canonical stages (`pre` / `prod` / `post`). If `<ID>` is omitted, moves the item with the active timer, or the single in_progress item.
     Move {
         /// Item ID (or target stage when only one positional argument is supplied, e.g. `neb move prod`).
         id: Option<String>,
@@ -207,7 +211,7 @@ pub enum Commands {
         status: ItemStatus,
     },
 
-    /// Close or merge an item (defaults to active or top inferred item if `<ID>` is omitted) and record the fix in `previous_fixes`.
+    /// Close or merge an item (defaults to the item with the active timer, or the single in_progress item if `<ID>` is omitted) and record the fix in `previous_fixes`.
     #[command(visible_alias = "done")]
     Close {
         /// Optional item ID (e.g. `BUG-0001`); resolves via active timer or `in_progress` item when omitted.

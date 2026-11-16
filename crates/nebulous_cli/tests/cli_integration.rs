@@ -2651,3 +2651,25 @@ fn test_plan_import_missing_roadmap_section_fails_with_heading() {
         "expected stderr to mention '## Step Execution Roadmap', got: {stderr}"
     );
 }
+
+#[test]
+fn start_dry_run_changes_nothing() {
+    let temp = TempDir::new().expect("should create temp dir for start dry-run test");
+    let root_str = temp.path().to_str().unwrap();
+
+    run_neb_ok(&["--root", root_str, "init", "--name", "DryRunTest"], None);
+    run_neb_ok(&["--root", root_str, "bug", "Test dry run bug"], None);
+
+    let stdout = run_neb_ok(&["--root", root_str, "start", "--dry-run"], None);
+    assert!(
+        stdout.contains("Would start BUG-0001"),
+        "expected stdout to contain 'Would start BUG-0001', got: {stdout}"
+    );
+    assert!(
+        !temp.path().join(".tracker/.timer.toml").exists(),
+        ".tracker/.timer.toml should not exist after --dry-run"
+    );
+
+    let show_json = run_neb_json(&["--root", root_str, "show", "BUG-0001"], None);
+    assert_eq!(show_json["item"]["status"], "open");
+}
