@@ -4,7 +4,7 @@ pub mod metrics;
 pub mod timer;
 
 pub use assist::{NextActionKind, NextRecommendation, PredictiveDefaults, WhatsNextReport};
-pub use lifecycle::{format_boilerplate_description, CreateItemInput, StartedWork};
+pub use lifecycle::{format_boilerplate_description, CreateItemInput, StartedWork, StatusChange};
 pub use metrics::{
     PhaseEffortValuation, ProjectMetricsReport, RecurringItemHotspot, ScopeEffortValuation,
     ScopeHotspot, StagnantItemEntry,

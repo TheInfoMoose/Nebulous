@@ -22,8 +22,8 @@ pub use watcher::*;
 pub use workflow::{
     format_boilerplate_description, CreateItemInput, NextActionKind, NextRecommendation,
     PhaseEffortValuation, PredictiveDefaults, ProjectMetricsReport, RecurringItemHotspot,
-    ScopeEffortValuation, ScopeHotspot, StagnantItemEntry, StartedWork, StoppedTimerSession,
-    TimerStatus, WhatsNextReport,
+    ScopeEffortValuation, ScopeHotspot, StagnantItemEntry, StartedWork, StatusChange,
+    StoppedTimerSession, TimerStatus, WhatsNextReport,
 };
 
 #[cfg(test)]
@@ -864,5 +864,29 @@ sIrutI2NuqcarHHe39XSQPcgOvzeKMOaWd1FA=\n\
         #[allow(clippy::permissions_set_readonly_false)]
         after.set_readonly(false);
         std::fs::set_permissions(&readonly_target, after).unwrap();
+    }
+
+    #[test]
+    fn quarantined_timer_path_reports_bak() {
+        use crate::storage::TrackerStorage;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = TrackerStorage::init(
+            temp_dir.path(),
+            "QuarantineTest",
+            "production",
+            "Production",
+        )
+        .unwrap();
+
+        assert!(storage.quarantined_timer_path().is_none());
+
+        std::fs::write(storage.timer_toml_path(), "garbage = [").unwrap();
+        assert_eq!(storage.read_active_timer().unwrap(), None);
+
+        let bak = storage
+            .quarantined_timer_path()
+            .expect("quarantined_timer_path should return Some after quarantine");
+        assert!(bak.is_file());
     }
 }

@@ -898,6 +898,13 @@ impl TrackerStorage {
         Ok(dst)
     }
 
+    /// Returns `Some(path)` when `.tracker/.timer.toml.bak` exists as a file, else `None`.
+    /// It stays `Some` until the user deletes the file, so callers can keep telling them.
+    pub fn quarantined_timer_path(&self) -> Option<PathBuf> {
+        let path = self.tracker_dir.join(".timer.toml.bak");
+        path.is_file().then_some(path)
+    }
+
     /// Reads `.tracker/.timer.toml` if an active timer is currently running.
     ///
     /// If `.timer.toml` cannot be parsed as an [`ActiveTimer`], it is quarantined to
