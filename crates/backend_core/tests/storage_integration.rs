@@ -2971,3 +2971,45 @@ fn reconcile_skips_malformed_item_toml() {
     let index = storage.load_index().unwrap();
     assert!(index.find_item("BUG-0001").is_some());
 }
+
+#[test]
+fn component_write_waits_for_tracker_lock() {
+    use backend_core::ComponentManifest;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let temp = TempTrackerDir::new("component_write_lock");
+    let storage = TrackerStorage::init_standard(temp.path(), "ComponentLockTest").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let held_storage = storage.clone();
+    let handle = thread::spawn(move || {
+        held_storage
+            .with_write_lock(|_| {
+                tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(400));
+                Ok(())
+            })
+            .unwrap();
+    });
+
+    rx.recv().unwrap();
+    let started = Instant::now();
+    let written = storage
+        .write_component_manifest(&ComponentManifest::new(
+            "core_comp",
+            "Core Comp",
+            ".",
+            "library",
+        ))
+        .expect("write_component_manifest should succeed after lock release");
+    let elapsed = started.elapsed();
+
+    assert!(written.is_file());
+    assert!(
+        elapsed >= Duration::from_millis(300),
+        "expected write_component_manifest to wait for tracker lock (>=300ms), elapsed={elapsed:?}"
+    );
+    handle.join().unwrap();
+}

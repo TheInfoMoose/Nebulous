@@ -115,386 +115,388 @@ impl TrackerStorage {
     /// directories (e.g. `scripts/`, `iso/`, `config/`), recording relative file paths (`files = [...]`)
     /// into `.tracker/project.toml` `[components]` without reading or parsing source file ASTs.
     pub fn ingest_project_directory(&self, options: IngestionOptions) -> Result<IngestionReport> {
-        let project_root = validate_safe_project_root(&self.project_root())?;
-        if !project_root.is_dir() {
-            return Err(TrackerError::NotFound {
-                kind: "ProjectRoot",
-                id: project_root.display().to_string(),
-            });
-        }
-
-        let mut norm_subpath = options
-            .subpath
-            .as_deref()
-            .map(normalize_relative_path_str)
-            .filter(|s| !s.is_empty() && s != ".");
-
-        let scan_root = match norm_subpath.as_deref() {
-            Some(rel) => {
-                let target = resolve_contained_reference(&project_root, rel)?;
-                if !target.is_dir() {
-                    return Err(TrackerError::NotFound {
-                        kind: "Directory",
-                        id: rel.to_string(),
-                    });
-                }
-                let target_canon =
-                    fs::canonicalize(&target).map_err(|source| TrackerError::Io {
-                        path: target.clone(),
-                        source,
-                    })?;
-                if !target_canon.starts_with(&project_root) {
-                    return Err(TrackerError::ValidationError(format!(
-                        "Relative tracker path '{rel}' resolves outside the active project root '{}'",
-                        project_root.display()
-                    )));
-                }
-                validate_safe_project_root(&target_canon)?;
-                if let Ok(canon_rel) = target_canon.strip_prefix(&project_root) {
-                    let canon_rel_str = normalize_relative_path(canon_rel);
-                    norm_subpath = if canon_rel_str.is_empty() || canon_rel_str == "." {
-                        None
-                    } else {
-                        Some(canon_rel_str)
-                    };
-                }
-                target_canon
+        self.with_write_lock(|_| {
+            let project_root = validate_safe_project_root(&self.project_root())?;
+            if !project_root.is_dir() {
+                return Err(TrackerError::NotFound {
+                    kind: "ProjectRoot",
+                    id: project_root.display().to_string(),
+                });
             }
-            None => project_root.clone(),
-        };
 
-        let mut walk_builder = WalkBuilder::new(&scan_root);
-        walk_builder
-            .require_git(false)
-            .git_ignore(true)
-            .git_global(false)
-            .git_exclude(true)
-            .same_file_system(true)
-            .follow_links(false)
-            .hidden(false);
+            let mut norm_subpath = options
+                .subpath
+                .as_deref()
+                .map(normalize_relative_path_str)
+                .filter(|s| !s.is_empty() && s != ".");
 
-        if scan_root != project_root {
-            let root_gitignore = project_root.join(".gitignore");
-            if root_gitignore.is_file() {
-                let _ = walk_builder.add_ignore(root_gitignore);
-            }
-        }
-
-        let scan_root_clone = scan_root.clone();
-        walk_builder.filter_entry(move |entry| !should_skip_entry(entry, &scan_root_clone));
-
-        let mut all_rel_files = Vec::new();
-        let mut manifest_dirs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-
-        for entry_res in walk_builder.build() {
-            let entry = match entry_res {
-                Ok(e) => e,
-                Err(_) => continue,
+            let scan_root = match norm_subpath.as_deref() {
+                Some(rel) => {
+                    let target = resolve_contained_reference(&project_root, rel)?;
+                    if !target.is_dir() {
+                        return Err(TrackerError::NotFound {
+                            kind: "Directory",
+                            id: rel.to_string(),
+                        });
+                    }
+                    let target_canon =
+                        fs::canonicalize(&target).map_err(|source| TrackerError::Io {
+                            path: target.clone(),
+                            source,
+                        })?;
+                    if !target_canon.starts_with(&project_root) {
+                        return Err(TrackerError::ValidationError(format!(
+                            "Relative tracker path '{rel}' resolves outside the active project root '{}'",
+                            project_root.display()
+                        )));
+                    }
+                    validate_safe_project_root(&target_canon)?;
+                    if let Ok(canon_rel) = target_canon.strip_prefix(&project_root) {
+                        let canon_rel_str = normalize_relative_path(canon_rel);
+                        norm_subpath = if canon_rel_str.is_empty() || canon_rel_str == "." {
+                            None
+                        } else {
+                            Some(canon_rel_str)
+                        };
+                    }
+                    target_canon
+                }
+                None => project_root.clone(),
             };
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
+
+            let mut walk_builder = WalkBuilder::new(&scan_root);
+            walk_builder
+                .require_git(false)
+                .git_ignore(true)
+                .git_global(false)
+                .git_exclude(true)
+                .same_file_system(true)
+                .follow_links(false)
+                .hidden(false);
+
+            if scan_root != project_root {
+                let root_gitignore = project_root.join(".gitignore");
+                if root_gitignore.is_file() {
+                    let _ = walk_builder.add_ignore(root_gitignore);
+                }
             }
 
-            let file_name = entry.file_name().to_string_lossy();
-            if file_name == ".gitignore" || file_name == ".ignore" {
-                continue;
-            }
+            let scan_root_clone = scan_root.clone();
+            walk_builder.filter_entry(move |entry| !should_skip_entry(entry, &scan_root_clone));
 
-            let rel_path = match path.strip_prefix(&project_root) {
-                Ok(rel) => normalize_relative_path(rel),
-                Err(_) => continue,
-            };
-            if rel_path.is_empty() {
-                continue;
-            }
+            let mut all_rel_files = Vec::new();
+            let mut manifest_dirs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
-            if ECOSYSTEM_MANIFEST_FILES.contains(&file_name.as_ref()) {
-                let parent_rel = path
-                    .parent()
-                    .and_then(|p| p.strip_prefix(&project_root).ok())
-                    .map(normalize_relative_path)
-                    .unwrap_or_else(|| ".".to_string());
-                let dir_key = if parent_rel.is_empty() {
-                    ".".to_string()
-                } else {
-                    parent_rel
+            for entry_res in walk_builder.build() {
+                let entry = match entry_res {
+                    Ok(e) => e,
+                    Err(_) => continue,
                 };
-                manifest_dirs
-                    .entry(dir_key)
-                    .or_default()
-                    .insert(file_name.into_owned());
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+
+                let file_name = entry.file_name().to_string_lossy();
+                if file_name == ".gitignore" || file_name == ".ignore" {
+                    continue;
+                }
+
+                let rel_path = match path.strip_prefix(&project_root) {
+                    Ok(rel) => normalize_relative_path(rel),
+                    Err(_) => continue,
+                };
+                if rel_path.is_empty() {
+                    continue;
+                }
+
+                if ECOSYSTEM_MANIFEST_FILES.contains(&file_name.as_ref()) {
+                    let parent_rel = path
+                        .parent()
+                        .and_then(|p| p.strip_prefix(&project_root).ok())
+                        .map(normalize_relative_path)
+                        .unwrap_or_else(|| ".".to_string());
+                    let dir_key = if parent_rel.is_empty() {
+                        ".".to_string()
+                    } else {
+                        parent_rel
+                    };
+                    manifest_dirs
+                        .entry(dir_key)
+                        .or_default()
+                        .insert(file_name.into_owned());
+                }
+
+                all_rel_files.push(rel_path);
             }
 
-            all_rel_files.push(rel_path);
-        }
+            all_rel_files.sort();
+            all_rel_files.dedup();
 
-        all_rel_files.sort();
-        all_rel_files.dedup();
+            // Group files into components:
+            // 1. Any file inside a non-root manifested directory belongs to the deepest manifested ancestor.
+            // 2. Remaining files in standard root source subdirs (`src/`, `tests/`, etc.) belong to `.`
+            //    when `.` is an actual root package.
+            // 3. Remaining files in un-manifested directories belong to the shallowest directory prefix
+            //    (at or below `options.subpath`) that is not a container of nested manifested packages.
+            // 4. Remaining root-level files belong to `.` when `.` is an actual root package.
+            let has_root_manifest = manifest_dirs.contains_key(".");
+            let has_nested_manifests = manifest_dirs.keys().any(|k| k != ".");
+            let root_has_nebulous_manifest = manifest_dirs
+                .get(".")
+                .map(|m| m.contains(COMPONENT_MANIFEST_FILE_NAME))
+                .unwrap_or(false);
+            let root_has_primary_sources = all_rel_files.iter().any(|f| {
+                find_deepest_non_root_manifest_dir(f, &manifest_dirs).is_none()
+                    && (f.starts_with("src/") || f.starts_with("lib/") || f.starts_with("include/"))
+            });
+            let has_only_root_files =
+                !all_rel_files.is_empty() && all_rel_files.iter().all(|f| !f.contains('/'));
+            let root_is_package = (has_root_manifest
+                && (!has_nested_manifests || root_has_nebulous_manifest || root_has_primary_sources))
+                || root_has_nebulous_manifest
+                || has_only_root_files;
 
-        // Group files into components:
-        // 1. Any file inside a non-root manifested directory belongs to the deepest manifested ancestor.
-        // 2. Remaining files in standard root source subdirs (`src/`, `tests/`, etc.) belong to `.`
-        //    when `.` is an actual root package.
-        // 3. Remaining files in un-manifested directories belong to the shallowest directory prefix
-        //    (at or below `options.subpath`) that is not a container of nested manifested packages.
-        // 4. Remaining root-level files belong to `.` when `.` is an actual root package.
-        let has_root_manifest = manifest_dirs.contains_key(".");
-        let has_nested_manifests = manifest_dirs.keys().any(|k| k != ".");
-        let root_has_nebulous_manifest = manifest_dirs
-            .get(".")
-            .map(|m| m.contains(COMPONENT_MANIFEST_FILE_NAME))
-            .unwrap_or(false);
-        let root_has_primary_sources = all_rel_files.iter().any(|f| {
-            find_deepest_non_root_manifest_dir(f, &manifest_dirs).is_none()
-                && (f.starts_with("src/") || f.starts_with("lib/") || f.starts_with("include/"))
-        });
-        let has_only_root_files =
-            !all_rel_files.is_empty() && all_rel_files.iter().all(|f| !f.contains('/'));
-        let root_is_package = (has_root_manifest
-            && (!has_nested_manifests || root_has_nebulous_manifest || root_has_primary_sources))
-            || root_has_nebulous_manifest
-            || has_only_root_files;
-
-        let mut component_files: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for dir_key in manifest_dirs.keys() {
-            if dir_key != "." || root_is_package {
-                component_files.entry(dir_key.clone()).or_default();
-            }
-        }
-
-        for rel_file in &all_rel_files {
-            if let Some(deepest_manifest_dir) =
-                find_deepest_non_root_manifest_dir(rel_file, &manifest_dirs)
-            {
-                component_files
-                    .entry(deepest_manifest_dir)
-                    .or_default()
-                    .push(rel_file.clone());
-                continue;
+            let mut component_files: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for dir_key in manifest_dirs.keys() {
+                if dir_key != "." || root_is_package {
+                    component_files.entry(dir_key.clone()).or_default();
+                }
             }
 
-            if let Some((top_seg, _rest)) = rel_file.split_once('/') {
-                if root_is_package && ROOT_SOURCE_SUBDIRS.contains(&top_seg) {
+            for rel_file in &all_rel_files {
+                if let Some(deepest_manifest_dir) =
+                    find_deepest_non_root_manifest_dir(rel_file, &manifest_dirs)
+                {
+                    component_files
+                        .entry(deepest_manifest_dir)
+                        .or_default()
+                        .push(rel_file.clone());
+                    continue;
+                }
+
+                if let Some((top_seg, _rest)) = rel_file.split_once('/') {
+                    if root_is_package && ROOT_SOURCE_SUBDIRS.contains(&top_seg) {
+                        component_files
+                            .entry(".".to_string())
+                            .or_default()
+                            .push(rel_file.clone());
+                    } else if let Some(dir_prefix) = find_first_non_container_dir_prefix(
+                        rel_file,
+                        norm_subpath.as_deref(),
+                        &manifest_dirs,
+                    ) {
+                        component_files
+                            .entry(dir_prefix)
+                            .or_default()
+                            .push(rel_file.clone());
+                    }
+                } else if root_is_package {
                     component_files
                         .entry(".".to_string())
                         .or_default()
                         .push(rel_file.clone());
-                } else if let Some(dir_prefix) = find_first_non_container_dir_prefix(
-                    rel_file,
-                    norm_subpath.as_deref(),
-                    &manifest_dirs,
-                ) {
-                    component_files
-                        .entry(dir_prefix)
-                        .or_default()
-                        .push(rel_file.clone());
                 }
-            } else if root_is_package {
-                component_files
-                    .entry(".".to_string())
-                    .or_default()
-                    .push(rel_file.clone());
             }
-        }
 
-        let mut project = self.read_project()?;
-        if options.subpath.is_none() {
-            project.components.registry.retain(|c| {
-                if component_files.contains_key(&c.relative_path) {
-                    return true;
+            let mut project = self.read_project()?;
+            if options.subpath.is_none() {
+                project.components.registry.retain(|c| {
+                    if component_files.contains_key(&c.relative_path) {
+                        return true;
+                    }
+                    let dir_path = if c.relative_path == "." || c.relative_path.is_empty() {
+                        project_root.clone()
+                    } else {
+                        project_root.join(&c.relative_path)
+                    };
+                    dir_path.is_dir() && dir_path.join(COMPONENT_MANIFEST_FILE_NAME).is_file()
+                });
+            }
+
+            let mut discovered_components = Vec::new();
+            let mut manifests_written = Vec::new();
+            let mut used_ids: BTreeSet<String> = project
+                .components
+                .registry
+                .iter()
+                .filter(|c| !component_files.contains_key(&c.relative_path))
+                .map(|c| c.id.clone())
+                .collect();
+
+            // Pre-load existing on-disk and in-project manifests and reserve their IDs so newly
+            // discovered directories never steal an ID from an existing component.
+            let mut disk_manifests: BTreeMap<String, ComponentManifest> = BTreeMap::new();
+            let mut proj_manifests: BTreeMap<String, ComponentManifest> = BTreeMap::new();
+            let mut reserved_ids: BTreeMap<String, String> = BTreeMap::new();
+
+            for comp_rel_dir in component_files.keys() {
+                // Symlinked or escaping manifests are skipped (treated as absent) here; a later
+                // write to the same component directory is rejected by `component_manifest_path`.
+                let on_disk_manifest_path = self.component_manifest_path(comp_rel_dir).ok();
+                if let Some(on_disk_manifest_path) = on_disk_manifest_path.filter(|p| p.is_file()) {
+                    if let Some(disk_manifest) = fs::read_to_string(&on_disk_manifest_path)
+                        .ok()
+                        .and_then(|raw| ComponentManifest::from_toml_str(&raw).ok())
+                    {
+                        let id = disk_manifest.id.trim().to_string();
+                        if is_valid_identifier(&id) && !used_ids.contains(&id) {
+                            used_ids.insert(id.clone());
+                            reserved_ids.insert(comp_rel_dir.clone(), id);
+                        }
+                        disk_manifests.insert(comp_rel_dir.clone(), disk_manifest);
+                    }
                 }
-                let dir_path = if c.relative_path == "." || c.relative_path.is_empty() {
-                    project_root.clone()
-                } else {
-                    project_root.join(&c.relative_path)
-                };
-                dir_path.is_dir() && dir_path.join(COMPONENT_MANIFEST_FILE_NAME).is_file()
-            });
-        }
-
-        let mut discovered_components = Vec::new();
-        let mut manifests_written = Vec::new();
-        let mut used_ids: BTreeSet<String> = project
-            .components
-            .registry
-            .iter()
-            .filter(|c| !component_files.contains_key(&c.relative_path))
-            .map(|c| c.id.clone())
-            .collect();
-
-        // Pre-load existing on-disk and in-project manifests and reserve their IDs so newly
-        // discovered directories never steal an ID from an existing component.
-        let mut disk_manifests: BTreeMap<String, ComponentManifest> = BTreeMap::new();
-        let mut proj_manifests: BTreeMap<String, ComponentManifest> = BTreeMap::new();
-        let mut reserved_ids: BTreeMap<String, String> = BTreeMap::new();
-
-        for comp_rel_dir in component_files.keys() {
-            // Symlinked or escaping manifests are skipped (treated as absent) here; a later
-            // write to the same component directory is rejected by `component_manifest_path`.
-            let on_disk_manifest_path = self.component_manifest_path(comp_rel_dir).ok();
-            if let Some(on_disk_manifest_path) = on_disk_manifest_path.filter(|p| p.is_file()) {
-                if let Some(disk_manifest) = fs::read_to_string(&on_disk_manifest_path)
-                    .ok()
-                    .and_then(|raw| ComponentManifest::from_toml_str(&raw).ok())
+                if let Some(proj_manifest) = project
+                    .components
+                    .registry
+                    .iter()
+                    .find(|c| &c.relative_path == comp_rel_dir)
+                    .cloned()
                 {
-                    let id = disk_manifest.id.trim().to_string();
+                    proj_manifests.insert(comp_rel_dir.clone(), proj_manifest);
+                }
+            }
+
+            for (comp_rel_dir, proj_manifest) in &proj_manifests {
+                if !reserved_ids.contains_key(comp_rel_dir) {
+                    let id = proj_manifest.id.trim().to_string();
                     if is_valid_identifier(&id) && !used_ids.contains(&id) {
                         used_ids.insert(id.clone());
                         reserved_ids.insert(comp_rel_dir.clone(), id);
                     }
-                    disk_manifests.insert(comp_rel_dir.clone(), disk_manifest);
                 }
             }
-            if let Some(proj_manifest) = project
-                .components
-                .registry
-                .iter()
-                .find(|c| &c.relative_path == comp_rel_dir)
-                .cloned()
-            {
-                proj_manifests.insert(comp_rel_dir.clone(), proj_manifest);
-            }
-        }
 
-        for (comp_rel_dir, proj_manifest) in &proj_manifests {
-            if !reserved_ids.contains_key(comp_rel_dir) {
-                let id = proj_manifest.id.trim().to_string();
-                if is_valid_identifier(&id) && !used_ids.contains(&id) {
-                    used_ids.insert(id.clone());
-                    reserved_ids.insert(comp_rel_dir.clone(), id);
-                }
-            }
-        }
+            for (comp_rel_dir, mut files) in component_files {
+                files.sort();
+                files.dedup();
+                // Do not list `nebulous.component.toml` itself as a tracked source file
+                let filtered_files: Vec<String> = files
+                    .into_iter()
+                    .filter(|f| {
+                        !f.ends_with(&format!("/{COMPONENT_MANIFEST_FILE_NAME}"))
+                            && *f != COMPONENT_MANIFEST_FILE_NAME
+                    })
+                    .collect();
 
-        for (comp_rel_dir, mut files) in component_files {
-            files.sort();
-            files.dedup();
-            // Do not list `nebulous.component.toml` itself as a tracked source file
-            let filtered_files: Vec<String> = files
-                .into_iter()
-                .filter(|f| {
-                    !f.ends_with(&format!("/{COMPONENT_MANIFEST_FILE_NAME}"))
-                        && *f != COMPONENT_MANIFEST_FILE_NAME
-                })
-                .collect();
+                let markers = manifest_dirs
+                    .get(&comp_rel_dir)
+                    .cloned()
+                    .unwrap_or_default();
 
-            let markers = manifest_dirs
-                .get(&comp_rel_dir)
-                .cloned()
-                .unwrap_or_default();
+                let existing_on_disk = disk_manifests.remove(&comp_rel_dir);
+                let existing_in_project = proj_manifests.remove(&comp_rel_dir);
+                let pre_reserved_id = reserved_ids.remove(&comp_rel_dir);
 
-            let existing_on_disk = disk_manifests.remove(&comp_rel_dir);
-            let existing_in_project = proj_manifests.remove(&comp_rel_dir);
-            let pre_reserved_id = reserved_ids.remove(&comp_rel_dir);
+                let (inferred_type, inferred_stack) =
+                    infer_component_type_and_stack(&comp_rel_dir, &markers, &filtered_files);
 
-            let (inferred_type, inferred_stack) =
-                infer_component_type_and_stack(&comp_rel_dir, &markers, &filtered_files);
-
-            let mut manifest = if let Some(mut disk_manifest) = existing_on_disk {
-                disk_manifest.relative_path = comp_rel_dir.clone();
-                if !filtered_files.is_empty() {
-                    disk_manifest.files = filtered_files;
-                }
-                for tech in inferred_stack {
-                    if !disk_manifest.tech_stack.contains(&tech) {
-                        disk_manifest.tech_stack.push(tech);
+                let mut manifest = if let Some(mut disk_manifest) = existing_on_disk {
+                    disk_manifest.relative_path = comp_rel_dir.clone();
+                    if !filtered_files.is_empty() {
+                        disk_manifest.files = filtered_files;
                     }
-                }
-                if (disk_manifest.component_type.trim().is_empty()
-                    || disk_manifest.component_type == "custom")
-                    && inferred_type != ComponentType::Custom
-                {
-                    disk_manifest.component_type = inferred_type.to_string();
-                }
-                if let Some(res_id) = pre_reserved_id {
-                    disk_manifest.id = res_id;
-                } else {
-                    let base = if disk_manifest.id.trim().is_empty() {
-                        slugify_project_id(&disk_manifest.name)
+                    for tech in inferred_stack {
+                        if !disk_manifest.tech_stack.contains(&tech) {
+                            disk_manifest.tech_stack.push(tech);
+                        }
+                    }
+                    if (disk_manifest.component_type.trim().is_empty()
+                        || disk_manifest.component_type == "custom")
+                        && inferred_type != ComponentType::Custom
+                    {
+                        disk_manifest.component_type = inferred_type.to_string();
+                    }
+                    if let Some(res_id) = pre_reserved_id {
+                        disk_manifest.id = res_id;
                     } else {
-                        disk_manifest.id.clone()
-                    };
-                    disk_manifest.id =
-                        allocate_unique_component_id(&used_ids, &base, &comp_rel_dir);
-                }
-                disk_manifest
-            } else if let Some(mut proj_manifest) = existing_in_project {
-                proj_manifest.relative_path = comp_rel_dir.clone();
-                if !filtered_files.is_empty() {
-                    proj_manifest.files = filtered_files;
-                }
-                for tech in inferred_stack {
-                    if !proj_manifest.tech_stack.contains(&tech) {
-                        proj_manifest.tech_stack.push(tech);
+                        let base = if disk_manifest.id.trim().is_empty() {
+                            slugify_project_id(&disk_manifest.name)
+                        } else {
+                            disk_manifest.id.clone()
+                        };
+                        disk_manifest.id =
+                            allocate_unique_component_id(&used_ids, &base, &comp_rel_dir);
                     }
-                }
-                if let Some(res_id) = pre_reserved_id {
-                    proj_manifest.id = res_id;
+                    disk_manifest
+                } else if let Some(mut proj_manifest) = existing_in_project {
+                    proj_manifest.relative_path = comp_rel_dir.clone();
+                    if !filtered_files.is_empty() {
+                        proj_manifest.files = filtered_files;
+                    }
+                    for tech in inferred_stack {
+                        if !proj_manifest.tech_stack.contains(&tech) {
+                            proj_manifest.tech_stack.push(tech);
+                        }
+                    }
+                    if let Some(res_id) = pre_reserved_id {
+                        proj_manifest.id = res_id;
+                    } else {
+                        proj_manifest.id =
+                            allocate_unique_component_id(&used_ids, &proj_manifest.id, &comp_rel_dir);
+                    }
+                    proj_manifest
                 } else {
-                    proj_manifest.id =
-                        allocate_unique_component_id(&used_ids, &proj_manifest.id, &comp_rel_dir);
-                }
-                proj_manifest
-            } else {
-                let raw_name = if comp_rel_dir == "." {
-                    project.project.name.clone()
-                } else {
-                    comp_rel_dir
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(&comp_rel_dir)
-                        .to_string()
+                    let raw_name = if comp_rel_dir == "." {
+                        project.project.name.clone()
+                    } else {
+                        comp_rel_dir
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&comp_rel_dir)
+                            .to_string()
+                    };
+                    let base_id = slugify_project_id(&raw_name);
+                    let comp_id = allocate_unique_component_id(&used_ids, &base_id, &comp_rel_dir);
+                    ComponentManifest {
+                        id: comp_id,
+                        name: raw_name,
+                        relative_path: comp_rel_dir.clone(),
+                        component_type: inferred_type.to_string(),
+                        description: None,
+                        tech_stack: inferred_stack,
+                        tags: Vec::new(),
+                        flags: Vec::new(),
+                        files: filtered_files,
+                        dependencies: Vec::new(),
+                        pinned_release: None,
+                        rolling_updates: Vec::new(),
+                    }
                 };
-                let base_id = slugify_project_id(&raw_name);
-                let comp_id = allocate_unique_component_id(&used_ids, &base_id, &comp_rel_dir);
-                ComponentManifest {
-                    id: comp_id,
-                    name: raw_name,
-                    relative_path: comp_rel_dir.clone(),
-                    component_type: inferred_type.to_string(),
-                    description: None,
-                    tech_stack: inferred_stack,
-                    tags: Vec::new(),
-                    flags: Vec::new(),
-                    files: filtered_files,
-                    dependencies: Vec::new(),
-                    pinned_release: None,
-                    rolling_updates: Vec::new(),
+
+                manifest.normalize_paths();
+                used_ids.insert(manifest.id.clone());
+
+                if options.write_manifests {
+                    let written_path = self.write_component_file_only(&manifest)?;
+                    manifests_written.push(written_path);
                 }
-            };
 
-            manifest.normalize_paths();
-            used_ids.insert(manifest.id.clone());
-
-            if options.write_manifests {
-                let written_path = self.write_component_file_only(&manifest)?;
-                manifests_written.push(written_path);
+                project.components.upsert(manifest.clone());
+                discovered_components.push(manifest);
             }
 
-            project.components.upsert(manifest.clone());
-            discovered_components.push(manifest);
-        }
+            discovered_components.sort_by(|a, b| a.id.cmp(&b.id));
+            self.write_project(&project)?;
 
-        discovered_components.sort_by(|a, b| a.id.cmp(&b.id));
-        self.write_project(&project)?;
-
-        let mut promoted_scopes = Vec::new();
-        if options.promote_all {
-            let target_phase = options.promote_phase_id.as_deref();
-            for comp in &discovered_components {
-                let scope = self.promote_component_to_scope(target_phase, &comp.id, None, None)?;
-                promoted_scopes.push(scope.scope.id);
+            let mut promoted_scopes = Vec::new();
+            if options.promote_all {
+                let target_phase = options.promote_phase_id.as_deref();
+                for comp in &discovered_components {
+                    let scope = self.promote_component_to_scope(target_phase, &comp.id, None, None)?;
+                    promoted_scopes.push(scope.scope.id);
+                }
             }
-        }
 
-        let total_files_indexed = discovered_components.iter().map(|c| c.files.len()).sum();
+            let total_files_indexed = discovered_components.iter().map(|c| c.files.len()).sum();
 
-        Ok(IngestionReport {
-            components: discovered_components,
-            total_files_indexed,
-            manifests_written,
-            promoted_scopes,
+            Ok(IngestionReport {
+                components: discovered_components,
+                total_files_indexed,
+                manifests_written,
+                promoted_scopes,
+            })
         })
     }
 
@@ -587,36 +589,40 @@ impl TrackerStorage {
 
     /// Creates or updates `<relative_path>/nebulous.component.toml` in the component directory
     /// and synchronizes the [`ComponentManifest`] into `.tracker/project.toml` `[components]`.
+    /// Runs under the tracker write lock because it reads `project.toml`, upserts the component,
+    /// and writes it back; without the lock a concurrent writer's change is lost.
     ///
     /// Returns the path to the written `nebulous.component.toml` file.
     pub fn write_component_manifest(&self, manifest: &ComponentManifest) -> Result<PathBuf> {
-        validate_identifier("Component", &manifest.id)?;
-        let mut normalized = manifest.clone();
-        normalized.normalize_paths();
+        self.with_write_lock(|_| {
+            validate_identifier("Component", &manifest.id)?;
+            let mut normalized = manifest.clone();
+            normalized.normalize_paths();
 
-        if normalized.files.is_empty() {
-            let target_dir =
-                if normalized.relative_path == "." || normalized.relative_path.is_empty() {
-                    self.project_root()
-                } else {
-                    resolve_safe_relative_path(&self.project_root(), &normalized.relative_path)?
-                };
-            if target_dir.is_dir() {
-                normalized.files = collect_directory_files(&self.project_root(), &target_dir);
+            if normalized.files.is_empty() {
+                let target_dir =
+                    if normalized.relative_path == "." || normalized.relative_path.is_empty() {
+                        self.project_root()
+                    } else {
+                        resolve_safe_relative_path(&self.project_root(), &normalized.relative_path)?
+                    };
+                if target_dir.is_dir() {
+                    normalized.files = collect_directory_files(&self.project_root(), &target_dir);
+                }
+            } else {
+                for f in &normalized.files {
+                    let _ = resolve_contained_reference(&self.project_root(), f)?;
+                }
             }
-        } else {
-            for f in &normalized.files {
-                let _ = resolve_contained_reference(&self.project_root(), f)?;
-            }
-        }
 
-        let path = self.write_component_file_only(&normalized)?;
+            let path = self.write_component_file_only(&normalized)?;
 
-        let mut project = self.read_project()?;
-        project.components.upsert(normalized);
-        self.write_project(&project)?;
+            let mut project = self.read_project()?;
+            project.components.upsert(normalized);
+            self.write_project(&project)?;
 
-        Ok(path)
+            Ok(path)
+        })
     }
 
     fn write_component_file_only(&self, manifest: &ComponentManifest) -> Result<PathBuf> {
@@ -637,115 +643,121 @@ impl TrackerStorage {
         scope_id_override: Option<&str>,
         selected_files: Option<Vec<String>>,
     ) -> Result<ScopeManifest> {
-        let component = self.read_component_manifest(component_id)?;
-        let project = self.read_project()?;
+        self.with_write_lock(|_| {
+            let component = self.read_component_manifest(component_id)?;
+            let project = self.read_project()?;
 
-        let resolved_phase = match phase_id.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(p) => self.ensure_canonical_phase_if_missing(p)?,
-            None => resolve_phase_alias(&project.project.active_phase).to_string(),
-        };
+            let resolved_phase = match phase_id.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(p) => self.ensure_canonical_phase_if_missing(p)?,
+                None => resolve_phase_alias(&project.project.active_phase).to_string(),
+            };
 
-        let mut phase_manifest = self.read_phase(&resolved_phase)?;
+            let mut phase_manifest = self.read_phase(&resolved_phase)?;
 
-        let resolved_scope_id = match scope_id_override.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(s) => {
-                validate_identifier("Scope", s)?;
-                s.to_string()
-            }
-            None => {
-                validate_identifier("Scope", &component.id)?;
-                component.id.clone()
-            }
-        };
-
-        let tracked_files = match selected_files {
-            Some(files) if !files.is_empty() => {
-                for raw_file in &files {
-                    let _ = resolve_contained_reference(&self.project_root(), raw_file)?;
+            let resolved_scope_id = match scope_id_override.map(str::trim).filter(|s| !s.is_empty())
+            {
+                Some(s) => {
+                    validate_identifier("Scope", s)?;
+                    s.to_string()
                 }
-                let normalized = normalize_relative_path_list(files);
-                let expanded: Vec<String> = normalized
-                    .into_iter()
-                    .map(|f| {
-                        if component.relative_path != "."
-                            && !f.starts_with(&format!("{}/", component.relative_path))
-                        {
-                            let prefixed = format!("{}/{f}", component.relative_path);
-                            if component.files.contains(&prefixed)
-                                || self.project_root().join(&prefixed).is_file()
-                            {
-                                return prefixed;
-                            }
-                        }
-                        f
-                    })
-                    .collect();
-                normalize_relative_path_list(expanded)
-            }
-            _ => component.files.clone(),
-        };
+                None => {
+                    validate_identifier("Scope", &component.id)?;
+                    component.id.clone()
+                }
+            };
 
-        let scope_toml_path = self.scope_toml_path(&resolved_phase, &resolved_scope_id)?;
-        let scope_manifest = if scope_toml_path.is_file() {
-            let mut existing = self.read_scope(&resolved_phase, &resolved_scope_id)?;
-            existing.scope.target = component.relative_path.clone();
-            existing.scope.tech_stack = component.tech_stack.clone();
-            existing.scope.bound_component = Some(component.id.clone());
-            existing.scope.tracked_files = tracked_files;
-            if existing.scope.description.is_none() {
-                existing.scope.description = component.description.clone().or_else(|| {
-                    Some(format!(
-                        "Promoted from component '{}' ({})",
-                        component.name, component.relative_path
-                    ))
-                });
-            }
-            existing
-        } else {
-            ScopeManifest {
-                scope: ScopeMetadata {
-                    id: resolved_scope_id.clone(),
-                    target: component.relative_path.clone(),
-                    tech_stack: component.tech_stack.clone(),
-                    description: component.description.clone().or_else(|| {
+            let tracked_files = match selected_files {
+                Some(files) if !files.is_empty() => {
+                    for raw_file in &files {
+                        let _ = resolve_contained_reference(&self.project_root(), raw_file)?;
+                    }
+                    let normalized = normalize_relative_path_list(files);
+                    let expanded: Vec<String> = normalized
+                        .into_iter()
+                        .map(|f| {
+                            if component.relative_path != "."
+                                && !f.starts_with(&format!("{}/", component.relative_path))
+                            {
+                                let prefixed = format!("{}/{f}", component.relative_path);
+                                if component.files.contains(&prefixed)
+                                    || self.project_root().join(&prefixed).is_file()
+                                {
+                                    return prefixed;
+                                }
+                            }
+                            f
+                        })
+                        .collect();
+                    normalize_relative_path_list(expanded)
+                }
+                _ => component.files.clone(),
+            };
+
+            let scope_toml_path = self.scope_toml_path(&resolved_phase, &resolved_scope_id)?;
+            let scope_manifest = if scope_toml_path.is_file() {
+                let mut existing = self.read_scope(&resolved_phase, &resolved_scope_id)?;
+                existing.scope.target = component.relative_path.clone();
+                existing.scope.tech_stack = component.tech_stack.clone();
+                existing.scope.bound_component = Some(component.id.clone());
+                existing.scope.tracked_files = tracked_files;
+                if existing.scope.description.is_none() {
+                    existing.scope.description = component.description.clone().or_else(|| {
                         Some(format!(
                             "Promoted from component '{}' ({})",
                             component.name, component.relative_path
                         ))
-                    }),
-                    bound_component: Some(component.id.clone()),
-                    tracked_files,
+                    });
+                }
+                existing
+            } else {
+                ScopeManifest {
+                    scope: ScopeMetadata {
+                        id: resolved_scope_id.clone(),
+                        target: component.relative_path.clone(),
+                        tech_stack: component.tech_stack.clone(),
+                        description: component.description.clone().or_else(|| {
+                            Some(format!(
+                                "Promoted from component '{}' ({})",
+                                component.name, component.relative_path
+                            ))
+                        }),
+                        bound_component: Some(component.id.clone()),
+                        tracked_files,
+                    },
+                    items: ScopeItems::default(),
+                }
+            };
+
+            self.write_scope(&resolved_phase, &resolved_scope_id, &scope_manifest)?;
+            fs::create_dir_all(self.items_dir(&resolved_phase, &resolved_scope_id)?).map_err(
+                |source| TrackerError::Io {
+                    path: self.tracker_dir().to_path_buf(),
+                    source,
                 },
-                items: ScopeItems::default(),
+            )?;
+
+            if let Some(entry) = phase_manifest
+                .scopes
+                .manifest
+                .iter_mut()
+                .find(|s| s.id == resolved_scope_id)
+            {
+                entry.scope_type = component.component_type.clone();
+            } else {
+                phase_manifest.scopes.manifest.push(ScopeRegistryEntry {
+                    id: resolved_scope_id.clone(),
+                    scope_type: component.component_type.clone(),
+                    path: format!("domains/{resolved_scope_id}"),
+                });
             }
-        };
+            self.write_phase(&resolved_phase, &phase_manifest)?;
+            self.ensure_scope_across_phases(
+                &scope_manifest.scope,
+                Some(&component.component_type),
+            )?;
 
-        self.write_scope(&resolved_phase, &resolved_scope_id, &scope_manifest)?;
-        fs::create_dir_all(self.items_dir(&resolved_phase, &resolved_scope_id)?).map_err(
-            |source| TrackerError::Io {
-                path: self.tracker_dir().to_path_buf(),
-                source,
-            },
-        )?;
-
-        if let Some(entry) = phase_manifest
-            .scopes
-            .manifest
-            .iter_mut()
-            .find(|s| s.id == resolved_scope_id)
-        {
-            entry.scope_type = component.component_type.clone();
-        } else {
-            phase_manifest.scopes.manifest.push(ScopeRegistryEntry {
-                id: resolved_scope_id.clone(),
-                scope_type: component.component_type.clone(),
-                path: format!("domains/{resolved_scope_id}"),
-            });
-        }
-        self.write_phase(&resolved_phase, &phase_manifest)?;
-        self.ensure_scope_across_phases(&scope_manifest.scope, Some(&component.component_type))?;
-
-        Ok(scope_manifest)
+            Ok(scope_manifest)
+        })
     }
 
     /// Snapshots a component's current dependency versions, Git commit SHA, build script path,
@@ -759,17 +771,19 @@ impl TrackerStorage {
         build_flags: Vec<String>,
         verification: Option<VerificationRecord>,
     ) -> Result<ComponentManifest> {
-        let mut manifest = self.read_component_manifest(component_id)?;
-        let sha = commit_sha
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| self.git_head_short_sha());
-        let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_write_lock(|_| {
+            let mut manifest = self.read_component_manifest(component_id)?;
+            let sha = commit_sha
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| self.git_head_short_sha());
+            let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-        manifest.pin_current_release(sha, now, build_script_path, build_flags, verification);
-        self.write_component_manifest(&manifest)?;
-        Ok(manifest)
+            manifest.pin_current_release(sha, now, build_script_path, build_flags, verification);
+            self.write_component_manifest(&manifest)?;
+            Ok(manifest)
+        })
     }
 
     /// Records a [`RollingUpdateEntry`] on a component, updates the matching dependency's
@@ -779,25 +793,27 @@ impl TrackerStorage {
         component_id: &str,
         mut update: RollingUpdateEntry,
     ) -> Result<ComponentManifest> {
-        let mut manifest = self.read_component_manifest(component_id)?;
-        if update.recorded_at.is_none() {
-            update.recorded_at = Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
-        }
-        if let Some(dep) = manifest
-            .dependencies
-            .iter_mut()
-            .find(|d| d.name == update.dependency_name)
-        {
-            if update.previous_version.is_none() && !dep.current_version.is_empty() {
-                update.previous_version = Some(dep.current_version.clone());
+        self.with_write_lock(|_| {
+            let mut manifest = self.read_component_manifest(component_id)?;
+            if update.recorded_at.is_none() {
+                update.recorded_at = Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
             }
-            if !update.new_version.is_empty() {
-                dep.current_version = update.new_version.clone();
+            if let Some(dep) = manifest
+                .dependencies
+                .iter_mut()
+                .find(|d| d.name == update.dependency_name)
+            {
+                if update.previous_version.is_none() && !dep.current_version.is_empty() {
+                    update.previous_version = Some(dep.current_version.clone());
+                }
+                if !update.new_version.is_empty() {
+                    dep.current_version = update.new_version.clone();
+                }
             }
-        }
-        manifest.rolling_updates.push(update);
-        self.write_component_manifest(&manifest)?;
-        Ok(manifest)
+            manifest.rolling_updates.push(update);
+            self.write_component_manifest(&manifest)?;
+            Ok(manifest)
+        })
     }
 
     /// Records a [`VerificationRecord`] on the latest rolling update (and `pinned_release` if present)
@@ -807,45 +823,49 @@ impl TrackerStorage {
         component_id: &str,
         mut record: VerificationRecord,
     ) -> Result<ComponentManifest> {
-        let mut manifest = self.read_component_manifest(component_id)?;
-        if record.verified_at.is_none() {
-            record.verified_at = Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
-        }
-        if let Some(last_update) = manifest.rolling_updates.last_mut() {
-            last_update.status = if record.passed {
-                "passed".to_string()
-            } else {
-                "failed".to_string()
-            };
-            last_update.verification_run = Some(record.clone());
-        }
-        if let Some(pin) = &mut manifest.pinned_release {
-            if record.passed {
-                pin.last_verification_run = Some(record);
+        self.with_write_lock(|_| {
+            let mut manifest = self.read_component_manifest(component_id)?;
+            if record.verified_at.is_none() {
+                record.verified_at = Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
             }
-        }
-        self.write_component_manifest(&manifest)?;
-        Ok(manifest)
+            if let Some(last_update) = manifest.rolling_updates.last_mut() {
+                last_update.status = if record.passed {
+                    "passed".to_string()
+                } else {
+                    "failed".to_string()
+                };
+                last_update.verification_run = Some(record.clone());
+            }
+            if let Some(pin) = &mut manifest.pinned_release {
+                if record.passed {
+                    pin.last_verification_run = Some(record);
+                }
+            }
+            self.write_component_manifest(&manifest)?;
+            Ok(manifest)
+        })
     }
 
     /// Restores a component's dependency versions and build flags from its `pinned_release`
     /// (`last_known_good`), marks any pending/failed rolling updates as `"rolled_back"`, and
     /// persists `nebulous.component.toml` and `project.toml`.
     pub fn rollback_component_to_pinned(&self, component_id: &str) -> Result<ComponentManifest> {
-        let mut manifest = self.read_component_manifest(component_id)?;
-        if manifest.restore_from_pinned_release().is_none() {
-            return Err(TrackerError::ValidationError(format!(
-                "Component '{}' does not have a pinned_release configuration to roll back to",
-                manifest.id
-            )));
-        }
-        for update in &mut manifest.rolling_updates {
-            if update.status == "pending" || update.status == "failed" {
-                update.status = "rolled_back".to_string();
+        self.with_write_lock(|_| {
+            let mut manifest = self.read_component_manifest(component_id)?;
+            if manifest.restore_from_pinned_release().is_none() {
+                return Err(TrackerError::ValidationError(format!(
+                    "Component '{}' does not have a pinned_release configuration to roll back to",
+                    manifest.id
+                )));
             }
-        }
-        self.write_component_manifest(&manifest)?;
-        Ok(manifest)
+            for update in &mut manifest.rolling_updates {
+                if update.status == "pending" || update.status == "failed" {
+                    update.status = "rolled_back".to_string();
+                }
+            }
+            self.write_component_manifest(&manifest)?;
+            Ok(manifest)
+        })
     }
 }
 
