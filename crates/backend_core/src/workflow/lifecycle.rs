@@ -26,6 +26,13 @@ pub struct StartedWork {
     pub stopped_previous: Option<StoppedTimerSession>,
 }
 
+/// Result of a status update or item close, including any active timer session that was stopped.
+#[derive(Debug, Clone)]
+pub struct StatusChange {
+    pub detail: ItemDetail,
+    pub stopped_timer: Option<StoppedTimerSession>,
+}
+
 /// Parameters for creating a new tracked bug or feature via [`TrackerStorage::create_item`].
 #[derive(Debug, Clone)]
 pub struct CreateItemInput {
@@ -294,32 +301,39 @@ impl TrackerStorage {
     ///   is timing the item, this automatically stops the timer and adds the elapsed minutes to
     ///   `effort.logged_time_minutes` before writing the closed manifest.
     pub fn update_item_status(&self, item_id: &str, new_status: ItemStatus) -> Result<ItemDetail> {
+        self.update_item_status_reporting(item_id, new_status)
+            .map(|c| c.detail)
+    }
+
+    /// Updates an item's status like [`Self::update_item_status`] and also returns any timer
+    /// session stopped during the transition.
+    pub fn update_item_status_reporting(
+        &self,
+        item_id: &str,
+        new_status: ItemStatus,
+    ) -> Result<StatusChange> {
         self.with_write_lock(|_| {
             let normalized_id = item_id.trim().to_ascii_uppercase();
+            let mut stopped_timer = None;
             if new_status == ItemStatus::InProgress {
                 if let Some(active) = self.read_active_timer()? {
                     if active.item_id != normalized_id {
-                        let _ = self.stop_timer()?;
+                        stopped_timer = Some(self.stop_timer()?);
+                    }
+                }
+            }
+
+            if new_status.is_completed() {
+                if let Some(active) = self.read_active_timer()? {
+                    // Stop through stop_timer before loading the detail: the inline add skipped the session cap and the no-double-log key.
+                    if active.item_id == self.locate_item(&normalized_id)?.stub.id {
+                        stopped_timer = Some(self.stop_timer()?);
                     }
                 }
             }
 
             let (loc, mut detail) = self.load_item_detail_by_id(&normalized_id)?;
             let old_status = detail.manifest.item.status;
-
-            if new_status.is_completed() {
-                if let Some(active) = self.read_active_timer()? {
-                    if active.item_id == detail.manifest.item.id {
-                        let elapsed_minutes = active.elapsed_minutes_at(Utc::now())?;
-                        detail.manifest.effort.logged_time_minutes = detail
-                            .manifest
-                            .effort
-                            .logged_time_minutes
-                            .saturating_add(elapsed_minutes);
-                        self.clear_active_timer()?;
-                    }
-                }
-            }
 
             if old_status.is_completed() && !new_status.is_completed() {
                 detail.manifest.history.recurrence_count =
@@ -351,7 +365,10 @@ impl TrackerStorage {
                 let _ = self.switch_or_start_timer(&detail.manifest.item.id, None)?;
             }
 
-            Ok(detail)
+            Ok(StatusChange {
+                detail,
+                stopped_timer,
+            })
         })
     }
 
@@ -469,6 +486,19 @@ impl TrackerStorage {
         commit_override: Option<&str>,
         merged: bool,
     ) -> Result<ItemDetail> {
+        self.close_item_reporting(item_id, summary, commit_override, merged)
+            .map(|c| c.detail)
+    }
+
+    /// Closes (or merges when `merged == true`) an item like [`Self::close_item`] and also returns
+    /// any timer session stopped during the close.
+    pub fn close_item_reporting(
+        &self,
+        item_id: &str,
+        summary: impl Into<String>,
+        commit_override: Option<&str>,
+        merged: bool,
+    ) -> Result<StatusChange> {
         self.with_write_lock(|_| {
             let summary_trimmed = summary.into().trim().to_string();
             if summary_trimmed.is_empty() {
@@ -478,19 +508,14 @@ impl TrackerStorage {
             }
 
             let normalized_id = item_id.trim().to_ascii_uppercase();
-            let (loc, mut detail) = self.load_item_detail_by_id(&normalized_id)?;
-
+            let mut stopped_timer = None;
             if let Some(active) = self.read_active_timer()? {
-                if active.item_id == detail.manifest.item.id {
-                    let elapsed_minutes = active.elapsed_minutes_at(Utc::now())?;
-                    detail.manifest.effort.logged_time_minutes = detail
-                        .manifest
-                        .effort
-                        .logged_time_minutes
-                        .saturating_add(elapsed_minutes);
-                    self.clear_active_timer()?;
+                if active.item_id == self.locate_item(&normalized_id)?.stub.id {
+                    stopped_timer = Some(self.stop_timer()?);
                 }
             }
+
+            let (loc, mut detail) = self.load_item_detail_by_id(&normalized_id)?;
 
             let commit = commit_override
                 .map(str::trim)
@@ -520,7 +545,10 @@ impl TrackerStorage {
             )?;
             self.sync_parent_indexes_for_item(&loc.phase_id, &loc.scope_id, &detail.manifest)?;
 
-            Ok(detail)
+            Ok(StatusChange {
+                detail,
+                stopped_timer,
+            })
         })
     }
 

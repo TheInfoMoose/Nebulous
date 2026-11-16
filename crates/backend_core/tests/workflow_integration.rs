@@ -2693,3 +2693,52 @@ fn stagnant_and_recurring_are_stage_scoped() {
     assert!(stagnant_ids.contains(&prod_bug.stub.id.as_str()));
     assert!(!stagnant_ids.contains(&post_bug.stub.id.as_str()));
 }
+
+#[test]
+fn close_applies_session_cap() {
+    let (_dir, storage) = init_temp_tracker();
+    storage
+        .create_bug("Close session cap test", None, None, Severity::Medium, None)
+        .unwrap();
+
+    storage
+        .start_timer_at(
+            "BUG-0001",
+            Utc::now() - chrono::Duration::minutes(600),
+            None,
+        )
+        .unwrap();
+
+    let closed = storage
+        .close_item_reporting("BUG-0001", "fixed", None, false)
+        .unwrap();
+    assert!(closed.stopped_timer.unwrap().capped_from.is_some());
+    assert_eq!(closed.detail.manifest.effort.logged_time_minutes, 480);
+    assert!(!storage.timer_toml_path().exists());
+}
+
+#[test]
+fn status_switch_reports_stopped_timer() {
+    let (_dir, storage) = init_temp_tracker();
+    storage
+        .create_bug("First bug", None, None, Severity::Medium, None)
+        .unwrap();
+    storage
+        .create_bug("Second bug", None, None, Severity::Medium, None)
+        .unwrap();
+
+    storage
+        .start_timer_at(
+            "BUG-0001",
+            Utc::now() - chrono::Duration::minutes(600),
+            None,
+        )
+        .unwrap();
+
+    let changed = storage
+        .update_item_status_reporting("BUG-0002", ItemStatus::InProgress)
+        .unwrap();
+    let stopped = changed.stopped_timer.unwrap();
+    assert_eq!(stopped.timer.item_id, "BUG-0001");
+    assert!(stopped.capped_from.is_some());
+}
