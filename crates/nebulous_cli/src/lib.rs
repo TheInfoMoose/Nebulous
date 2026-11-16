@@ -12,7 +12,7 @@ pub use tui::{render_to_buffer, render_to_string, TuiApp};
 
 #[cfg(test)]
 mod tests {
-    use backend_core::{ItemStatus, ItemType, Severity};
+    use backend_core::{ItemStatus, ItemType, Severity, TrackerError};
     use clap::{CommandFactory, Parser};
 
     use super::*;
@@ -320,6 +320,15 @@ mod tests {
                 dry_run: true,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn execute_to_string_mcp_is_error() {
+        let cli = Cli::try_parse_from(["neb", "mcp"]).unwrap();
+        assert!(matches!(
+            execute_to_string(&cli),
+            Err(TrackerError::ValidationError(_))
         ));
     }
 }

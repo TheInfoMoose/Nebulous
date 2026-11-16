@@ -319,7 +319,10 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_git(&storage, action, cli.json)
         }
-        Some(Commands::Mcp) => unreachable!("neb mcp is dispatched at the top of execute()"),
+        // execute_to_string is pub and re-exported, so a library caller must get an error, not a panic.
+        Some(Commands::Mcp) => Err(TrackerError::ValidationError(
+            "neb mcp runs a stdio server; call execute(), not execute_to_string()".to_string(),
+        )),
     }
 }
 
