@@ -127,11 +127,6 @@ impl TrackerStorage {
     pub fn export_file_refs(&self, item_id: &str) -> Result<String> {
         Ok(self.export_agent_context(item_id)?.file_refs)
     }
-
-    /// Returns the synthesized Bounded Agent Prompt for `item_id`.
-    pub fn export_bounded_prompt(&self, item_id: &str) -> Result<String> {
-        Ok(self.export_agent_context(item_id)?.bounded_prompt)
-    }
 }
 
 /// Synthesizes a self-contained Bounded Agent Prompt from `scope.toml`, `item.toml`, and `desc.md`.

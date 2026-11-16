@@ -135,11 +135,6 @@ impl DocumentedCommitInput {
         self
     }
 
-    pub fn with_include_workspace(mut self, include_workspace: bool) -> Self {
-        self.tracker_only = !include_workspace;
-        self
-    }
-
     /// Sets explicit workspace paths to stage; a non-empty list switches off `tracker_only`.
     pub fn with_paths<I, S>(mut self, paths: I) -> Self
     where
@@ -199,12 +194,6 @@ impl DocumentedCommitOutcome {
         &self.commit_sha
     }
 }
-
-/// Type alias for [`DocumentedCommitOutcome`].
-pub type DocumentedCommitReport = DocumentedCommitOutcome;
-
-/// Type alias for [`DocumentedCommitOutcome`].
-pub type DocumentedCommitResult = DocumentedCommitOutcome;
 
 /// Caller-supplied Git credential selection for fetch/pull/push/sync.
 ///
@@ -1064,28 +1053,6 @@ pub fn git_credential(
     ))
 }
 
-/// Fetches `branch` from `remote_name` without modifying the working tree or `HEAD`,
-/// updating `refs/remotes/<remote_name>/<branch>` so `ahead_count` and `behind_count` are current.
-pub fn fetch_repo(
-    repo_path: impl AsRef<Path>,
-    remote_name: &str,
-    branch: &str,
-    pat: Option<&str>,
-) -> Result<GitRepoStatus> {
-    let auth = GitAuthMaterial {
-        pat: pat
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string),
-        ssh_keypair: None,
-        ssh_key_file: discover_local_ssh_key_files(),
-        ssh_auth_sock: std::env::var("SSH_AUTH_SOCK")
-            .ok()
-            .filter(|s| !s.trim().is_empty()),
-    };
-    fetch_repo_with_auth(repo_path, remote_name, branch, auth)
-}
-
 /// Fetches `branch` from `remote_name` using [`GitAuthMaterial`] without modifying the working tree.
 pub fn fetch_repo_with_auth(
     repo_path: impl AsRef<Path>,
@@ -1135,27 +1102,6 @@ pub fn fetch_repo_with_auth(
     repo_status_with_hints(path, Some(remote_name), Some(&effective_branch))
 }
 
-/// Pushes `branch` to `remote_name` using optional HTTPS PAT authentication.
-pub fn push_repo(
-    repo_path: impl AsRef<Path>,
-    remote_name: &str,
-    branch: &str,
-    pat: Option<&str>,
-) -> Result<()> {
-    let auth = GitAuthMaterial {
-        pat: pat
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string),
-        ssh_keypair: None,
-        ssh_key_file: discover_local_ssh_key_files(),
-        ssh_auth_sock: std::env::var("SSH_AUTH_SOCK")
-            .ok()
-            .filter(|s| !s.trim().is_empty()),
-    };
-    push_repo_with_auth(repo_path, remote_name, branch, auth)
-}
-
 /// Pushes HEAD's branch to `remote_name` using [`GitAuthMaterial`] (HTTPS PAT or SSH credentials).
 ///
 /// Errors (without pushing) when HEAD is detached or not on the configured `branch`.
@@ -1188,31 +1134,6 @@ pub fn push_repo_with_auth(
     }
 
     Ok(())
-}
-
-/// Fetches and merges (fast-forward or clean merge) `branch` from `remote_name` using optional
-/// HTTPS PAT authentication.
-///
-/// Returns `Ok(true)` if new commits were integrated into the local branch, or `Ok(false)` if
-/// already up to date.
-pub fn pull_repo(
-    repo_path: impl AsRef<Path>,
-    remote_name: &str,
-    branch: &str,
-    pat: Option<&str>,
-) -> Result<bool> {
-    let auth = GitAuthMaterial {
-        pat: pat
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string),
-        ssh_keypair: None,
-        ssh_key_file: discover_local_ssh_key_files(),
-        ssh_auth_sock: std::env::var("SSH_AUTH_SOCK")
-            .ok()
-            .filter(|s| !s.trim().is_empty()),
-    };
-    pull_repo_with_auth(repo_path, remote_name, branch, auth)
 }
 
 /// Fetches and merges (fast-forward or clean merge with automatic `.tracker/` derived index

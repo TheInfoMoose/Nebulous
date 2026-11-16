@@ -319,11 +319,7 @@ pub fn execute_to_string(cli: &Cli) -> Result<String> {
             let storage = resolve_storage(cli.root.as_deref())?;
             handle_git(&storage, action, cli.json)
         }
-        Some(Commands::Mcp) => {
-            let mut server = McpServer::discover(cli.root.as_deref());
-            server.serve_stdio()?;
-            Ok(String::new())
-        }
+        Some(Commands::Mcp) => unreachable!("neb mcp is dispatched at the top of execute()"),
     }
 }
 
