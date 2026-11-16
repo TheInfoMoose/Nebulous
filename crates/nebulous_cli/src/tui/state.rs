@@ -95,6 +95,7 @@ pub struct CreateModalState {
     pub description: String,
     pub focused_field: CreateField,
     pub required_lock_field: Option<CreateField>,
+    pub confirm_new_scope: Option<String>,
 }
 
 /// Focused field inside the `Done / Close` modal.
@@ -514,6 +515,7 @@ impl TuiApp {
             description: String::new(),
             focused_field: CreateField::Title,
             required_lock_field: None,
+            confirm_new_scope: None,
         }));
     }
 
@@ -632,6 +634,14 @@ impl TuiApp {
                     }
                 }
                 if scope_id != "inbox" && self.storage.read_scope(&stage_id, &scope_id).is_err() {
+                    if create.confirm_new_scope.as_deref() != Some(scope_id.as_str()) {
+                        create.confirm_new_scope = Some(scope_id.clone());
+                        self.modal = Some(ActiveModal::Create(create));
+                        self.status_message = Some(format!(
+                            "Scope '{scope_id}' doesn't exist in {stage_id}. Press Enter again to create it, or edit the scope."
+                        ));
+                        return Ok(());
+                    }
                     let _ = self.storage.create_scope(
                         Some(&stage_id),
                         &scope_id,
@@ -932,6 +942,7 @@ impl TuiApp {
                             idx - 1
                         };
                         create.scope = self.available_scopes[prev].clone();
+                        create.confirm_new_scope = None;
                         if create.required_lock_field == Some(CreateField::Scope)
                             && !create.scope.trim().is_empty()
                         {
@@ -969,6 +980,7 @@ impl TuiApp {
                             .unwrap_or(0);
                         let next = (idx + 1) % self.available_scopes.len();
                         create.scope = self.available_scopes[next].clone();
+                        create.confirm_new_scope = None;
                         if create.required_lock_field == Some(CreateField::Scope)
                             && !create.scope.trim().is_empty()
                         {
@@ -983,6 +995,7 @@ impl TuiApp {
                     }
                     CreateField::Scope => {
                         create.scope.pop();
+                        create.confirm_new_scope = None;
                     }
                     CreateField::Stage => {
                         create.stage.pop();
@@ -1003,6 +1016,7 @@ impl TuiApp {
                     }
                     CreateField::Scope => {
                         create.scope.push(ch);
+                        create.confirm_new_scope = None;
                         if create.required_lock_field == Some(CreateField::Scope)
                             && !create.scope.trim().is_empty()
                         {

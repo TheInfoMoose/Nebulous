@@ -2362,6 +2362,7 @@ fn test_tui_amber_on_black_palette_nebula_header_and_responsive_scaling_locks() 
     let min_locked_modal = render_to_string(&mut app, MIN_TERM_WIDTH, MIN_TERM_HEIGHT);
     assert!(min_locked_modal.contains("[5] Description"));
     app.press_key(KeyCode::Enter).unwrap();
+    app.press_key(KeyCode::Enter).unwrap();
     assert!(
         app.modal.is_none(),
         "Submitting Create modal with a new custom scope name should auto-create scope and succeed"
@@ -2700,4 +2701,35 @@ fn filter_typing_does_not_reload_disk() {
     app.press_key(KeyCode::Esc).unwrap();
     app.press_char('r').unwrap();
     assert!(app.items.iter().any(|i| i.id == "BUG-0002"));
+}
+
+#[test]
+fn unknown_scope_needs_second_enter() {
+    use crossterm::event::KeyCode;
+    use nebulous_cli::tui::{ActiveModal, TuiApp};
+
+    let temp = TempDir::new().expect("should create temp dir for unknown scope test");
+    let storage = TrackerStorage::init_standard(temp.path(), "TuiUnknownScopeTest").unwrap();
+    let mut app = TuiApp::new(storage.clone(), None).unwrap();
+    let stage = app.active_stage.clone();
+
+    app.press_char('b').unwrap();
+    if let Some(ActiveModal::Create(ref mut c)) = app.modal {
+        c.title = "x".to_string();
+        c.scope = "newscope".to_string();
+    } else {
+        panic!("expected Create modal to be open");
+    }
+
+    app.press_key(KeyCode::Enter).unwrap();
+    assert!(app.modal.is_some());
+    assert!(storage.read_scope(&stage, "newscope").is_err());
+
+    app.press_key(KeyCode::Enter).unwrap();
+    assert!(app.modal.is_none());
+    assert!(storage.read_scope(&stage, "newscope").is_ok());
+    assert!(app
+        .items
+        .iter()
+        .any(|i| i.id == "BUG-0001" && i.scope_id == "newscope"));
 }
