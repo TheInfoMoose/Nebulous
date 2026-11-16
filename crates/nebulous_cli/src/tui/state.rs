@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use backend_core::{
     resolve_phase_alias, CreateItemInput, IngestionOptions, ItemDetail, ItemLocation, ItemStatus,
-    ItemType, Result, Severity, TimerStatus, TrackerStorage, WhatsNextReport, CANONICAL_PHASES,
+    ItemType, Result, Severity, TimerStatus, TrackerIndex, TrackerStorage, WhatsNextReport,
+    CANONICAL_PHASES,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::{ListState, TableState};
@@ -208,6 +209,7 @@ pub fn input_scroll_window(text: &str, max_visible_chars: usize) -> (String, usi
 /// Stateful controller for the retro Amber-on-Black Nebulous TUI.
 pub struct TuiApp {
     pub storage: TrackerStorage,
+    pub index: TrackerIndex,
     pub cwd: Option<PathBuf>,
     pub project_name: String,
     pub active_stage: String,
@@ -235,6 +237,7 @@ pub struct TuiApp {
 impl TuiApp {
     /// Initializes a new [`TuiApp`] from [`TrackerStorage`] and loads the current index and recommendations.
     pub fn new(storage: TrackerStorage, cwd: Option<PathBuf>) -> Result<Self> {
+        let index = storage.load_index()?;
         let whats_next = storage.compute_whats_next(cwd.as_deref())?;
         let active_timer = whats_next.active_timer.clone();
         let active_stage = whats_next.active_phase.clone();
@@ -247,6 +250,7 @@ impl TuiApp {
 
         let mut app = Self {
             storage,
+            index,
             cwd,
             project_name: "Nebulous".to_string(),
             active_stage,
@@ -281,17 +285,25 @@ impl TuiApp {
         self.whats_next = self.storage.compute_whats_next(self.cwd.as_deref())?;
         self.active_timer = self.whats_next.active_timer.clone();
         self.inferred_scope = self.whats_next.inferred_scope.clone();
+        self.index = index;
+        self.rebuild_view();
+        Ok(())
+    }
 
-        let resolved_active = resolve_phase_alias(&index.project.project.active_phase).to_string();
+    fn rebuild_view(&mut self) {
+        let resolved_active =
+            resolve_phase_alias(&self.index.project.project.active_phase).to_string();
         if self.active_stage.trim().is_empty() {
             self.active_stage = resolved_active;
         }
 
-        let phase_idx = index
+        let phase_idx = self
+            .index
             .phase(&self.active_stage)
-            .or_else(|| index.phase(resolve_phase_alias(&self.active_stage)))
-            .or_else(|| index.active_phase())
-            .or_else(|| index.phases.first());
+            .or_else(|| self.index.phase(resolve_phase_alias(&self.active_stage)))
+            .or_else(|| self.index.active_phase())
+            .or_else(|| self.index.phases.first())
+            .cloned();
 
         let prev_selected_scope = self
             .scopes
@@ -302,7 +314,7 @@ impl TuiApp {
         self.scopes.clear();
         self.available_scopes.clear();
 
-        if let Some(phase) = phase_idx {
+        if let Some(ref phase) = phase_idx {
             self.active_stage = phase.phase_id.clone();
             let mut stage_total = 0usize;
             let mut stage_open = 0usize;
@@ -374,7 +386,7 @@ impl TuiApp {
         let query_lower = self.filter_query.trim().to_ascii_lowercase();
 
         self.items.clear();
-        if let Some(phase) = phase_idx {
+        if let Some(ref phase) = phase_idx {
             for sc in &phase.scopes {
                 if let Some(filter_sc) = selected_scope_filter {
                     if sc.scope_id != filter_sc {
@@ -447,8 +459,6 @@ impl TuiApp {
             self.item_table_state.select(Some(self.selected_item_idx));
             self.load_selected_item_detail();
         }
-
-        Ok(())
     }
 
     fn load_selected_item_detail(&mut self) {
@@ -813,6 +823,10 @@ impl TuiApp {
             KeyCode::Char('n') => {
                 self.action_jump_whats_next()?;
             }
+            KeyCode::Char('r') => {
+                self.refresh()?;
+                self.status_message = Some("Reloaded.".to_string());
+            }
             KeyCode::Char('/') => {
                 self.filter_editing = true;
             }
@@ -844,20 +858,20 @@ impl TuiApp {
         match key.code {
             KeyCode::Enter => {
                 self.filter_editing = false;
-                self.refresh()?;
+                self.rebuild_view();
             }
             KeyCode::Esc => {
                 self.filter_editing = false;
                 self.filter_query.clear();
-                self.refresh()?;
+                self.rebuild_view();
             }
             KeyCode::Backspace => {
                 self.filter_query.pop();
-                self.refresh()?;
+                self.rebuild_view();
             }
             KeyCode::Char(ch) => {
                 self.filter_query.push(ch);
-                self.refresh()?;
+                self.rebuild_view();
             }
             _ => {}
         }

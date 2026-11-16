@@ -2673,3 +2673,31 @@ fn start_dry_run_changes_nothing() {
     let show_json = run_neb_json(&["--root", root_str, "show", "BUG-0001"], None);
     assert_eq!(show_json["item"]["status"], "open");
 }
+
+#[test]
+fn filter_typing_does_not_reload_disk() {
+    use crossterm::event::KeyCode;
+    use nebulous_cli::tui::TuiApp;
+
+    let temp = TempDir::new().expect("should create temp dir for filter test");
+    let storage = TrackerStorage::init_standard(temp.path(), "TuiFilterTest").unwrap();
+    storage
+        .create_bug("First bug", None, None, Severity::Medium, None)
+        .unwrap();
+
+    let mut app = TuiApp::new(storage.clone(), None).unwrap();
+    assert!(app.items.iter().any(|i| i.id == "BUG-0001"));
+
+    storage
+        .create_bug("Second bug", None, None, Severity::Medium, None)
+        .unwrap();
+
+    app.press_char('/').unwrap();
+    app.press_char('B').unwrap();
+    assert!(app.items.iter().any(|i| i.id == "BUG-0001"));
+    assert!(!app.items.iter().any(|i| i.id == "BUG-0002"));
+
+    app.press_key(KeyCode::Esc).unwrap();
+    app.press_char('r').unwrap();
+    assert!(app.items.iter().any(|i| i.id == "BUG-0002"));
+}
