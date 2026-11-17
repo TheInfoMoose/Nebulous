@@ -911,6 +911,8 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
         let mut cfg = repo.config().unwrap();
         cfg.set_str("user.name", "Test Developer").unwrap();
         cfg.set_str("user.email", "dev@nebulous.local").unwrap();
+        // Windows runners set core.autocrlf=true globally; the test compares checked-out bytes.
+        cfg.set_str("core.autocrlf", "false").unwrap();
     }
 
     let bare_dir = TempDir::new().unwrap();
@@ -957,6 +959,7 @@ fn test_git_fetch_ahead_behind_and_workspace_dirty_tracking() {
         let mut cfg = cloned_repo.config().unwrap();
         cfg.set_str("user.name", "Remote Developer").unwrap();
         cfg.set_str("user.email", "remote@nebulous.local").unwrap();
+        cfg.set_str("core.autocrlf", "false").unwrap();
         let head_commit = cloned_repo.head().unwrap().peel_to_commit().unwrap();
         let _ = cloned_repo.branch(&current_branch, &head_commit, true);
         cloned_repo
