@@ -607,8 +607,54 @@ fn load_or_create_vault_master_key(key_path: &Path) -> Result<Zeroizing<[u8; AES
     })
 }
 
-/// Creates `dir` and sets `0700` on Unix; on Windows, relies on inherited directory ACLs.
+/// Removes inherited ACEs on `path` and grants full control only to the current Windows user.
+///
+/// Windows does not honour Unix permission modes; without this, vault files and directories carry
+/// whatever ACLs their directory has, including a `NEBULOUS_CONFIG_DIR` outside the profile.
+#[cfg(windows)]
+fn restrict_to_current_user(path: &Path, is_dir: bool) -> Result<()> {
+    let user = std::env::var("USERNAME").map_err(|_| {
+        TrackerError::KeyringError(format!(
+            "USERNAME is not set; cannot restrict ACL on {}",
+            path.display()
+        ))
+    })?;
+    let principal = match std::env::var("USERDOMAIN") {
+        Ok(domain) if !domain.trim().is_empty() => {
+            let domain = domain.trim();
+            format!("{domain}\\{user}")
+        }
+        _ => user,
+    };
+    let grant = if is_dir {
+        format!("{principal}:(OI)(CI)F")
+    } else {
+        format!("{principal}:F")
+    };
+    let output = std::process::Command::new("icacls")
+        .arg(path)
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .arg(&grant)
+        .output()
+        .map_err(|source| TrackerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(TrackerError::KeyringError(format!(
+            "icacls failed on {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Creates `dir` and sets `0700` on Unix; on Windows, inherited ACEs are removed and full control
+/// is granted to the current user only (only when newly created).
 pub(crate) fn ensure_secure_dir(dir: &Path) -> Result<()> {
+    let existed = dir.is_dir();
     fs::create_dir_all(dir).map_err(|source| TrackerError::Io {
         path: dir.to_path_buf(),
         source,
@@ -619,13 +665,17 @@ pub(crate) fn ensure_secure_dir(dir: &Path) -> Result<()> {
         let perms = fs::Permissions::from_mode(0o700);
         let _ = fs::set_permissions(dir, perms);
     }
+    #[cfg(windows)]
+    if !existed {
+        let _ = restrict_to_current_user(dir, true);
+    }
+    #[cfg(not(windows))]
+    let _ = existed;
     Ok(())
 }
 
-/// On Unix, sets file permissions to `0600`. On Windows, this does nothing and the file is
-/// protected only by the ACLs it inherits from its directory: under the default
-/// `%APPDATA%\nebulous`, those allow only the user, SYSTEM and Administrators; a
-/// `NEBULOUS_CONFIG_DIR` outside the user profile gets that directory's ACLs instead.
+/// On Unix, sets file permissions to `0600`. On Windows, inherited ACEs are removed and full
+/// control is granted to the current user only.
 pub(crate) fn set_secure_file_permissions(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -636,7 +686,11 @@ pub(crate) fn set_secure_file_permissions(path: &Path) -> Result<()> {
             source,
         })?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        restrict_to_current_user(path, false)?;
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
     }
@@ -676,5 +730,30 @@ mod tests {
         assert_eq!(storage.get_secret_string("testuser").unwrap(), "s3cret");
         assert!(dir.path().join("vault.lock").is_file());
         handle.join().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_vault_file_acl_is_user_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("vault.enc");
+        fs::write(&file, b"secret").unwrap();
+        set_secure_file_permissions(&file).unwrap();
+
+        let output = std::process::Command::new("icacls")
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let user = std::env::var("USERNAME").unwrap();
+        assert!(
+            stdout.contains(&user),
+            "expected icacls output to contain USERNAME ({user}), got: {stdout}"
+        );
+        assert!(
+            !stdout.contains("(I)"),
+            "expected icacls output to have no inherited ACE marker (I), got: {stdout}"
+        );
     }
 }
