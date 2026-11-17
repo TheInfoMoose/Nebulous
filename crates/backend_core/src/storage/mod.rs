@@ -1797,12 +1797,11 @@ mod lock_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     #[test]
-    #[cfg(unix)]
     fn lexical_candidate_strips_tracker_and_project_toml() {
         assert_eq!(
             lexical_project_root_candidate(Path::new("/srv/x/.tracker/project.toml")),
