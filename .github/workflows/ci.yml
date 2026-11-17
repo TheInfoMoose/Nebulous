@@ -59,7 +59,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run unit and integration tests (cargo test)
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
       - name: Verify CLI/TUI binary (nebulous_cli --help)
         run: cargo run -p nebulous_cli -- --help
