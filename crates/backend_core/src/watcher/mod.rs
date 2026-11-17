@@ -321,12 +321,17 @@ fn is_derived_index_file(path: &Path) -> bool {
     )
 }
 
+/// Resolves `path` to its canonical path when possible because FSEvents reports real paths (`/private/var/...`) while the tracker path may be given through a symlink (`/var/...`).
+fn canonical_or_self(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// Hashes all derived index files (`project.toml`, `phase.toml`, `scope.toml`) under `dir`.
 ///
 /// Not a security hash; only detects our own writes.
 fn hash_index_files(dir: &Path) -> HashMap<PathBuf, u64> {
     let mut hashes = HashMap::new();
-    let mut stack = vec![dir.to_path_buf()];
+    let mut stack = vec![canonical_or_self(dir)];
     while let Some(current) = stack.pop() {
         let Ok(entries) = fs::read_dir(&current) else {
             continue;
@@ -359,9 +364,42 @@ fn is_own_index_echo(paths: &[PathBuf], own_index_hashes: &HashMap<PathBuf, u64>
     !paths.is_empty()
         && paths.iter().all(|p| {
             is_derived_index_file(p)
-                && match (own_index_hashes.get(p), hash_file_bytes(p)) {
+                && match (
+                    own_index_hashes.get(&canonical_or_self(p)),
+                    hash_file_bytes(p),
+                ) {
                     (Some(&expected), Some(actual)) => actual == expected,
                     _ => false,
                 }
         })
+}
+
+#[cfg(all(test, unix))]
+mod echo_path_tests {
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    use std::path::PathBuf;
+
+    use tempfile::TempDir;
+
+    use super::{hash_index_files, is_own_index_echo};
+
+    #[test]
+    fn own_index_echo_matches_through_symlinked_path() {
+        let tmp = TempDir::new().expect("tempdir");
+        let real: PathBuf = tmp.path().join("real");
+        let link: PathBuf = tmp.path().join("link");
+        fs::create_dir_all(&real).expect("create real dir");
+        fs::write(real.join("scope.toml"), "a").expect("write scope.toml");
+        symlink(&real, &link).expect("create symlink");
+
+        let hashes = hash_index_files(&real);
+        assert!(is_own_index_echo(&[link.join("scope.toml")], &hashes));
+
+        let hashes = hash_index_files(&link);
+        assert!(is_own_index_echo(&[real.join("scope.toml")], &hashes));
+
+        fs::write(real.join("scope.toml"), "b").expect("overwrite scope.toml");
+        assert!(!is_own_index_echo(&[link.join("scope.toml")], &hashes));
+    }
 }
