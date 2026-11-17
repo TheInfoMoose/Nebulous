@@ -85,7 +85,9 @@ A CLI-first terminal and agent interface built with `clap`, `ratatui`, and `cros
 ```text
 <os_config_dir>/nebulous/                             # ~/.config/nebulous (Linux) | ~/Library/Application Support/nebulous (macOS) | %APPDATA%\nebulous (Windows)
 ├── projects.toml                                     # Global Multi-Project Registry
-└── vault.enc                                         # AES-256-GCM encrypted credential vault fallback (0600 on Unix; user-only ACL on Windows)
+├── vault.enc                                         # AES-256-GCM encrypted credential vault fallback (0600 on Unix; user-only ACL on Windows)
+├── vault.key                                         # Vault master-key seed, base64 (0600 on Unix; user-only ACL on Windows; not used when NEBULOUS_VAULT_MASTER_KEY is set)
+└── vault.lock                                        # Advisory lock held during vault read-modify-write and vault.key creation
 
 <workspace_root>/
 ├── nebulous.component.toml                           # Optional root or per-subdirectory component & pin manifest
