@@ -1514,7 +1514,7 @@ fn normalize_comparable_path_str(path: &Path) -> String {
     s
 }
 
-fn resolve_project_root_candidate(path: &Path) -> PathBuf {
+fn lexical_project_root_candidate(path: &Path) -> PathBuf {
     if path.as_os_str().is_empty() {
         return PathBuf::new();
     }
@@ -1537,6 +1537,14 @@ fn resolve_project_root_candidate(path: &Path) -> PathBuf {
             norm = parent.to_path_buf();
         }
     }
+    norm
+}
+
+fn resolve_project_root_candidate(path: &Path) -> PathBuf {
+    let norm = lexical_project_root_candidate(path);
+    if norm.as_os_str().is_empty() {
+        return norm;
+    }
 
     if norm.exists() {
         if let Ok(mut canon) = fs::canonicalize(&norm) {
@@ -1554,7 +1562,8 @@ fn resolve_project_root_candidate(path: &Path) -> PathBuf {
 /// Returns `true` if `path` (or its parent when `path` is `.tracker`) resolves to an unsafe broad
 /// directory such as a filesystem root (`/`, `C:\`), the user's home directory (`$HOME` /
 /// `%USERPROFILE%`), a top-level system tree (`/usr`, `/etc`, `/var`, `/proc`, `/sys`, `/dev`,
-/// `/home`), or the top-level temporary directory (`/tmp`) itself.
+/// `/home`; matched both as given and as resolved), or the top-level temporary directory (`/tmp`)
+/// itself.
 pub fn is_unsafe_broad_directory(path: &Path) -> bool {
     let resolved = resolve_project_root_candidate(path);
     if resolved.as_os_str().is_empty() || resolved.parent().is_none() {
@@ -1570,6 +1579,12 @@ pub fn is_unsafe_broad_directory(path: &Path) -> bool {
     }
 
     if UNSAFE_SYSTEM_DIRS.contains(&s.as_str()) {
+        return true;
+    }
+    // macOS resolves some listed dirs (e.g. /home -> autofs) to paths outside the list;
+    // checking the path as given rejects them wherever they point.
+    let lexical_s = normalize_comparable_path_str(&lexical_project_root_candidate(path));
+    if UNSAFE_SYSTEM_DIRS.contains(&lexical_s.as_str()) {
         return true;
     }
     if s.starts_with("/proc/") || s.starts_with("/sys/") || s.starts_with("/dev/") {
@@ -1779,5 +1794,23 @@ mod lock_tests {
                 Ok(())
             })
             .expect("write inside lock updates cache");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn lexical_candidate_strips_tracker_and_project_toml() {
+        assert_eq!(
+            lexical_project_root_candidate(Path::new("/srv/x/.tracker/project.toml")),
+            PathBuf::from("/srv/x")
+        );
+        assert_eq!(
+            lexical_project_root_candidate(Path::new("/home/../home")),
+            PathBuf::from("/home")
+        );
     }
 }
