@@ -4,6 +4,7 @@ pub mod phase;
 pub mod project;
 pub mod registry;
 pub mod scope;
+pub mod time;
 pub mod timer;
 
 pub use component::{
