@@ -10,7 +10,11 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # Vulnerabilities always fail. Unmaintained crates fail when reachable from the workspace.
 unmaintained = "workspace"
 yanked = "deny"
-ignore = []
+ignore = [
+    # TEMPORARY exception to the zero-advisories constraint, approved by the user 2026-11-17: chrono is unmaintained
+    # and no fixed version exists. Remove this entry in Phase 20 (chrono -> jiff migration).
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no fixed version; temporary until the Phase 20 chrono -> jiff migration (user-approved 2026-11-17)" },
+]
 
 [bans]
 multiple-versions = "warn"
