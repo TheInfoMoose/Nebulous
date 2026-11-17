@@ -561,7 +561,7 @@ fn load_registry_unlocked(path: &Path) -> Result<GlobalProjectRegistry> {
     let mut registry: GlobalProjectRegistry =
         toml::from_str(&raw).map_err(|source| TrackerError::TomlDeserialize {
             path: Some(path.to_path_buf()),
-            source,
+            source: Box::new(source),
         })?;
     if registry.prune_unsafe_projects() {
         let _ = save_registry_unlocked(path, &registry);

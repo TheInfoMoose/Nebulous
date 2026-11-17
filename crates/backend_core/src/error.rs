@@ -20,8 +20,9 @@ pub enum TrackerError {
     #[error("TOML deserialization error{}: {source}", path.as_ref().map(|p| format!(" in '{}'", p.display())).unwrap_or_default())]
     TomlDeserialize {
         path: Option<PathBuf>,
+        // Boxed so TrackerError stays under clippy's 128-byte large-error limit on Windows (where PathBuf is larger).
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
 
     #[error("TOML serialization error: {0}")]
@@ -97,7 +98,10 @@ pub enum TrackerError {
 
 impl From<toml::de::Error> for TrackerError {
     fn from(source: toml::de::Error) -> Self {
-        Self::TomlDeserialize { path: None, source }
+        Self::TomlDeserialize {
+            path: None,
+            source: Box::new(source),
+        }
     }
 }
 
@@ -116,5 +120,20 @@ impl From<keyring::Error> for TrackerError {
 impl From<notify::Error> for TrackerError {
     fn from(source: notify::Error) -> Self {
         Self::WatcherError(source.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toml_deserialize_error_keeps_message() {
+        let err: TrackerError = toml::from_str::<toml::Value>("a = [").unwrap_err().into();
+        assert!(matches!(
+            err,
+            TrackerError::TomlDeserialize { path: None, .. }
+        ));
+        assert!(err.to_string().starts_with("TOML deserialization error: "));
     }
 }
