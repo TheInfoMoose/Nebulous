@@ -3,6 +3,7 @@ name = "backend_core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Core 4-tier TOML/Markdown persistence, workflow, and analytics engine for Nebulous"
 
 [dependencies]
