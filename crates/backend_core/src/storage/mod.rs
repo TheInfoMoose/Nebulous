@@ -1471,12 +1471,17 @@ const UNSAFE_SYSTEM_DIRS: &[&str] = &[
     "/tmp",
     "/usr",
     "/var",
+    // macOS top-level trees and canonicalized /private symlink targets (/etc, /var, /tmp, /var/tmp)
+    "/Applications",
     "/Users",
     "/System",
     "/Library",
     "/Volumes",
     "/private",
+    "/private/etc",
     "/private/tmp",
+    "/private/var",
+    "/private/var/tmp",
     "/var/tmp",
 ];
 

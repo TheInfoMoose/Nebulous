@@ -1910,6 +1910,10 @@ fn test_safe_project_root_validation_poisoned_registry_pruning_and_hidden_dir_sk
             assert!(TrackerStorage::init(&home_path, "HomeBad", "01_init", "Init").is_err());
         }
     }
+    assert!(is_unsafe_broad_directory(Path::new("/private/etc")));
+    assert!(is_unsafe_broad_directory(Path::new("/private/var")));
+    assert!(is_unsafe_broad_directory(Path::new("/private/var/tmp")));
+    assert!(is_unsafe_broad_directory(Path::new("/Applications")));
 
     // 2. Verify GlobalProjectRegistry refuses to register unsafe broad roots and prunes legacy
     // poisoned entries (`root_path = "/home"` or `$HOME` or `/`) on load while falling back `active_project_id`
