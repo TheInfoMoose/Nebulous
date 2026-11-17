@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use backend_core::{
-    contained_path, is_valid_identifier, ComponentManifest, IngestionOptions, TrackerError,
-    TrackerStorage,
+    contained_path, is_valid_identifier, IngestionOptions, TrackerError, TrackerStorage,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -124,6 +123,7 @@ fn ingestion_normalizes_dotted_on_disk_component_ids() {
 #[cfg(unix)]
 mod unix {
     use super::*;
+    use backend_core::ComponentManifest;
     use std::os::unix::fs::symlink;
 
     fn assert_rejected<T: std::fmt::Debug>(result: backend_core::Result<T>, what: &str) {
