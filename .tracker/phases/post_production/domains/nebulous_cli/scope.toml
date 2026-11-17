@@ -1,0 +1,24 @@
+[scope]
+id = "nebulous_cli"
+target = "crates/nebulous_cli"
+tech_stack = ["rust"]
+description = "Promoted from component 'nebulous_cli' (crates/nebulous_cli)"
+bound_component = "nebulous_cli"
+tracked_files = [
+    "crates/nebulous_cli/Cargo.toml",
+    "crates/nebulous_cli/src/args.rs",
+    "crates/nebulous_cli/src/commands/mod.rs",
+    "crates/nebulous_cli/src/lib.rs",
+    "crates/nebulous_cli/src/main.rs",
+    "crates/nebulous_cli/src/tui/mod.rs",
+    "crates/nebulous_cli/src/tui/render.rs",
+    "crates/nebulous_cli/src/tui/state.rs",
+    "crates/nebulous_cli/src/tui/theme.rs",
+    "crates/nebulous_cli/tests/cli_integration.rs",
+    "crates/nebulous_cli/tests/done_commit_safety.rs",
+    "crates/nebulous_cli/tests/pat_input.rs",
+]
+
+[items]
+bugs = []
+features = []

@@ -1,0 +1,21 @@
+[scope]
+id = "docs"
+target = "docs"
+tech_stack = []
+description = "Promoted from component 'docs' (docs)"
+bound_component = "docs"
+tracked_files = [
+    "docs/ARCHITECTURE.md",
+    "docs/USAGE.md",
+]
+
+[items]
+bugs = []
+features = []
+
+[[items.tasks]]
+id = "TASK-0083"
+title = "USAGE: neb task/chore + type guidance, §6 Plan Import, §7 Item IDs, t key row, MCP plan_import; README Quick Start lines (Gemini; 1 correction: output-order wording; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"

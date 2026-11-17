@@ -1,0 +1,16 @@
+[scope]
+id = "packaging"
+target = "archive/packaging"
+tech_stack = []
+description = "Promoted from component 'packaging' (archive/packaging)"
+bound_component = "packaging"
+tracked_files = [
+    "archive/packaging/com.nebulous.Tracker.desktop",
+    "archive/packaging/com.nebulous.Tracker.metainfo.xml",
+    "archive/packaging/flatpak/com.nebulous.Tracker.yml",
+    "archive/packaging/icons/com.nebulous.Tracker.svg",
+]
+
+[items]
+bugs = []
+features = []

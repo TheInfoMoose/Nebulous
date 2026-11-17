@@ -1,0 +1,24 @@
+schema_version = 2
+
+[item]
+id = "TASK-0031"
+type = "task"
+title = "Golden v2 model (Golden, GoldenComponent, Origin), v1/v2 reader, deterministic atomic writer returning sha256 (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-15T14:19:19Z"
+updated_at = "2026-11-15T14:19:19Z"
+source_ref = "STEP 25I"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+
+[[history.previous_fixes]]
+date = "2026-11-15"
+commit = "495c5de"
+summary = "Completed per plan roadmap"

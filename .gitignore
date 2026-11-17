@@ -4,6 +4,7 @@
 
 # Nebulous tracker runtime state (if initialized in workspace)
 /.tracker/.timer.toml
+/.tracker/.timer.toml.bak
 /.tracker/.keyring_fallback
 
 # OS & editor files

@@ -1,0 +1,183 @@
+[project]
+name = "Nebulous"
+version = "0.1.0"
+active_phase = "production"
+default_scope = "inbox"
+created_at = "2026-11-09T20:41:30Z"
+
+[counters]
+bug = 0
+feature = 0
+task = 83
+
+[[phases.registry]]
+id = "pre_production"
+title = "Pre-Production"
+path = "phases/pre_production"
+
+[[phases.registry]]
+id = "production"
+title = "Production"
+path = "phases/production"
+
+[[phases.registry]]
+id = "post_production"
+title = "Post-Production"
+path = "phases/post_production"
+
+[metrics]
+target_daily_hours = 6.0
+stagnant_item_threshold_days = 4
+max_session_minutes = 480
+
+[git]
+sync_mode = "manual"
+sync_interval_minutes = 30
+remote = "origin"
+branch = "main"
+auto_commit_on_close = false
+
+[git.commit_policy]
+require_item_id = true
+require_scope = true
+require_summary = true
+min_summary_length = 12
+auto_append_to_desc = true
+
+[[components.registry]]
+id = "backend_core"
+name = "backend_core"
+relative_path = "crates/backend_core"
+component_type = "rust_crate"
+tech_stack = ["rust"]
+tags = []
+flags = []
+files = [
+    "crates/backend_core/Cargo.toml",
+    "crates/backend_core/src/agent_context/mod.rs",
+    "crates/backend_core/src/crypto/keys.rs",
+    "crates/backend_core/src/crypto/mod.rs",
+    "crates/backend_core/src/error.rs",
+    "crates/backend_core/src/git_sync/mod.rs",
+    "crates/backend_core/src/ingestion/mod.rs",
+    "crates/backend_core/src/lib.rs",
+    "crates/backend_core/src/mcp/mod.rs",
+    "crates/backend_core/src/models/component.rs",
+    "crates/backend_core/src/models/item.rs",
+    "crates/backend_core/src/models/mod.rs",
+    "crates/backend_core/src/models/phase.rs",
+    "crates/backend_core/src/models/project.rs",
+    "crates/backend_core/src/models/registry.rs",
+    "crates/backend_core/src/models/scope.rs",
+    "crates/backend_core/src/models/timer.rs",
+    "crates/backend_core/src/storage/atomic.rs",
+    "crates/backend_core/src/storage/id.rs",
+    "crates/backend_core/src/storage/mod.rs",
+    "crates/backend_core/src/storage/reconcile.rs",
+    "crates/backend_core/src/watcher/mod.rs",
+    "crates/backend_core/src/workflow/assist.rs",
+    "crates/backend_core/src/workflow/lifecycle.rs",
+    "crates/backend_core/src/workflow/metrics.rs",
+    "crates/backend_core/src/workflow/mod.rs",
+    "crates/backend_core/src/workflow/timer.rs",
+    "crates/backend_core/tests/credential_hygiene.rs",
+    "crates/backend_core/tests/git_safety.rs",
+    "crates/backend_core/tests/path_containment.rs",
+    "crates/backend_core/tests/storage_integration.rs",
+    "crates/backend_core/tests/workflow_integration.rs",
+]
+
+[[components.registry]]
+id = "cosmic_interface"
+name = "cosmic_interface"
+relative_path = "archive/cosmic_interface"
+component_type = "ui_crate"
+tech_stack = ["rust"]
+tags = []
+flags = []
+files = [
+    "archive/cosmic_interface/Cargo.toml",
+    "archive/cosmic_interface/src/app.rs",
+    "archive/cosmic_interface/src/lib.rs",
+    "archive/cosmic_interface/src/main.rs",
+    "archive/cosmic_interface/src/subscriptions.rs",
+    "archive/cosmic_interface/src/views/detail_drawer.rs",
+    "archive/cosmic_interface/src/views/header_bar.rs",
+    "archive/cosmic_interface/src/views/kanban_board.rs",
+    "archive/cosmic_interface/src/views/metrics_view.rs",
+    "archive/cosmic_interface/src/views/mod.rs",
+    "archive/cosmic_interface/src/views/nav_sidebar.rs",
+    "archive/cosmic_interface/src/views/phases_scopes_view.rs",
+    "archive/cosmic_interface/src/views/settings_view.rs",
+]
+
+[[components.registry]]
+id = "docs"
+name = "docs"
+relative_path = "docs"
+component_type = "custom"
+tech_stack = []
+tags = []
+flags = []
+files = [
+    "docs/ARCHITECTURE.md",
+    "docs/USAGE.md",
+]
+
+[[components.registry]]
+id = "nebulous_cli"
+name = "nebulous_cli"
+relative_path = "crates/nebulous_cli"
+component_type = "cli_crate"
+tech_stack = ["rust"]
+tags = []
+flags = []
+files = [
+    "crates/nebulous_cli/Cargo.toml",
+    "crates/nebulous_cli/src/args.rs",
+    "crates/nebulous_cli/src/commands/mod.rs",
+    "crates/nebulous_cli/src/lib.rs",
+    "crates/nebulous_cli/src/main.rs",
+    "crates/nebulous_cli/src/tui/mod.rs",
+    "crates/nebulous_cli/src/tui/render.rs",
+    "crates/nebulous_cli/src/tui/state.rs",
+    "crates/nebulous_cli/src/tui/theme.rs",
+    "crates/nebulous_cli/tests/cli_integration.rs",
+    "crates/nebulous_cli/tests/done_commit_safety.rs",
+    "crates/nebulous_cli/tests/pat_input.rs",
+]
+
+[[components.registry]]
+id = "packaging"
+name = "packaging"
+relative_path = "archive/packaging"
+component_type = "build_scripts"
+tech_stack = []
+tags = []
+flags = []
+files = [
+    "archive/packaging/com.nebulous.Tracker.desktop",
+    "archive/packaging/com.nebulous.Tracker.metainfo.xml",
+    "archive/packaging/flatpak/com.nebulous.Tracker.yml",
+    "archive/packaging/icons/com.nebulous.Tracker.svg",
+]
+
+[[components.registry]]
+id = "scripts"
+name = "scripts"
+relative_path = "archive/scripts"
+component_type = "build_scripts"
+tech_stack = ["shell"]
+tags = []
+flags = []
+files = ["archive/scripts/build-appimage.sh"]
+
+[[components.registry]]
+id = "scripts_2"
+name = "scripts"
+relative_path = "scripts"
+component_type = "build_scripts"
+tech_stack = ["shell"]
+tags = []
+flags = []
+files = ["scripts/install.sh"]

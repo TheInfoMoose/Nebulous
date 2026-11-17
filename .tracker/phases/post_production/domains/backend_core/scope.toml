@@ -1,0 +1,44 @@
+[scope]
+id = "backend_core"
+target = "crates/backend_core"
+tech_stack = ["rust"]
+description = "Promoted from component 'backend_core' (crates/backend_core)"
+bound_component = "backend_core"
+tracked_files = [
+    "crates/backend_core/Cargo.toml",
+    "crates/backend_core/src/agent_context/mod.rs",
+    "crates/backend_core/src/crypto/keys.rs",
+    "crates/backend_core/src/crypto/mod.rs",
+    "crates/backend_core/src/error.rs",
+    "crates/backend_core/src/git_sync/mod.rs",
+    "crates/backend_core/src/ingestion/mod.rs",
+    "crates/backend_core/src/lib.rs",
+    "crates/backend_core/src/mcp/mod.rs",
+    "crates/backend_core/src/models/component.rs",
+    "crates/backend_core/src/models/item.rs",
+    "crates/backend_core/src/models/mod.rs",
+    "crates/backend_core/src/models/phase.rs",
+    "crates/backend_core/src/models/project.rs",
+    "crates/backend_core/src/models/registry.rs",
+    "crates/backend_core/src/models/scope.rs",
+    "crates/backend_core/src/models/timer.rs",
+    "crates/backend_core/src/storage/atomic.rs",
+    "crates/backend_core/src/storage/id.rs",
+    "crates/backend_core/src/storage/mod.rs",
+    "crates/backend_core/src/storage/reconcile.rs",
+    "crates/backend_core/src/watcher/mod.rs",
+    "crates/backend_core/src/workflow/assist.rs",
+    "crates/backend_core/src/workflow/lifecycle.rs",
+    "crates/backend_core/src/workflow/metrics.rs",
+    "crates/backend_core/src/workflow/mod.rs",
+    "crates/backend_core/src/workflow/timer.rs",
+    "crates/backend_core/tests/credential_hygiene.rs",
+    "crates/backend_core/tests/git_safety.rs",
+    "crates/backend_core/tests/path_containment.rs",
+    "crates/backend_core/tests/storage_integration.rs",
+    "crates/backend_core/tests/workflow_integration.rs",
+]
+
+[items]
+bugs = []
+features = []

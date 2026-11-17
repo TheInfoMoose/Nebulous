@@ -1,0 +1,49 @@
+[phase]
+id = "production"
+title = "Production"
+status = "in_progress"
+start_date = "2026-11-09"
+
+[[scopes.manifest]]
+id = "inbox"
+type = "inbox"
+path = "domains/inbox"
+
+[[scopes.manifest]]
+id = "backend_core"
+type = "rust_crate"
+path = "domains/backend_core"
+
+[[scopes.manifest]]
+id = "cosmic_interface"
+type = "ui_crate"
+path = "domains/cosmic_interface"
+
+[[scopes.manifest]]
+id = "docs"
+type = "custom"
+path = "domains/docs"
+
+[[scopes.manifest]]
+id = "nebulous_cli"
+type = "cli_crate"
+path = "domains/nebulous_cli"
+
+[[scopes.manifest]]
+id = "packaging"
+type = "build_scripts"
+path = "domains/packaging"
+
+[[scopes.manifest]]
+id = "scripts"
+type = "build_scripts"
+path = "domains/scripts"
+
+[[scopes.manifest]]
+id = "scripts_2"
+type = "build_scripts"
+path = "domains/scripts_2"
+
+[summary]
+total_items = 83
+completed_items = 75

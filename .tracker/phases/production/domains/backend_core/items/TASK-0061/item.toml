@@ -1,0 +1,24 @@
+schema_version = 2
+
+[item]
+id = "TASK-0061"
+type = "task"
+title = "git_pull_with_report / git_sync_with_report (+ GitPullOutcome / GitSyncOutcome; old signatures kept as wrappers); neb git pull / neb sync warn + JSON duplicate_ids; shared duplicate_id_warnings (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-15T14:19:20Z"
+updated_at = "2026-11-15T14:19:20Z"
+source_ref = "STEP 26F"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+
+[[history.previous_fixes]]
+date = "2026-11-15"
+commit = "495c5de"
+summary = "Completed per plan roadmap"

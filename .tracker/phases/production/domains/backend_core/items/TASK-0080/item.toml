@@ -1,0 +1,24 @@
+schema_version = 2
+
+[item]
+id = "TASK-0080"
+type = "task"
+title = "planning::import_plan upserts tasks by source_ref (atomic via 24H); D1–D8 as approved; dry run takes no lock; Gemini-added input pre-check kept (user, 2026-11-14) (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-15T14:19:20Z"
+updated_at = "2026-11-15T14:19:20Z"
+source_ref = "STEP 24C"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+
+[[history.previous_fixes]]
+date = "2026-11-15"
+commit = "495c5de"
+summary = "Completed per plan roadmap"

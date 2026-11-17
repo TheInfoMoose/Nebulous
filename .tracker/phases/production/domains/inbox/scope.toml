@@ -1,0 +1,51 @@
+[scope]
+id = "inbox"
+target = ".tracker"
+tech_stack = []
+description = "Default unscoped triage inbox"
+
+[items]
+bugs = []
+features = []
+
+[[items.tasks]]
+id = "TASK-0008"
+title = "Docs match behaviour; dead code; portable install.sh"
+status = "open"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0009"
+title = "Archive COSMIC GUI, 3-stage lifecycle, assist, CLI shortcuts, amber TUI, watcher, CI"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0010"
+title = "Supply-chain remediation, advisory gate"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0011"
+title = "Release workflow ships neb only"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0052"
+title = 'Docs scrub: README + USAGE use a neutral "Orbit" example; both leave the allowlist; missing argument files fail (Gemini; validate-step PASS)'
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0067"
+title = "MCP + CLI scope listing bugs_count / features_count use ScopeItems::count; no output change (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"

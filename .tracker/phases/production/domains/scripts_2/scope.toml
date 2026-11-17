@@ -1,0 +1,18 @@
+[scope]
+id = "scripts_2"
+target = "scripts"
+tech_stack = ["shell"]
+description = "Promoted from component 'scripts' (scripts)"
+bound_component = "scripts_2"
+tracked_files = ["scripts/install.sh"]
+
+[items]
+bugs = []
+features = []
+
+[[items.tasks]]
+id = "TASK-0051"
+title = "Neutrality ratchet: scripts/check-neutral.sh (exact-count allowlist, 9 files / 182 lines) + CI step after checkout (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"

@@ -1,0 +1,24 @@
+schema_version = 2
+
+[item]
+id = "TASK-0046"
+type = "task"
+title = "Status summary (read_status, status_json, render_status_text, §4.8 keys) + built-in self-test runner (14 §2.9 cases, embedded package-version table, panic-safe) (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-15T14:19:20Z"
+updated_at = "2026-11-15T14:19:20Z"
+source_ref = "STEP 25S"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+
+[[history.previous_fixes]]
+date = "2026-11-15"
+commit = "495c5de"
+summary = "Completed per plan roadmap"

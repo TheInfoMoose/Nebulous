@@ -1,0 +1,24 @@
+schema_version = 2
+
+[item]
+id = "TASK-0072"
+type = "task"
+title = "TUI t opens task capture (NEW TASK CAPTURE); footer + 3 empty-state hints list [t]; approved headless TUI test and stricter gate (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+scope_ref = "nebulous_cli"
+created_at = "2026-11-15T14:19:20Z"
+updated_at = "2026-11-15T14:19:20Z"
+source_ref = "STEP 23I"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+
+[[history.previous_fixes]]
+date = "2026-11-15"
+commit = "495c5de"
+summary = "Completed per plan roadmap"

@@ -1,0 +1,9 @@
+[scope]
+id = "inbox"
+target = ".tracker"
+tech_stack = []
+description = "Default unscoped triage inbox"
+
+[items]
+bugs = []
+features = []

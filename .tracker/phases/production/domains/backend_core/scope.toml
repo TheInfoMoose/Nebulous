@@ -1,0 +1,478 @@
+[scope]
+id = "backend_core"
+target = "crates/backend_core"
+tech_stack = ["rust"]
+description = "Promoted from component 'backend_core' (crates/backend_core)"
+bound_component = "backend_core"
+tracked_files = [
+    "crates/backend_core/Cargo.toml",
+    "crates/backend_core/src/agent_context/mod.rs",
+    "crates/backend_core/src/crypto/keys.rs",
+    "crates/backend_core/src/crypto/mod.rs",
+    "crates/backend_core/src/error.rs",
+    "crates/backend_core/src/git_sync/mod.rs",
+    "crates/backend_core/src/ingestion/mod.rs",
+    "crates/backend_core/src/lib.rs",
+    "crates/backend_core/src/mcp/mod.rs",
+    "crates/backend_core/src/models/component.rs",
+    "crates/backend_core/src/models/item.rs",
+    "crates/backend_core/src/models/mod.rs",
+    "crates/backend_core/src/models/phase.rs",
+    "crates/backend_core/src/models/project.rs",
+    "crates/backend_core/src/models/registry.rs",
+    "crates/backend_core/src/models/scope.rs",
+    "crates/backend_core/src/models/timer.rs",
+    "crates/backend_core/src/storage/atomic.rs",
+    "crates/backend_core/src/storage/id.rs",
+    "crates/backend_core/src/storage/mod.rs",
+    "crates/backend_core/src/storage/reconcile.rs",
+    "crates/backend_core/src/watcher/mod.rs",
+    "crates/backend_core/src/workflow/assist.rs",
+    "crates/backend_core/src/workflow/lifecycle.rs",
+    "crates/backend_core/src/workflow/metrics.rs",
+    "crates/backend_core/src/workflow/mod.rs",
+    "crates/backend_core/src/workflow/timer.rs",
+    "crates/backend_core/tests/credential_hygiene.rs",
+    "crates/backend_core/tests/git_safety.rs",
+    "crates/backend_core/tests/path_containment.rs",
+    "crates/backend_core/tests/storage_integration.rs",
+    "crates/backend_core/tests/workflow_integration.rs",
+]
+
+[items]
+bugs = []
+features = []
+
+[[items.tasks]]
+id = "TASK-0001"
+title = "MCP framing bounds, JSON-RPC compliance, destructive-tool dry-run, bounded context"
+status = "open"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0002"
+title = "Per-operation IndexSnapshot, cached git status in assist"
+status = "open"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0004"
+title = "Idempotent timer stop, orphan recovery, idle cap"
+status = "open"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0006"
+title = "Vault: keyring-primary, passphrase fallback"
+status = "open"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0012"
+title = "Git operation safety"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0013"
+title = "Credential hygiene"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0014"
+title = "Path containment, identifier allow-list, durable atomic writes"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0015"
+title = "with_write_lock: reentrant fd-lock on .tracker/.lock, timeout (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0016"
+title = "Lock every lifecycle + timer mutation; new item dir fails on AlreadyExists (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0017"
+title = "Lock reconcile + ID allocation; concurrency test (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0018"
+title = "storage/compat.rs: schema check, unknown-key merge, stamp, migrate hook (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0019"
+title = "Versioned reads/writes for all 4 tiers; per-type item schema; toml preserve_order (Gemini; validate-step PASS; merge defect fixed by 15E)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0020"
+title = "Fix 15B: merge only truly unknown keys (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0021"
+title = "Reconcile skips too-new items and reports them (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0023"
+title = "Release module skeleton: exit codes, JSON envelope (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0024"
+title = "Package version ordering + reference-verified case table (Gemini; validate-step PASS; 75 cases re-checked against the reference tool)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0025"
+title = "ReleasePaths + config.toml, unrelaxable forward-only policy and agent markers (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0026"
+title = "User-only gate: tty, agent markers, confirmation word (Gemini + 1 correction for a spec defect: env::var → var_os; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0027"
+title = "Package status / os-release parsers, inventory types (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0028"
+title = "Extracted-root helpers: confined symlink resolution, sha256, workspace crate versions, custom binary scan (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0029"
+title = "inventory_from_root: os-release, package database, live-boot + COSMIC synthetic packages, installer, boot (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0030"
+title = "extract_iso_inventory: unprivileged ISO + root-image extraction into a self-deleting temp dir; tempfile moved to [dependencies] (Gemini; validate-step PASS; ignored round-trip test also passed)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0031"
+title = "Golden v2 model (Golden, GoldenComponent, Origin), v1/v2 reader, deterministic atomic writer returning sha256 (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0032"
+title = "InstalledPackage.depends + parse_depends from package Depends:, for kernel-line membership (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0033"
+title = "group_components (kernel lines via Depends, source grouping), ABI rename, placeholder-aware find_match, binary_changes (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0034"
+title = "approvals.toml read/append with version-scoped covers; evaluate_against_golden by component, custom binaries, installer (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0035"
+title = "manifest.toml model + reader; verify_repo_invariants: custom tools, installer, workspace crate versions, stage-script tokens (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0036"
+title = "evaluate_against_manifest (os-release, packages, custom binaries + flags, installer), evaluate_variance (manifest + optional golden), shared live-binary index (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0037"
+title = "Loop-state item model, Python-compatible error/diff fingerprints, record_attempt (warn + 3-strike lock), guardrail_state, unlock; diagnostics preserved (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0038"
+title = "Phase, failure ledger with component-class-only record_failure; release record model, reader, no-overwrite writer, listing, snapshot/cache lookups (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0039"
+title = "Holds: one per component at golden (highest blocked version), all-last-good, pins-from-release, hold-file render (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0040"
+title = "Candidate model, build_candidate (changed set, held_version_present, holds in force), record_phase order + identity checks, flake guard (Gemini; validate-step PASS; identity rule fixed by 27E)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0041"
+title = "IsoIdentity (extra live layers, production root-image sha256), extract_iso, read_test_overlay_manifest (Gemini; validate-step PASS incl. ignored round-trips)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0042"
+title = "Fix 25O: build_candidate refuses test ISOs, stores the root-image sha256; VM phases tie through the overlay claim + guest measurement; parse_verdict_overlay (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0043"
+title = "Promote: prepare_promote (production ISO, identity, phases, bisect, variance; golden, record, cleared holds) + commit_promote (record → golden → remove candidate, rollback) (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0044"
+title = "Bisect: bisect.toml model + I/O, start_bisect, next_round (test set + hold file), record_round (literal halving, culprit, interaction, cap); ledger entries returned (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0045"
+title = "Import from .nebulous: plan_import (validate sources, golden v1 → v2 placeholders, config.toml from [guardrails], verbatim manifest/approvals/items, Conflict if any destination exists) + commit_import (new files only, remove on failure); config.rs gains pub validate_config + render_config (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0046"
+title = "Status summary (read_status, status_json, render_status_text, §4.8 keys) + built-in self-test runner (14 §2.9 cases, embedded package-version table, panic-safe) (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0050"
+title = "Remove the release engine: backend_core/src/release/ deleted (24 files); lib.rs, backend_core/Cargo.toml, Cargo.lock restored to fb2966d, so crates/, Cargo.toml, Cargo.lock equal fb2966d (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0053"
+title = "Backend source strings neutral: vault fixtures, MCP Suite 3 comments + tool descriptions, component doc comments; tool names/schemas/defaults unchanged (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0054"
+title = "Ingestion kernel heuristic drops vendor kernel names; storage test data neutral via fixed sed script (sha256-pinned) (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0056"
+title = "IdScheme setting ([project] id_scheme, default sequential, not serialized when sequential) + format_hash_id / is_hash_item_id / HASH_ID_HEX_LEN (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0057"
+title = "allocate_next_id hash branch + allocate_hash_id (OsRng, redraw all-digit/taken, 16-attempt cap; counters untouched) (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0058"
+title = "ItemStub.created_at (default empty, not serialized when empty) + chronological_cmp (instant rank, then same-type number, then ID); id tie-break not total with hash + 5-digit IDs, fixed in 26D (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0059"
+title = "Total-order IdRank tie-break in chronological_cmp; reconcile + lifecycle sort stubs with it, own comparators removed (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0060"
+title = "ReconcileReport.duplicate_ids (all phases/scopes, parsed manifests only); neb sync-index warns in text + JSON (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0061"
+title = "git_pull_with_report / git_sync_with_report (+ GitPullOutcome / GitSyncOutcome; old signatures kept as wrappers); neb git pull / neb sync warn + JSON duplicate_ids; shared duplicate_id_warnings (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0062"
+title = "MCP git_pull / git_sync results gain duplicate_ids (via 26F *_with_report; [] for commit_only); descriptions get one sentence (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0063"
+title = "Kind-aware helpers: ItemType::{ALL, ordinal, from_prefix, label}, ProjectCounters::{get, get_mut, merge_max}, ScopeItems::{iter, count, insert, remove_id}; id_rank uses ordinal (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0064"
+title = "Storage ID parsing, counter max/allocation and stub bucketing use the 23A helpers; reconcile sorts via insert; no behaviour change, tests unmodified (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0065"
+title = "Lifecycle, assist and metrics stub walks use ScopeItems::iter; sync_parent_indexes_for_item is remove_id + insert; bug-first ranking unchanged; tests unmodified (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0066"
+title = "cmp_item_ids (IdRank total order) in scope.rs; assist's non-total compare_item_ids removed, 4 What's Next tie-breaks use it; exhaustive totality test (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0069"
+title = "ItemType::Task (TASK-XXXX, schema v2, MAX 2), task counter (skipped when 0), tasks scope list; is_hash_item_id accepts TASK; storage_integration 6 approved line edits (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0070"
+title = "Storage integration tests: tasks allocate TASK-0001 alongside bugs/features, reconcile restores the task counter, concurrent mixed-type creators get 150 unique IDs; additions-only (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0073"
+title = "MCP create_item / list_items text names task; list_crate_boundaries gains tasks_count; TASK-0001 in ID examples and commit-policy error; approved MCP test and stricter gate (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0074"
+title = "ItemMetadata::new (default status/severity, both timestamps); create_item uses ..ItemMetadata::new; 2 inline tests; approved stricter gate (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0075"
+title = "The five integration-test ItemMetadata literals use ..ItemMetadata::new, keeping only non-default fields; values unchanged (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0076"
+title = "ItemMetadata.source_ref: Option<String> (skipped when None), new() sets None; 2 inline TOML tests; approved stricter gate (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0077"
+title = "Pure planning::parse_roadmap → PlanStep; approved gap picks G1–G8 (header-name columns, | escapes, strict row/heading errors); 6 inline tests; stricter gate. Validator swapped to the hybrid-workflow skill copy mid-step (user-confirmed) (Gemini; diff + gate PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0079"
+title = "CreateItemInput.source_ref + with_source_ref; create_item writes it in the same item.toml write; bug/feature helpers use ..CreateItemInput::new (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0080"
+title = "planning::import_plan upserts tasks by source_ref (atomic via 24H); D1–D8 as approved; dry run takes no lock; Gemini-added input pre-check kept (user, 2026-11-14) (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0082"
+title = "MCP plan_import {path, phase?, dry_run = true} (path contained to project root, unknown args rejected); 4 MCP tests; G1–G4 + stricter gate approved (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"

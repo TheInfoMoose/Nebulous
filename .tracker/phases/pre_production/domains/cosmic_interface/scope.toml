@@ -1,0 +1,25 @@
+[scope]
+id = "cosmic_interface"
+target = "archive/cosmic_interface"
+tech_stack = ["rust"]
+description = "Promoted from component 'cosmic_interface' (archive/cosmic_interface)"
+bound_component = "cosmic_interface"
+tracked_files = [
+    "archive/cosmic_interface/Cargo.toml",
+    "archive/cosmic_interface/src/app.rs",
+    "archive/cosmic_interface/src/lib.rs",
+    "archive/cosmic_interface/src/main.rs",
+    "archive/cosmic_interface/src/subscriptions.rs",
+    "archive/cosmic_interface/src/views/detail_drawer.rs",
+    "archive/cosmic_interface/src/views/header_bar.rs",
+    "archive/cosmic_interface/src/views/kanban_board.rs",
+    "archive/cosmic_interface/src/views/metrics_view.rs",
+    "archive/cosmic_interface/src/views/mod.rs",
+    "archive/cosmic_interface/src/views/nav_sidebar.rs",
+    "archive/cosmic_interface/src/views/phases_scopes_view.rs",
+    "archive/cosmic_interface/src/views/settings_view.rs",
+]
+
+[items]
+bugs = []
+features = []

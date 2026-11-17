@@ -1,0 +1,11 @@
+[scope]
+id = "scripts_2"
+target = "scripts"
+tech_stack = ["shell"]
+description = "Promoted from component 'scripts' (scripts)"
+bound_component = "scripts_2"
+tracked_files = ["scripts/install.sh"]
+
+[items]
+bugs = []
+features = []

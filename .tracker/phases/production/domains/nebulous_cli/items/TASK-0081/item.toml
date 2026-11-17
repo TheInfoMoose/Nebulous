@@ -1,0 +1,24 @@
+schema_version = 2
+
+[item]
+id = "TASK-0081"
+type = "task"
+title = "neb plan import <PATH> [--phase] [--write] (dry run default); CREATE/RETITLE/CLOSE lines, UNCHANGED count, footer; --json ImportReport; G1–G6 + stricter gate approved (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+scope_ref = "nebulous_cli"
+created_at = "2026-11-15T14:19:20Z"
+updated_at = "2026-11-15T14:19:20Z"
+source_ref = "STEP 24D"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+
+[[history.previous_fixes]]
+date = "2026-11-15"
+commit = "495c5de"
+summary = "Completed per plan roadmap"

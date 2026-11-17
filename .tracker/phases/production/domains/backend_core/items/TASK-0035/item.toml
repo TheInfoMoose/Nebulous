@@ -1,0 +1,24 @@
+schema_version = 2
+
+[item]
+id = "TASK-0035"
+type = "task"
+title = "manifest.toml model + reader; verify_repo_invariants: custom tools, installer, workspace crate versions, stage-script tokens (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-15T14:19:19Z"
+updated_at = "2026-11-15T14:19:19Z"
+source_ref = "STEP 25L"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+
+[[history.previous_fixes]]
+date = "2026-11-15"
+commit = "495c5de"
+summary = "Completed per plan roadmap"

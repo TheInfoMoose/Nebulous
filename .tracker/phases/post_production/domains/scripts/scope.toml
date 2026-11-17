@@ -1,0 +1,11 @@
+[scope]
+id = "scripts"
+target = "archive/scripts"
+tech_stack = ["shell"]
+description = "Promoted from component 'scripts' (archive/scripts)"
+bound_component = "scripts"
+tracked_files = ["archive/scripts/build-appimage.sh"]
+
+[items]
+bugs = []
+features = []

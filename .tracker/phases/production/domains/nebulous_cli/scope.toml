@@ -1,0 +1,115 @@
+[scope]
+id = "nebulous_cli"
+target = "crates/nebulous_cli"
+tech_stack = ["rust"]
+description = "Promoted from component 'nebulous_cli' (crates/nebulous_cli)"
+bound_component = "nebulous_cli"
+tracked_files = [
+    "crates/nebulous_cli/Cargo.toml",
+    "crates/nebulous_cli/src/args.rs",
+    "crates/nebulous_cli/src/commands/mod.rs",
+    "crates/nebulous_cli/src/lib.rs",
+    "crates/nebulous_cli/src/main.rs",
+    "crates/nebulous_cli/src/tui/mod.rs",
+    "crates/nebulous_cli/src/tui/render.rs",
+    "crates/nebulous_cli/src/tui/state.rs",
+    "crates/nebulous_cli/src/tui/theme.rs",
+    "crates/nebulous_cli/tests/cli_integration.rs",
+    "crates/nebulous_cli/tests/done_commit_safety.rs",
+    "crates/nebulous_cli/tests/pat_input.rs",
+]
+
+[items]
+bugs = []
+features = []
+
+[[items.tasks]]
+id = "TASK-0003"
+title = "Watcher rescan, error surfacing, thread join, TUI live reload"
+status = "open"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0005"
+title = "start uses next ranking; stage-scoped recommendations; dry-run"
+status = "open"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0007"
+title = "TUI panic hook, debounced filter, honest clipboard, scope confirmation"
+status = "open"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0022"
+title = "project add scaffolds the 3 canonical stages; --no-use (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:19Z"
+
+[[items.tasks]]
+id = "TASK-0047"
+title = "ReleaseCommand (17 subcommands) + BisectCommand + StageArg/PhaseArg/ResultArg/HoldFormat with From into backend types; parse/refusal tests (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0048"
+title = "neb release plumbing (ReleaseCtx, ReleaseRun, render, from_error) + baseline handlers: self-test, status, holds, pins-from-release, extract-golden (refuses a test ISO), verify-variance, record-attempt, check-guardrail (Gemini; POST_GATE PASS; validate-step flagged the plan hash because Phase 11 was added mid-run by the user + another agent, accepted)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0049"
+title = "Remove the release CLI: args.rs + commands/mod.rs restored to fb2966d, commands/release/ deleted (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0055"
+title = "CLI strings and test data neutral via fixed sed script (sha256-pinned); check-neutral allowlist empty (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0068"
+title = "TUI scope totals, open counts and listing use ScopeItems::iter; capture title uses ItemType::label; crate-wide per-kind grep clean outside models (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0071"
+title = "neb task (alias chore), TASKS column + tasks_count in scope list, TASK-XXXX in ID doc examples; CLI test incl. approved tasks_count assertion and stricter gate (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0072"
+title = "TUI t opens task capture (NEW TASK CAPTURE); footer + 3 empty-state hints list [t]; approved headless TUI test and stricter gate (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0078"
+title = "CLI, TUI and 2 MCP CreateItemInput literals use ..CreateItemInput::new; no behaviour change (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0081"
+title = "neb plan import <PATH> [--phase] [--write] (dry run default); CREATE/RETITLE/CLOSE lines, UNCHANGED count, footer; --json ImportReport; G1–G6 + stricter gate approved (Gemini; validate-step PASS)"
+status = "closed"
+severity = "medium"
+created_at = "2026-11-15T14:19:20Z"

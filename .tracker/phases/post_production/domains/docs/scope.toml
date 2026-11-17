@@ -1,0 +1,14 @@
+[scope]
+id = "docs"
+target = "docs"
+tech_stack = []
+description = "Promoted from component 'docs' (docs)"
+bound_component = "docs"
+tracked_files = [
+    "docs/ARCHITECTURE.md",
+    "docs/USAGE.md",
+]
+
+[items]
+bugs = []
+features = []
