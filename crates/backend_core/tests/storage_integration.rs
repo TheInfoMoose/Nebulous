@@ -1883,23 +1883,14 @@ recorded_at = 2026-11-03T14:25:00Z
 
 #[test]
 fn test_safe_project_root_validation_poisoned_registry_pruning_and_hidden_dir_skip() {
-    use backend_core::{
-        is_unsafe_broad_directory, load_global_registry_from, register_project_in,
-        validate_safe_project_root, GlobalProjectRegistry, IngestionOptions,
-    };
+    use backend_core::{is_unsafe_broad_directory, validate_safe_project_root, IngestionOptions};
 
     // 1. Verify filesystem root, system directories, /tmp root, and $HOME are rejected
     assert!(is_unsafe_broad_directory(Path::new("/")));
     assert!(is_unsafe_broad_directory(Path::new("/.tracker")));
-    assert!(is_unsafe_broad_directory(Path::new("/etc")));
-    assert!(is_unsafe_broad_directory(Path::new("/usr")));
-    assert!(is_unsafe_broad_directory(Path::new("/home")));
-    assert!(is_unsafe_broad_directory(Path::new("/tmp")));
     assert!(is_unsafe_broad_directory(&std::env::temp_dir()));
     assert!(validate_safe_project_root(Path::new("/")).is_err());
-    assert!(validate_safe_project_root(Path::new("/tmp")).is_err());
     assert!(TrackerStorage::init(Path::new("/"), "Root", "01_init", "Init").is_err());
-    assert!(TrackerStorage::init(Path::new("/tmp"), "TmpRoot", "01_init", "Init").is_err());
 
     if let Some(home_os) = std::env::var_os("HOME") {
         let home_path = PathBuf::from(home_os);
@@ -1910,74 +1901,54 @@ fn test_safe_project_root_validation_poisoned_registry_pruning_and_hidden_dir_sk
             assert!(TrackerStorage::init(&home_path, "HomeBad", "01_init", "Init").is_err());
         }
     }
-    assert!(is_unsafe_broad_directory(Path::new("/private/etc")));
-    assert!(is_unsafe_broad_directory(Path::new("/private/var")));
-    assert!(is_unsafe_broad_directory(Path::new("/private/var/tmp")));
-    assert!(is_unsafe_broad_directory(Path::new("/Applications")));
 
-    // 2. Verify GlobalProjectRegistry refuses to register unsafe broad roots and prunes legacy
-    // poisoned entries (`root_path = "/home"` or `$HOME` or `/`) on load while falling back `active_project_id`
+    #[cfg(unix)]
+    {
+        assert!(is_unsafe_broad_directory(Path::new("/etc")));
+        assert!(is_unsafe_broad_directory(Path::new("/usr")));
+        assert!(is_unsafe_broad_directory(Path::new("/home")));
+        assert!(is_unsafe_broad_directory(Path::new("/tmp")));
+        assert!(validate_safe_project_root(Path::new("/tmp")).is_err());
+        assert!(TrackerStorage::init(Path::new("/tmp"), "TmpRoot", "01_init", "Init").is_err());
+        assert!(is_unsafe_broad_directory(Path::new("/private/etc")));
+        assert!(is_unsafe_broad_directory(Path::new("/private/var")));
+        assert!(is_unsafe_broad_directory(Path::new("/private/var/tmp")));
+        assert!(is_unsafe_broad_directory(Path::new("/Applications")));
+    }
+
+    #[cfg(windows)]
+    {
+        for p in [
+            r"C:\Windows",
+            r"c:\windows",
+            r"C:\Program Files",
+            r"C:\Program Files (x86)",
+            r"C:\ProgramData",
+            r"C:\Users",
+        ] {
+            assert!(
+                is_unsafe_broad_directory(Path::new(p)),
+                "{p} must be rejected"
+            );
+        }
+        assert!(validate_safe_project_root(Path::new(r"C:\Windows")).is_err());
+    }
+
     let temp = TempTrackerDir::new("safe_root_and_pruning");
-    let cfg_dir = temp.path().join("cfg");
-    fs::create_dir_all(&cfg_dir).unwrap();
     let valid_proj = temp.path().join("valid_workspace");
     fs::create_dir_all(&valid_proj).unwrap();
     let storage =
         TrackerStorage::init(&valid_proj, "ValidWorkspace", "01_init", "Init Phase").unwrap();
 
-    assert!(register_project_in(&cfg_dir, Path::new("/"), None, vec![], true).is_err());
-    assert!(register_project_in(&cfg_dir, Path::new("/tmp"), None, vec![], true).is_err());
-
-    let poisoned_toml = format!(
-        r#"active_project_id = "poisoned_home"
-
-[[projects]]
-id = "poisoned_home"
-name = "theinfomoose"
-root_path = "/home"
-tracker_path = "/home/.tracker"
-default_branch = "main"
-last_opened_at = "2026-11-04T00:00:00Z"
-
-[[projects]]
-id = "valid_workspace"
-name = "ValidWorkspace"
-root_path = "{}"
-tracker_path = "{}"
-default_branch = "main"
-last_opened_at = "2026-11-04T00:00:00Z"
-"#,
-        valid_proj.display(),
-        valid_proj.join(".tracker").display()
-    );
-    fs::write(cfg_dir.join("projects.toml"), &poisoned_toml).unwrap();
-
-    let loaded_reg = load_global_registry_from(&cfg_dir).expect("should load and prune registry");
-    assert_eq!(loaded_reg.projects.len(), 1);
-    assert_eq!(loaded_reg.projects[0].id, "valid_workspace");
-    assert_eq!(
-        loaded_reg.active_project_id.as_deref(),
-        Some("valid_workspace")
-    );
-    let persisted_raw = fs::read_to_string(cfg_dir.join("projects.toml")).unwrap();
-    assert!(
-        !persisted_raw.contains("poisoned_home"),
-        "poisoned unsafe entry must be pruned on disk as well as in memory"
-    );
-
-    let parsed_reg = GlobalProjectRegistry::from_toml_str(&poisoned_toml).unwrap();
-    assert_eq!(parsed_reg.projects.len(), 1);
-    assert_eq!(
-        parsed_reg.active_project_id.as_deref(),
-        Some("valid_workspace")
-    );
-
     // 3. Verify `ingest_project_directory` refuses to scan an unsafe broad root (e.g. `TrackerStorage::new("/tmp")`)
     // and skips hidden dot-directories (`.cargo`, `.cache`, `.local`, `.config`) inside a valid project
-    let unsafe_storage = TrackerStorage::new(Path::new("/tmp"));
-    assert!(unsafe_storage
-        .ingest_project_directory(IngestionOptions::new())
-        .is_err());
+    #[cfg(unix)]
+    {
+        let unsafe_storage = TrackerStorage::new(Path::new("/tmp"));
+        assert!(unsafe_storage
+            .ingest_project_directory(IngestionOptions::new())
+            .is_err());
+    }
 
     for hidden_dir in [".cargo/bin", ".cache/pip", ".local/share", ".config/nvim"] {
         let p = valid_proj.join(hidden_dir);
@@ -2046,6 +2017,68 @@ last_opened_at = "2026-11-04T00:00:00Z"
         assert_eq!(symlink_report.components.len(), 1);
         assert_eq!(symlink_report.components[0].id, "app");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_registry_prunes_poisoned_unix_roots() {
+    use backend_core::{load_global_registry_from, register_project_in, GlobalProjectRegistry};
+
+    // Verify GlobalProjectRegistry refuses to register unsafe broad roots and prunes legacy
+    // poisoned entries (`root_path = "/home"` or `$HOME` or `/`) on load while falling back `active_project_id`
+    let temp = TempTrackerDir::new("registry_pruning");
+    let cfg_dir = temp.path().join("cfg");
+    fs::create_dir_all(&cfg_dir).unwrap();
+    let valid_proj = temp.path().join("valid_workspace");
+    fs::create_dir_all(&valid_proj).unwrap();
+    TrackerStorage::init(&valid_proj, "ValidWorkspace", "01_init", "Init Phase").unwrap();
+
+    assert!(register_project_in(&cfg_dir, Path::new("/"), None, vec![], true).is_err());
+    assert!(register_project_in(&cfg_dir, Path::new("/tmp"), None, vec![], true).is_err());
+
+    let poisoned_toml = format!(
+        r#"active_project_id = "poisoned_home"
+
+[[projects]]
+id = "poisoned_home"
+name = "testuser"
+root_path = "/home"
+tracker_path = "/home/.tracker"
+default_branch = "main"
+last_opened_at = "2026-11-04T00:00:00Z"
+
+[[projects]]
+id = "valid_workspace"
+name = "ValidWorkspace"
+root_path = "{}"
+tracker_path = "{}"
+default_branch = "main"
+last_opened_at = "2026-11-04T00:00:00Z"
+"#,
+        valid_proj.display(),
+        valid_proj.join(".tracker").display()
+    );
+    fs::write(cfg_dir.join("projects.toml"), &poisoned_toml).unwrap();
+
+    let loaded_reg = load_global_registry_from(&cfg_dir).expect("should load and prune registry");
+    assert_eq!(loaded_reg.projects.len(), 1);
+    assert_eq!(loaded_reg.projects[0].id, "valid_workspace");
+    assert_eq!(
+        loaded_reg.active_project_id.as_deref(),
+        Some("valid_workspace")
+    );
+    let persisted_raw = fs::read_to_string(cfg_dir.join("projects.toml")).unwrap();
+    assert!(
+        !persisted_raw.contains("poisoned_home"),
+        "poisoned unsafe entry must be pruned on disk as well as in memory"
+    );
+
+    let parsed_reg = GlobalProjectRegistry::from_toml_str(&poisoned_toml).unwrap();
+    assert_eq!(parsed_reg.projects.len(), 1);
+    assert_eq!(
+        parsed_reg.active_project_id.as_deref(),
+        Some("valid_workspace")
+    );
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
