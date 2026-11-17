@@ -1485,6 +1485,23 @@ const UNSAFE_SYSTEM_DIRS: &[&str] = &[
     "/var/tmp",
 ];
 
+/// Top-level Windows system trees, matched under any drive letter, case-insensitively, because Windows paths are case-insensitive.
+const UNSAFE_WINDOWS_DIRS: &[&str] = &[
+    "windows",
+    "program files",
+    "program files (x86)",
+    "programdata",
+    "users",
+];
+
+fn is_windows_system_dir(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'/' {
+        return false;
+    }
+    UNSAFE_WINDOWS_DIRS.contains(&s[3..].to_ascii_lowercase().as_str())
+}
+
 fn lexical_normalize_path(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in path.components() {
@@ -1562,8 +1579,9 @@ fn resolve_project_root_candidate(path: &Path) -> PathBuf {
 /// Returns `true` if `path` (or its parent when `path` is `.tracker`) resolves to an unsafe broad
 /// directory such as a filesystem root (`/`, `C:\`), the user's home directory (`$HOME` /
 /// `%USERPROFILE%`), a top-level system tree (`/usr`, `/etc`, `/var`, `/proc`, `/sys`, `/dev`,
-/// `/home`; matched both as given and as resolved), or the top-level temporary directory (`/tmp`)
-/// itself.
+/// `/home`, `<drive>:\Windows`, `<drive>:\Program Files`, `<drive>:\Program Files (x86)`,
+/// `<drive>:\ProgramData`, `<drive>:\Users`; matched both as given and as resolved), or the
+/// top-level temporary directory (`/tmp`) itself.
 pub fn is_unsafe_broad_directory(path: &Path) -> bool {
     let resolved = resolve_project_root_candidate(path);
     if resolved.as_os_str().is_empty() || resolved.parent().is_none() {
@@ -1585,6 +1603,9 @@ pub fn is_unsafe_broad_directory(path: &Path) -> bool {
     // checking the path as given rejects them wherever they point.
     let lexical_s = normalize_comparable_path_str(&lexical_project_root_candidate(path));
     if UNSAFE_SYSTEM_DIRS.contains(&lexical_s.as_str()) {
+        return true;
+    }
+    if is_windows_system_dir(&s) || is_windows_system_dir(&lexical_s) {
         return true;
     }
     if s.starts_with("/proc/") || s.starts_with("/sys/") || s.starts_with("/dev/") {
@@ -1811,5 +1832,33 @@ mod tests {
             lexical_project_root_candidate(Path::new("/home/../home")),
             PathBuf::from("/home")
         );
+    }
+}
+
+#[cfg(test)]
+mod windows_dir_tests {
+    use super::is_windows_system_dir;
+
+    #[test]
+    fn windows_system_dirs_match_any_drive_and_case() {
+        for s in [
+            "C:/Windows",
+            "c:/windows",
+            "D:/Program Files (x86)",
+            "C:/ProgramData",
+            "C:/Users",
+        ] {
+            assert!(is_windows_system_dir(s), "expected true for {s}");
+        }
+        for s in [
+            "C:/Users/testuser",
+            "C:/Windows/System32",
+            "/Windows",
+            "C:",
+            "C:/",
+            "1:/Windows",
+        ] {
+            assert!(!is_windows_system_dir(s), "expected false for {s}");
+        }
     }
 }
