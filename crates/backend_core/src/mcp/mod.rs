@@ -568,7 +568,7 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "list_items".to_string(),
-                description: "Lists tracked bugs and features with optional phase, scope, status, type, stagnant, and recurring filters.".to_string(),
+                description: "Lists tracked bugs, features and tasks with optional phase, scope, status, type, stagnant, and recurring filters.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -673,7 +673,7 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "id_or_name": { "type": "string", "description": "Project ID, name, or workspace path." },
-                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), reports git status and what would happen without network access or commits. Pass false to run." }
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), returns the project it would switch to without changing the registry. Pass false to switch." }
                     },
                     "required": ["id_or_name"]
                 }),
@@ -688,7 +688,7 @@ impl McpServer {
                         "write_manifests": { "type": "boolean", "description": "When true, writes nebulous.component.toml files to component directories." },
                         "promote_all": { "type": "boolean", "description": "When true, promotes all discovered components into domain scopes." },
                         "promote_phase_id": { "type": "string", "description": "Optional target phase ID when promote_all is true." },
-                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), reports git status and what would happen without network access or commits. Pass false to run." }
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default) and write_manifests, promote_all or promote_phase_id is set, scans and reports what would be written without writing manifests or promoting scopes. A scan with no write flags never writes. Pass false to write." }
                     }
                 }),
             },
@@ -803,7 +803,7 @@ impl McpServer {
                         "restore_manifest": { "type": "boolean", "description": "Whether to restore nebulous.component.toml dependencies and flags from last_known_good (default true)." },
                         "item_id": { "type": "string", "description": "Optional active item ID to record the regression on." },
                         "reason": { "type": "string", "description": "Optional rollback/regression reason appended to desc.md." },
-                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), reports git status and what would happen without network access or commits. Pass false to run." }
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), returns the pinned release it would restore and the item it would record a regression on, without writing. Pass false to roll back." }
                     },
                     "required": ["component_id"]
                 }),
