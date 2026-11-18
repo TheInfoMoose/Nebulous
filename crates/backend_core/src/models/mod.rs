@@ -30,10 +30,9 @@ pub use registry::{
     GlobalProjectRegistry, RegisteredProject, GLOBAL_PROJECTS_FILE_NAME,
 };
 pub use scope::{ItemStub, ScopeItems, ScopeManifest, ScopeMetadata};
+pub use time::{parse_date, parse_timestamp_utc};
 pub use timer::ActiveTimer;
 
-use crate::error::{Result, TrackerError};
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{de::Error as DeError, Deserialize, Deserializer};
 
 /// Deserializes either a quoted string or a native unquoted TOML date/datetime into a `String`.
@@ -69,54 +68,4 @@ where
             other.type_str()
         ))),
     }
-}
-
-const LOCAL_DATETIME_FORMATS: &[&str] = &[
-    "%Y-%m-%dT%H:%M:%S%.f",
-    "%Y-%m-%d %H:%M:%S%.f",
-    "%Y-%m-%dT%H:%M:%S",
-    "%Y-%m-%d %H:%M:%S",
-];
-
-/// Parses an RFC 3339 timestamp string, local TOML datetime, or `YYYY-MM-DD` date fallback (at 00:00:00Z) into `DateTime<Utc>`.
-pub fn parse_timestamp_utc(value: &str) -> Result<DateTime<Utc>> {
-    let trimmed = value.trim();
-    if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
-        return Ok(dt.with_timezone(&Utc));
-    }
-    for fmt in LOCAL_DATETIME_FORMATS {
-        if let Ok(naive_dt) = NaiveDateTime::parse_from_str(trimmed, fmt) {
-            return Ok(naive_dt.and_utc());
-        }
-    }
-    if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
-        if let Some(naive_dt) = date.and_hms_opt(0, 0, 0) {
-            return Ok(naive_dt.and_utc());
-        }
-    }
-    Err(TrackerError::InvalidDateTime {
-        value: value.to_string(),
-        reason: "expected RFC 3339 timestamp (e.g. 2026-11-01T21:00:00Z), local datetime, or YYYY-MM-DD date"
-            .to_string(),
-    })
-}
-
-/// Parses a `YYYY-MM-DD` date string (or extracts the date portion of a timestamp) into `NaiveDate`.
-pub fn parse_date(value: &str) -> Result<NaiveDate> {
-    let trimmed = value.trim();
-    if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
-        return Ok(date);
-    }
-    if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
-        return Ok(dt.with_timezone(&Utc).date_naive());
-    }
-    for fmt in LOCAL_DATETIME_FORMATS {
-        if let Ok(naive_dt) = NaiveDateTime::parse_from_str(trimmed, fmt) {
-            return Ok(naive_dt.date());
-        }
-    }
-    Err(TrackerError::InvalidDateTime {
-        value: value.to_string(),
-        reason: "expected YYYY-MM-DD date or RFC 3339 / ISO 8601 timestamp".to_string(),
-    })
 }
