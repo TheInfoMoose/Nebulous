@@ -1228,7 +1228,8 @@ fn test_mcp_stdio_jsonrpc_session_end_to_end() {
                 "name": "git_commit_documented",
                 "arguments": {
                     "item_id": "FEAT-0001",
-                    "summary": "Rollback linux-custom to 6.12.4-1 after VM boot failure"
+                    "summary": "Rollback linux-custom to 6.12.4-1 after VM boot failure",
+                    "dry_run": false
                 }
             }
         }),

@@ -851,7 +851,7 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "git_commit_documented".to_string(),
-                description: "Commits .tracker/ changes (default) or .tracker/ plus explicitly listed workspace paths, enforces [git.commit_policy], and atomically records the commit SHA and changed file list in item.toml and desc.md. Never stages unlisted or untracked workspace files and never modifies the user's other staged changes.".to_string(),
+                description: "Commits .tracker/ changes (default) or .tracker/ plus explicitly listed workspace paths, enforces [git.commit_policy], and atomically records the commit SHA and changed file list in item.toml and desc.md. Never stages unlisted or untracked workspace files and never modifies the user's other staged changes. Defaults to dry_run: true.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -860,7 +860,8 @@ impl McpServer {
                         "summary": { "type": "string", "description": "Commit summary message." },
                         "body": { "type": "string", "description": "Optional extended commit notes." },
                         "tracker_only": { "type": "boolean", "default": true, "description": "When true (default), stages only .tracker/ files. Set false together with `paths` to commit workspace files." },
-                        "paths": { "type": "array", "items": { "type": "string" }, "description": "Explicit project-relative files or directories to stage (required when tracker_only is false). Glob metacharacters, absolute paths, and '..' are rejected; untracked files are staged only when listed by exact path." }
+                        "paths": { "type": "array", "items": { "type": "string" }, "description": "Explicit project-relative files or directories to stage (required when tracker_only is false). Glob metacharacters, absolute paths, and '..' are rejected; untracked files are staged only when listed by exact path." },
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), returns git status and what would be committed without committing. Pass false to commit." }
                     },
                     "required": ["summary"]
                 }),
@@ -2246,6 +2247,8 @@ impl McpServer {
             tracker_only: bool,
             #[serde(default)]
             paths: Vec<String>,
+            #[serde(default = "default_true")]
+            dry_run: bool,
         }
         fn default_tracker_only() -> bool {
             true
@@ -2254,7 +2257,25 @@ impl McpServer {
         let parsed: Args = serde_json::from_value(args).map_err(|e| {
             TrackerError::ValidationError(format!("Invalid git_commit_documented args: {e}"))
         })?;
+        if parsed.summary.trim().is_empty() {
+            return Err(TrackerError::ValidationError(
+                "Invalid git_commit_documented args: summary must not be empty".to_string(),
+            ));
+        }
         let storage = self.resolve_active_storage()?;
+        if parsed.dry_run {
+            let status = storage.git_status()?;
+            let target = if parsed.tracker_only {
+                ".tracker/".to_string()
+            } else {
+                format!(".tracker/ plus {} listed path(s)", parsed.paths.len())
+            };
+            return Ok(json!({
+                "dry_run": true,
+                "status": status,
+                "would": format!("commit {target} with summary '{}'", parsed.summary.trim())
+            }));
+        }
         let outcome = storage.git_commit_documented(DocumentedCommitInput {
             item_id: non_empty(parsed.item_id.as_deref()).map(str::to_string),
             scope_id: non_empty(parsed.scope_id.as_deref()).map(str::to_string),
@@ -2263,7 +2284,10 @@ impl McpServer {
             tracker_only: parsed.tracker_only,
             paths: parsed.paths,
         })?;
-        serde_json::to_value(outcome).map_err(|e| TrackerError::ValidationError(e.to_string()))
+        let mut value = serde_json::to_value(outcome)
+            .map_err(|e| TrackerError::ValidationError(e.to_string()))?;
+        value["dry_run"] = json!(false);
+        Ok(value)
     }
 
     fn tool_git_sync(&mut self, args: Value) -> Result<Value> {

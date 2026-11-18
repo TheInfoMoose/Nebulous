@@ -2362,6 +2362,67 @@ fn mcp_git_tools_default_to_dry_run() {
 }
 
 #[test]
+fn mcp_git_commit_documented_requires_summary_and_defaults_to_dry_run() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let dir = TempDir::new().unwrap();
+    let storage = TrackerStorage::init_standard(dir.path(), "McpCommitDryRun").unwrap();
+    let repo = Repository::init(dir.path()).unwrap();
+    {
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "testuser").unwrap();
+        cfg.set_str("user.email", "testuser@example.com").unwrap();
+    }
+    storage
+        .git_commit_tracker(Some("chore: init tracker"))
+        .unwrap();
+    storage
+        .create_bug("dirty bug", None, None, Severity::Medium, None)
+        .unwrap();
+    let head_before = repo.head().unwrap().peel_to_commit().unwrap().id();
+
+    let mut server = McpServer::new(Some(storage.clone()));
+
+    // Orrery's hook payload has no summary: rejected, nothing committed
+    let err = server
+        .call_tool(
+            "git_commit_documented",
+            json!({"orrery": {"event": "step_pass"}}),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("summary must not be empty"));
+    assert!(server
+        .call_tool("git_commit_documented", json!({"summary": "   "}))
+        .is_err());
+
+    // Default is a dry run
+    let dry = server
+        .call_tool("git_commit_documented", json!({"summary": "record bug"}))
+        .unwrap();
+    assert_eq!(dry["dry_run"], json!(true));
+    assert_eq!(
+        repo.head().unwrap().peel_to_commit().unwrap().id(),
+        head_before
+    );
+    assert!(storage.git_status().unwrap().tracker_dirty);
+
+    // dry_run: false commits
+    let real = server
+        .call_tool(
+            "git_commit_documented",
+            json!({"summary": "record bug", "dry_run": false}),
+        )
+        .unwrap();
+    assert_eq!(real["dry_run"], json!(false));
+    assert!(real["commit_sha"].as_str().is_some());
+    assert_ne!(
+        repo.head().unwrap().peel_to_commit().unwrap().id(),
+        head_before
+    );
+}
+
+#[test]
 fn mcp_create_item_accepts_task_and_reports_tasks_count() {
     use backend_core::McpServer;
     use serde_json::json;
