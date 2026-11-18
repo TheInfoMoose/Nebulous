@@ -49,7 +49,7 @@ jobs:
       - name: Supply-chain advisory gate (cargo deny)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check advisories
+          command: check advisories bans
 
       - name: Run verification suite
         run: |
