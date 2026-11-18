@@ -807,9 +807,17 @@ fn test_watcher_detects_external_changes_and_auto_reconciles_indexes() {
     assert_eq!(phase.summary.total_items, 1);
     assert_eq!(phase.summary.completed_items, 1);
 
-    // Ensure the watcher did NOT enter a self-trigger loop after reconciliation settled
+    // A self-trigger loop never goes quiet; late OS events (seen on Windows CI) do.
+    let settle_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut went_quiet = false;
+    while std::time::Instant::now() < settle_deadline {
+        if rx.recv_timeout(Duration::from_millis(500)).is_err() {
+            went_quiet = true;
+            break;
+        }
+    }
     assert!(
-        rx.recv_timeout(Duration::from_millis(250)).is_err(),
+        went_quiet,
         "watcher must not loop on its own reconciled index writes"
     );
 }
