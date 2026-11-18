@@ -30,8 +30,6 @@ pub use workflow::{
 mod tests {
     use std::str::FromStr;
 
-    use chrono::TimeZone;
-
     use crate::error::TrackerError;
     use crate::models::{
         ActiveTimer, GitSyncMode, ItemManifest, ItemStatus, ItemType, PhaseManifest, PhaseStatus,
@@ -358,30 +356,26 @@ previous_fixes = []
         let parsed = ActiveTimer::from_toml_str(&raw).expect("should deserialize timer");
         assert_eq!(timer, parsed);
 
-        let later = chrono::Utc
-            .with_ymd_and_hms(2026, 11, 1, 21, 45, 30)
-            .unwrap();
+        let later = "2026-11-01T21:45:30Z".parse::<jiff::Timestamp>().unwrap();
         assert_eq!(parsed.elapsed_minutes_at(later).unwrap(), 45);
 
         // If `now` is earlier than `started_at`, elapsed minutes clamps to 0
-        let earlier = chrono::Utc
-            .with_ymd_and_hms(2026, 11, 1, 20, 30, 0)
-            .unwrap();
+        let earlier = "2026-11-01T20:30:00Z".parse::<jiff::Timestamp>().unwrap();
         assert_eq!(parsed.elapsed_minutes_at(earlier).unwrap(), 0);
     }
 
     #[test]
     fn test_local_datetime_item_stub_defaults_and_malformed_inputs() {
-        use crate::models::{parse_date, parse_timestamp_utc};
+        use crate::models::time::{parse_date, parse_timestamp_utc};
 
         // Local TOML datetimes without 'Z' offset
         let dt = parse_timestamp_utc("2026-11-01T21:00:00").expect("should parse local datetime");
         assert_eq!(
             dt,
-            chrono::Utc.with_ymd_and_hms(2026, 11, 1, 21, 0, 0).unwrap()
+            "2026-11-01T21:00:00Z".parse::<jiff::Timestamp>().unwrap()
         );
         let d = parse_date("2026-11-01T21:00:00").expect("should extract date from local datetime");
-        assert_eq!(d, chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap());
+        assert_eq!(d, jiff::civil::date(2026, 11, 1));
 
         // Invalid datetime string
         assert!(matches!(

@@ -1,7 +1,7 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TrackerError};
+use crate::models::time::format_timestamp;
 use crate::models::{ActiveTimer, ItemDetail};
 use crate::storage::TrackerStorage;
 use crate::workflow::lifecycle::now_rfc3339;
@@ -32,14 +32,14 @@ impl TrackerStorage {
     /// Fails with [`TrackerError::TimerAlreadyRunning`] if a timer is already active, or
     /// [`TrackerError::NotFound`] if `item_id` does not exist.
     pub fn start_timer(&self, item_id: &str, note: Option<String>) -> Result<ActiveTimer> {
-        self.start_timer_at(item_id, Utc::now(), note)
+        self.start_timer_at(item_id, jiff::Timestamp::now(), note)
     }
 
     /// Starts an active session timer for `item_id` at an explicit UTC timestamp `started_at`.
     pub fn start_timer_at(
         &self,
         item_id: &str,
-        started_at: DateTime<Utc>,
+        started_at: jiff::Timestamp,
         note: Option<String>,
     ) -> Result<ActiveTimer> {
         self.with_write_lock(|_| {
@@ -51,7 +51,7 @@ impl TrackerStorage {
 
             let normalized_id = item_id.trim().to_ascii_uppercase();
             let loc = self.locate_item(&normalized_id)?;
-            let started_str = started_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            let started_str = format_timestamp(started_at);
             let mut timer = ActiveTimer::new(
                 loc.stub.id,
                 Some(loc.phase_id),
@@ -110,11 +110,11 @@ impl TrackerStorage {
     /// Stops the currently running timer in `.tracker/.timer.toml`, adds the elapsed minutes to
     /// the target item's `effort.logged_time_minutes`, and removes `.tracker/.timer.toml`.
     pub fn stop_timer(&self) -> Result<StoppedTimerSession> {
-        self.stop_timer_at(Utc::now())
+        self.stop_timer_at(jiff::Timestamp::now())
     }
 
     /// Stops the currently running timer at an explicit UTC timestamp `stopped_at`.
-    pub fn stop_timer_at(&self, stopped_at: DateTime<Utc>) -> Result<StoppedTimerSession> {
+    pub fn stop_timer_at(&self, stopped_at: jiff::Timestamp) -> Result<StoppedTimerSession> {
         self.with_write_lock(|_| {
             let timer = self
                 .read_active_timer()?
@@ -158,7 +158,7 @@ impl TrackerStorage {
                 .logged_time_minutes
                 .saturating_add(elapsed_minutes);
             detail.manifest.effort.last_timer_session = Some(session_key);
-            detail.manifest.item.updated_at = stopped_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            detail.manifest.item.updated_at = format_timestamp(stopped_at);
 
             self.write_item_manifest(
                 &loc.phase_id,
@@ -182,16 +182,16 @@ impl TrackerStorage {
 
     /// Returns the status and elapsed time of the active timer in `.tracker/.timer.toml`, if any.
     pub fn timer_status(&self) -> Result<Option<TimerStatus>> {
-        self.timer_status_at(Utc::now())
+        self.timer_status_at(jiff::Timestamp::now())
     }
 
     /// Returns the status and elapsed time of the active timer evaluated at `now`.
-    pub fn timer_status_at(&self, now: DateTime<Utc>) -> Result<Option<TimerStatus>> {
+    pub fn timer_status_at(&self, now: jiff::Timestamp) -> Result<Option<TimerStatus>> {
         let Some(timer) = self.read_active_timer()? else {
             return Ok(None);
         };
         let start = timer.parsed_started_at()?;
-        let elapsed_seconds = (now - start).num_seconds().max(0) as u64;
+        let elapsed_seconds = now.duration_since(start).as_secs().max(0) as u64;
         let elapsed_minutes = (elapsed_seconds / 60) as u32;
 
         Ok(Some(TimerStatus {

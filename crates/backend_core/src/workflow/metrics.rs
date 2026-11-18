@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -98,11 +98,11 @@ impl TrackerStorage {
     /// Computes the full project metrics report (phase/scope time valuation vs `target_daily_hours`,
     /// stagnant items, and recurring bug hotspots) at the current UTC timestamp.
     pub fn compute_metrics(&self) -> Result<ProjectMetricsReport> {
-        self.compute_metrics_at(Utc::now())
+        self.compute_metrics_at(Timestamp::now())
     }
 
     /// Computes the full project metrics report evaluated against `now`.
-    pub fn compute_metrics_at(&self, now: DateTime<Utc>) -> Result<ProjectMetricsReport> {
+    pub fn compute_metrics_at(&self, now: Timestamp) -> Result<ProjectMetricsReport> {
         let index = self.load_index()?;
         let target_daily_hours = index.project.metrics.target_daily_hours;
         let stagnant_threshold_days = index.project.metrics.stagnant_item_threshold_days;
@@ -145,7 +145,7 @@ impl TrackerStorage {
                     // Check stagnation on non-completed items
                     if !manifest.item.status.is_completed() {
                         let updated_dt = manifest.item.parsed_updated_at()?;
-                        let days_since = (now - updated_dt).num_days();
+                        let days_since = now.duration_since(updated_dt).as_secs() / 86_400;
                         if days_since >= i64::from(stagnant_threshold_days) {
                             stagnant_items.push(StagnantItemEntry {
                                 item_id: manifest.item.id.clone(),
@@ -301,7 +301,7 @@ impl TrackerStorage {
     }
 
     /// Returns all non-closed items that have not been updated within `stagnant_item_threshold_days` at `now`.
-    pub fn find_stagnant_items_at(&self, now: DateTime<Utc>) -> Result<Vec<StagnantItemEntry>> {
+    pub fn find_stagnant_items_at(&self, now: Timestamp) -> Result<Vec<StagnantItemEntry>> {
         Ok(self.compute_metrics_at(now)?.stagnant_items)
     }
 

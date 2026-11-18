@@ -1,5 +1,5 @@
 use backend_core::{ItemStatus, Severity, TimerStatus, CANONICAL_PHASES};
-use chrono::Utc;
+use jiff::Timestamp;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -48,7 +48,7 @@ fn paint_crt_background(frame: &mut Frame, area: Rect, bg_style: Style) {
 
 fn live_minutes(t: &TimerStatus) -> u32 {
     t.timer
-        .elapsed_minutes_at(Utc::now())
+        .elapsed_minutes_at(Timestamp::now())
         .unwrap_or(t.elapsed_minutes)
 }
 

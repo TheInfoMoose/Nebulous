@@ -1,8 +1,8 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-use crate::models::{deserialize_datetime_string, parse_timestamp_utc};
+use crate::models::deserialize_datetime_string;
+use crate::models::time::parse_timestamp_utc;
 
 /// Active session timer state persisted at `.tracker/.timer.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,15 +45,15 @@ impl ActiveTimer {
         Ok(toml::to_string_pretty(self)?)
     }
 
-    /// Parses `started_at` into `DateTime<Utc>`.
-    pub fn parsed_started_at(&self) -> Result<DateTime<Utc>> {
+    /// Parses `started_at` into `jiff::Timestamp`.
+    pub fn parsed_started_at(&self) -> Result<jiff::Timestamp> {
         parse_timestamp_utc(&self.started_at)
     }
 
     /// Calculates elapsed whole minutes between `started_at` and `now` (clamped to `>= 0`).
-    pub fn elapsed_minutes_at(&self, now: DateTime<Utc>) -> Result<u32> {
+    pub fn elapsed_minutes_at(&self, now: jiff::Timestamp) -> Result<u32> {
         let start = self.parsed_started_at()?;
-        let seconds = (now - start).num_seconds().max(0);
+        let seconds = now.duration_since(start).as_secs().max(0);
         // Round to nearest minute or floor; whole elapsed minutes:
         Ok((seconds / 60) as u32)
     }

@@ -2,10 +2,11 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use chrono::{TimeZone, Utc};
 use git2::{Repository, Signature};
+use jiff::{SignedDuration, Timestamp};
 use tempfile::TempDir;
 
+use backend_core::time::format_timestamp;
 use backend_core::{
     build_auth_callbacks, build_pat_callbacks, CommitPolicyConfig, CreateItemInput,
     DocumentedCommitInput, GitAuthRequest, ItemDetail, ItemEffort, ItemHistory, ItemManifest,
@@ -278,7 +279,7 @@ fn test_active_timer_and_manual_effort_logging() {
     ));
 
     // Start timer at t0
-    let t0 = Utc.with_ymd_and_hms(2026, 11, 2, 14, 0, 0).unwrap();
+    let t0 = "2026-11-02T14:00:00Z".parse::<Timestamp>().unwrap();
     let active = storage
         .start_timer_at("BUG-0001", t0, Some("Investigating parser".to_string()))
         .expect("should start timer");
@@ -293,7 +294,7 @@ fn test_active_timer_and_manual_effort_logging() {
     ));
 
     // Check status at t0 + 35 minutes 20 seconds
-    let t1 = Utc.with_ymd_and_hms(2026, 11, 2, 14, 35, 20).unwrap();
+    let t1 = "2026-11-02T14:35:20Z".parse::<Timestamp>().unwrap();
     let status = storage
         .timer_status_at(t1)
         .unwrap()
@@ -302,7 +303,7 @@ fn test_active_timer_and_manual_effort_logging() {
     assert_eq!(status.elapsed_seconds, 35 * 60 + 20);
 
     // Stop timer at t0 + 50 minutes
-    let t2 = Utc.with_ymd_and_hms(2026, 11, 2, 14, 50, 0).unwrap();
+    let t2 = "2026-11-02T14:50:00Z".parse::<Timestamp>().unwrap();
     let stopped = storage
         .stop_timer_at(t2)
         .expect("should stop timer and accumulate minutes");
@@ -322,7 +323,7 @@ fn test_metrics_engine_valuation_stagnant_items_and_recurring_hotspots() {
     let (_dir, storage) = init_temp_tracker();
 
     // Configure target_daily_hours = 6.0 and stagnant_item_threshold_days = 4
-    let now = Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0).unwrap();
+    let now = "2026-11-10T12:00:00Z".parse::<Timestamp>().unwrap();
 
     // Item 1: Open, updated 6 days ago (STAGNANT, 120 mins)
     let bug1 = ItemDetail {
@@ -1531,7 +1532,7 @@ fn test_cross_stage_scope_mirroring_and_move_item_to_phase() {
     assert_eq!(detail_pre.manifest.item.id, "FEAT-0001");
 
     // Start an active timer on FEAT-0001 so we also verify timer phase_id updates on move
-    let t0 = Utc.with_ymd_and_hms(2026, 11, 4, 18, 0, 0).unwrap();
+    let t0 = "2026-11-04T18:00:00Z".parse::<Timestamp>().unwrap();
     storage
         .start_timer_at(
             "FEAT-0001",
@@ -1847,9 +1848,9 @@ fn test_resolve_active_or_inferred_item_id_and_whats_next_ranking() {
             Some("Detailed spec."),
         )
         .unwrap();
-    let eval_now = Utc::now();
+    let eval_now = Timestamp::now();
     stagnant_feat.manifest.item.updated_at =
-        (eval_now - chrono::Duration::days(10)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        format_timestamp(eval_now - SignedDuration::from_hours(10 * 24));
     storage
         .write_item_detail("pre_production", "nebulous_cli", &stagnant_feat)
         .unwrap();
@@ -1982,8 +1983,8 @@ fn test_start_work_item_auto_timer_switch_close_stop_and_stage_advancement_hint(
 
     // Simulate 30 minutes elapsed on `BUG-0001`'s timer by backdating `started_at` in `.timer.toml`
     let mut backdated_timer = storage.read_active_timer().unwrap().unwrap();
-    let thirty_mins_ago = Utc::now() - chrono::Duration::minutes(30);
-    backdated_timer.started_at = thirty_mins_ago.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let thirty_mins_ago = Timestamp::now() - SignedDuration::from_mins(30);
+    backdated_timer.started_at = format_timestamp(thirty_mins_ago);
     storage.write_active_timer(&backdated_timer).unwrap();
 
     // 2. Call `start_work_item(Some("FEAT-0001"), ...)` while `BUG-0001` timer is running:
@@ -2018,8 +2019,8 @@ fn test_start_work_item_auto_timer_switch_close_stop_and_stage_advancement_hint(
     // Simulate 15 minutes elapsed on `FEAT-0001`'s timer
     let mut feat_timer = storage.read_active_timer().unwrap().unwrap();
     assert_eq!(feat_timer.item_id, "FEAT-0001");
-    let fifteen_mins_ago = Utc::now() - chrono::Duration::minutes(15);
-    feat_timer.started_at = fifteen_mins_ago.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let fifteen_mins_ago = Timestamp::now() - SignedDuration::from_mins(15);
+    feat_timer.started_at = format_timestamp(fifteen_mins_ago);
     storage.write_active_timer(&feat_timer).unwrap();
 
     // 3. Closing `FEAT-0001` while `.timer.toml` is timing it must automatically stop the timer
@@ -2526,10 +2527,10 @@ fn stop_twice_for_same_session_logs_once() {
         .create_bug("Idempotent stop test", None, None, Severity::Medium, None)
         .unwrap();
 
-    let t0 = Utc.with_ymd_and_hms(2026, 11, 2, 14, 0, 0).unwrap();
+    let t0 = "2026-11-02T14:00:00Z".parse::<Timestamp>().unwrap();
     let timer = storage.start_timer_at("BUG-0001", t0, None).unwrap();
 
-    let t1 = Utc.with_ymd_and_hms(2026, 11, 2, 14, 30, 0).unwrap();
+    let t1 = "2026-11-02T14:30:00Z".parse::<Timestamp>().unwrap();
     let first_stop = storage.stop_timer_at(t1).unwrap();
     assert_eq!(first_stop.elapsed_minutes, 30);
     assert_eq!(first_stop.total_logged_minutes, 30);
@@ -2551,10 +2552,10 @@ fn stop_syncs_scope_stub() {
         .create_bug("Sync scope stub test", None, None, Severity::Medium, None)
         .unwrap();
 
-    let t0 = Utc.with_ymd_and_hms(2026, 11, 2, 14, 0, 0).unwrap();
+    let t0 = "2026-11-02T14:00:00Z".parse::<Timestamp>().unwrap();
     storage.start_timer_at("BUG-0001", t0, None).unwrap();
 
-    let t1 = Utc.with_ymd_and_hms(2026, 11, 2, 14, 45, 0).unwrap();
+    let t1 = "2026-11-02T14:45:00Z".parse::<Timestamp>().unwrap();
     storage.stop_timer_at(t1).unwrap();
 
     let (_, detail) = storage.load_item_detail_by_id("BUG-0001").unwrap();
@@ -2602,10 +2603,10 @@ fn long_session_is_capped() {
         .create_bug("Cap session test", None, None, Severity::Medium, None)
         .unwrap();
 
-    let t0 = Utc.with_ymd_and_hms(2026, 11, 2, 10, 0, 0).unwrap();
+    let t0 = "2026-11-02T10:00:00Z".parse::<Timestamp>().unwrap();
     storage.start_timer_at("BUG-0001", t0, None).unwrap();
 
-    let t1 = t0 + chrono::Duration::minutes(600);
+    let t1 = t0 + SignedDuration::from_mins(600);
     let capped = storage.stop_timer_at(t1).unwrap();
     assert_eq!(capped.elapsed_minutes, 480);
     assert_eq!(capped.capped_from, Some(600));
@@ -2615,10 +2616,10 @@ fn long_session_is_capped() {
     project.metrics.max_session_minutes = 0;
     storage.write_project(&project).unwrap();
 
-    let t2 = Utc.with_ymd_and_hms(2026, 11, 3, 10, 0, 0).unwrap();
+    let t2 = "2026-11-03T10:00:00Z".parse::<Timestamp>().unwrap();
     storage.start_timer_at("BUG-0001", t2, None).unwrap();
 
-    let t3 = t2 + chrono::Duration::minutes(600);
+    let t3 = t2 + SignedDuration::from_mins(600);
     let uncapped = storage.stop_timer_at(t3).unwrap();
     assert_eq!(uncapped.elapsed_minutes, 600);
     assert_eq!(uncapped.capped_from, None);
@@ -2684,7 +2685,10 @@ fn stagnant_and_recurring_are_stage_scoped() {
         .unwrap();
 
     let report = storage
-        .compute_whats_next_at(None, Utc::now() + chrono::Duration::days(365))
+        .compute_whats_next_at(
+            None,
+            Timestamp::now() + SignedDuration::from_hours(365 * 24),
+        )
         .unwrap();
     let stagnant_ids: Vec<&str> = report
         .recommendations
@@ -2707,7 +2711,7 @@ fn close_applies_session_cap() {
     storage
         .start_timer_at(
             "BUG-0001",
-            Utc::now() - chrono::Duration::minutes(600),
+            Timestamp::now() - SignedDuration::from_mins(600),
             None,
         )
         .unwrap();
@@ -2733,7 +2737,7 @@ fn status_switch_reports_stopped_timer() {
     storage
         .start_timer_at(
             "BUG-0001",
-            Utc::now() - chrono::Duration::minutes(600),
+            Timestamp::now() - SignedDuration::from_mins(600),
             None,
         )
         .unwrap();
@@ -2765,7 +2769,7 @@ fn mcp_close_reports_capped_timer() {
     storage
         .start_timer_at(
             "BUG-0001",
-            Utc::now() - chrono::Duration::minutes(600),
+            Timestamp::now() - SignedDuration::from_mins(600),
             None,
         )
         .unwrap();

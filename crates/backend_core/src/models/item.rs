@@ -1,12 +1,12 @@
 use std::fmt;
 use std::str::FromStr;
 
-use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TrackerError};
+use crate::models::deserialize_datetime_string;
 use crate::models::scope::ItemStub;
-use crate::models::{deserialize_datetime_string, parse_date, parse_timestamp_utc};
+use crate::models::time::{parse_date, parse_timestamp_utc};
 
 /// Tier 4: Authoritative atomic item manifest (`.../items/<ITEM_ID>/item.toml`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -315,13 +315,13 @@ impl ItemMetadata {
         }
     }
 
-    /// Parses `created_at` into `DateTime<Utc>`.
-    pub fn parsed_created_at(&self) -> Result<DateTime<Utc>> {
+    /// Parses `created_at` into `jiff::Timestamp`.
+    pub fn parsed_created_at(&self) -> Result<jiff::Timestamp> {
         parse_timestamp_utc(&self.created_at)
     }
 
-    /// Parses `updated_at` into `DateTime<Utc>`.
-    pub fn parsed_updated_at(&self) -> Result<DateTime<Utc>> {
+    /// Parses `updated_at` into `jiff::Timestamp`.
+    pub fn parsed_updated_at(&self) -> Result<jiff::Timestamp> {
         parse_timestamp_utc(&self.updated_at)
     }
 }
@@ -357,8 +357,8 @@ pub struct PreviousFix {
 }
 
 impl PreviousFix {
-    /// Parses `date` into `NaiveDate`.
-    pub fn parsed_date(&self) -> Result<NaiveDate> {
+    /// Parses `date` into `jiff::civil::Date`.
+    pub fn parsed_date(&self) -> Result<jiff::civil::Date> {
         parse_date(&self.date)
     }
 }

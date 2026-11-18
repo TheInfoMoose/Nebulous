@@ -3,8 +3,8 @@ use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use git2::{Repository, Status, StatusOptions};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TrackerError};
@@ -315,14 +315,14 @@ impl TrackerStorage {
 
     /// Evaluates current project state and produces a ranked [`WhatsNextReport`] of actionable recommendations.
     pub fn compute_whats_next(&self, cwd: Option<&Path>) -> Result<WhatsNextReport> {
-        self.compute_whats_next_at(cwd, Utc::now())
+        self.compute_whats_next_at(cwd, Timestamp::now())
     }
 
     /// Evaluates current project state at `now` and produces a ranked [`WhatsNextReport`].
     pub fn compute_whats_next_at(
         &self,
         cwd: Option<&Path>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<WhatsNextReport> {
         let index = self.load_index()?;
         let default_scope = {
@@ -408,7 +408,7 @@ impl TrackerStorage {
                     let days_since_update = manifest
                         .item
                         .parsed_updated_at()
-                        .map(|dt| (now - dt).num_days())
+                        .map(|dt| now.duration_since(dt).as_secs() / 86_400)
                         .unwrap_or(0);
 
                     candidates.push(CandidateItem {
