@@ -3,13 +3,11 @@ use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::{Result, TrackerError};
-use crate::models::{
-    deserialize_datetime_string, deserialize_opt_datetime_string, parse_timestamp_utc,
-};
+use crate::models::time::parse_timestamp_utc;
+use crate::models::{deserialize_datetime_string, deserialize_opt_datetime_string};
 use crate::storage::{normalize_relative_path_list, normalize_relative_path_str};
 
 /// Canonical filename for per-directory Nebulous component manifests.
@@ -533,8 +531,8 @@ where
 }
 
 impl PinnedReleaseConfig {
-    /// Parses `pinned_at` into a UTC `DateTime`.
-    pub fn parsed_pinned_at(&self) -> Result<DateTime<Utc>> {
+    /// Parses `pinned_at` into a UTC `Timestamp`.
+    pub fn parsed_pinned_at(&self) -> Result<jiff::Timestamp> {
         parse_timestamp_utc(&self.pinned_at)
     }
 }
@@ -560,8 +558,8 @@ pub struct VerificationRecord {
 }
 
 impl VerificationRecord {
-    /// Parses `verified_at` into an optional UTC `DateTime`.
-    pub fn parsed_verified_at(&self) -> Result<Option<DateTime<Utc>>> {
+    /// Parses `verified_at` into an optional UTC `Timestamp`.
+    pub fn parsed_verified_at(&self) -> Result<Option<jiff::Timestamp>> {
         match self.verified_at.as_deref() {
             Some(s) if !s.trim().is_empty() => Ok(Some(parse_timestamp_utc(s)?)),
             _ => Ok(None),
@@ -605,8 +603,8 @@ pub struct RollingUpdateEntry {
 }
 
 impl RollingUpdateEntry {
-    /// Parses `recorded_at` into an optional UTC `DateTime`.
-    pub fn parsed_recorded_at(&self) -> Result<Option<DateTime<Utc>>> {
+    /// Parses `recorded_at` into an optional UTC `Timestamp`.
+    pub fn parsed_recorded_at(&self) -> Result<Option<jiff::Timestamp>> {
         match self.recorded_at.as_deref() {
             Some(s) if !s.trim().is_empty() => Ok(Some(parse_timestamp_utc(s)?)),
             _ => Ok(None),

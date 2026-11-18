@@ -3,12 +3,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::nebulous_config_dir;
 use crate::error::{Result, TrackerError};
-use crate::models::{deserialize_datetime_string, parse_timestamp_utc};
+use crate::models::deserialize_datetime_string;
+use crate::models::time::{now_timestamp_string, parse_timestamp_utc};
 use crate::storage::{
     atomic_write_str, is_unsafe_broad_directory, validate_safe_project_root, TrackerStorage,
 };
@@ -76,8 +76,8 @@ pub struct RegisteredProject {
 }
 
 impl RegisteredProject {
-    /// Parses `last_opened_at` into `DateTime<Utc>`.
-    pub fn parsed_last_opened_at(&self) -> Result<DateTime<Utc>> {
+    /// Parses `last_opened_at` into `jiff::Timestamp`.
+    pub fn parsed_last_opened_at(&self) -> Result<jiff::Timestamp> {
         parse_timestamp_utc(&self.last_opened_at)
     }
 }
@@ -284,7 +284,7 @@ impl GlobalProjectRegistry {
         let project_name = explicit_name.clone().unwrap_or(inferred_name);
 
         let base_id = slugify_project_id(&project_name);
-        let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let now = now_timestamp_string();
         let cleaned_tags = deduplicate_tags(tags);
 
         if let Some(existing) = self
@@ -364,7 +364,7 @@ impl GlobalProjectRegistry {
                 kind: "Project",
                 id: trimmed.to_string(),
             })?;
-        edited.last_opened_at = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        edited.last_opened_at = now_timestamp_string();
         let cloned = edited.clone();
         self.active_project_id = Some(cloned.id.clone());
         Ok(cloned)
