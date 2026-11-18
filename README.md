@@ -181,6 +181,16 @@ cargo test --workspace
 
 ---
 
+## Releasing
+
+Versions: `0.0.x` = alpha, `0.1.x` = beta, `1.0.0` = first stable release. Add notable changes under `## [Unreleased]` in `CHANGELOG.md` as they land.
+
+1. Preview with `scripts/bump-version.sh --dry-run X.Y.Z`, then run `scripts/bump-version.sh X.Y.Z`. It sets the version in `Cargo.toml`, refreshes `Cargo.lock`, dates the changelog section, and prints the commit and tag commands. It never commits, tags or pushes.
+2. Run the printed commands. Pushing the `vX.Y.Z` tag starts `.github/workflows/release.yml`.
+3. Before building, the release workflow runs `scripts/release-check.sh vX.Y.Z`. That check stops the release if the tag doesn't match `Cargo.toml` or the changelog has no dated, non-empty `## [X.Y.Z]` section. `0.x` releases are published as pre-releases, with the changelog section as the release notes.
+
+---
+
 ## License
 
 Released under the [MIT License](LICENSE).
