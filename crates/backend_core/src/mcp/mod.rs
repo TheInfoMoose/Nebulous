@@ -3,13 +3,13 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::{Result, TrackerError};
 use crate::git_sync::{DocumentedCommitInput, GitAuthRequest};
 use crate::ingestion::IngestionOptions;
+use crate::models::time::{now_timestamp_string, today_date_string};
 use crate::models::{
     load_global_registry, load_global_registry_from, set_active_project, set_active_project_in,
     ComponentDependency, ComponentManifest, ComponentType, GlobalProjectRegistry, ItemStatus,
@@ -1774,7 +1774,7 @@ impl McpServer {
         let mut linked_item_id = non_empty(parsed.tracked_item_id.as_deref()).map(str::to_string);
         if let Some(ref existing_id) = linked_item_id {
             if let Ok((loc, mut detail)) = storage.load_item_detail_by_id(existing_id) {
-                let today = Utc::now().format("%Y-%m-%d").to_string();
+                let today = today_date_string();
                 let script_note = parsed
                     .build_script_path
                     .as_deref()
@@ -1848,7 +1848,7 @@ impl McpServer {
                 .map(normalize_relative_path_str),
             tracked_item_id: linked_item_id.clone(),
             status: "pending".to_string(),
-            recorded_at: Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+            recorded_at: Some(now_timestamp_string()),
             summary: non_empty(parsed.summary.as_deref()).map(str::to_string),
             verification_run: None,
         };
@@ -1903,7 +1903,7 @@ impl McpServer {
                 }
             }),
             logs_excerpt: non_empty(parsed.logs_excerpt.as_deref()).map(str::to_string),
-            verified_at: Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+            verified_at: Some(now_timestamp_string()),
         };
 
         let updated_manifest =

@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
 use ignore::{DirEntry, WalkBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TrackerError};
 use crate::models::registry::slugify_project_id;
+use crate::models::time::now_timestamp_string;
 use crate::models::{
     resolve_phase_alias, ComponentManifest, ComponentType, RollingUpdateEntry, ScopeItems,
     ScopeManifest, ScopeMetadata, ScopeRegistryEntry, VerificationRecord,
@@ -778,7 +778,7 @@ impl TrackerStorage {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| self.git_head_short_sha());
-            let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            let now = now_timestamp_string();
 
             manifest.pin_current_release(sha, now, build_script_path, build_flags, verification);
             self.write_component_manifest(&manifest)?;
@@ -796,7 +796,7 @@ impl TrackerStorage {
         self.with_write_lock(|_| {
             let mut manifest = self.read_component_manifest(component_id)?;
             if update.recorded_at.is_none() {
-                update.recorded_at = Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+                update.recorded_at = Some(now_timestamp_string());
             }
             if let Some(dep) = manifest
                 .dependencies
@@ -826,7 +826,7 @@ impl TrackerStorage {
         self.with_write_lock(|_| {
             let mut manifest = self.read_component_manifest(component_id)?;
             if record.verified_at.is_none() {
-                record.verified_at = Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+                record.verified_at = Some(now_timestamp_string());
             }
             if let Some(last_update) = manifest.rolling_updates.last_mut() {
                 last_update.status = if record.passed {

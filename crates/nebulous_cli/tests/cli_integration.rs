@@ -2544,17 +2544,16 @@ fn test_tui_t_key_opens_task_capture_and_creates_task() {
 
 #[test]
 fn tui_timer_renders_wall_clock_minutes() {
+    use backend_core::time::format_timestamp;
     use backend_core::{ActiveTimer, TimerStatus};
-    use chrono::{Duration, Utc};
+    use jiff::{SignedDuration, Timestamp};
     use nebulous_cli::tui::{render_to_string, TuiApp};
 
     let temp = TempDir::new().expect("should create temp dir for TUI timer test");
     let storage = TrackerStorage::init_standard(temp.path(), "TuiTimerTest").unwrap();
     let mut app = TuiApp::new(storage, None).unwrap();
 
-    let started_at = (Utc::now() - Duration::minutes(7))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let started_at = format_timestamp(Timestamp::now() - SignedDuration::from_mins(7));
     app.active_timer = Some(TimerStatus {
         timer: ActiveTimer::new(
             "BUG-0001",
