@@ -1,11 +1,12 @@
 use std::fmt;
 use std::str::FromStr;
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TrackerError};
-use crate::models::{deserialize_opt_datetime_string, parse_date};
+use crate::models::deserialize_opt_datetime_string;
+use crate::models::time::parse_date;
 
 /// Canonical 3-stage development lifecycle phases (`(phase_id, title)`).
 pub const CANONICAL_PHASES: &[(&str, &str)] = &[
@@ -144,13 +145,13 @@ pub struct PhaseMetadata {
 }
 
 impl PhaseMetadata {
-    /// Parses `start_date` if present into `NaiveDate`.
-    pub fn parsed_start_date(&self) -> Result<Option<NaiveDate>> {
+    /// Parses `start_date` if present into `Date`.
+    pub fn parsed_start_date(&self) -> Result<Option<Date>> {
         self.start_date.as_deref().map(parse_date).transpose()
     }
 
-    /// Parses `end_date` if present into `NaiveDate`.
-    pub fn parsed_end_date(&self) -> Result<Option<NaiveDate>> {
+    /// Parses `end_date` if present into `Date`.
+    pub fn parsed_end_date(&self) -> Result<Option<Date>> {
         self.end_date.as_deref().map(parse_date).transpose()
     }
 }

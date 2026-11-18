@@ -110,7 +110,7 @@ pub struct ItemStub {
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum CreatedAtRank<'a> {
     Empty,
-    Parsed(chrono::DateTime<chrono::Utc>),
+    Parsed(jiff::Timestamp),
     Unparseable(&'a str),
 }
 
@@ -118,7 +118,7 @@ fn created_at_rank(value: &str) -> CreatedAtRank<'_> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         CreatedAtRank::Empty
-    } else if let Ok(dt) = crate::models::parse_timestamp_utc(trimmed) {
+    } else if let Ok(dt) = crate::models::time::parse_timestamp_utc(trimmed) {
         CreatedAtRank::Parsed(dt)
     } else {
         CreatedAtRank::Unparseable(trimmed)

@@ -1,13 +1,13 @@
 use std::fmt;
 use std::str::FromStr;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TrackerError};
 use crate::models::component::ComponentRegistry;
+use crate::models::deserialize_datetime_string;
 use crate::models::item::ItemType;
-use crate::models::{deserialize_datetime_string, parse_timestamp_utc};
+use crate::models::time::parse_timestamp_utc;
 
 /// Tier 1: Root project manifest (`.tracker/project.toml`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -53,8 +53,8 @@ pub struct ProjectMetadata {
 }
 
 impl ProjectMetadata {
-    /// Parses `created_at` into a UTC `DateTime`.
-    pub fn parsed_created_at(&self) -> Result<DateTime<Utc>> {
+    /// Parses `created_at` into a UTC `Timestamp`.
+    pub fn parsed_created_at(&self) -> Result<jiff::Timestamp> {
         parse_timestamp_utc(&self.created_at)
     }
 }
