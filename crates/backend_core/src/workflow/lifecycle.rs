@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use chrono::Utc;
+use crate::models::time::{now_timestamp_string, today_date_string};
 
 use crate::agent_context::AgentContextBundle;
 use crate::error::{Result, TrackerError};
@@ -341,7 +341,7 @@ impl TrackerStorage {
                 detail.manifest.effort.iteration_count =
                     detail.manifest.effort.iteration_count.saturating_add(1);
             } else if !old_status.is_completed() && new_status.is_completed() {
-                let today = Utc::now().format("%Y-%m-%d").to_string();
+                let today = today_date_string();
                 let commit = self.git_head_short_sha();
                 detail.manifest.history.previous_fixes.push(PreviousFix {
                     date: today,
@@ -397,7 +397,7 @@ impl TrackerStorage {
             detail.manifest.item.updated_at = now_rfc3339();
 
             if let Some(note) = reason.map(str::trim).filter(|s| !s.is_empty()) {
-                let today = Utc::now().format("%Y-%m-%d").to_string();
+                let today = today_date_string();
                 if !detail.description_markdown.ends_with('\n') {
                     detail.description_markdown.push('\n');
                 }
@@ -448,7 +448,7 @@ impl TrackerStorage {
             detail.manifest.item.updated_at = now_rfc3339();
 
             if let Some(note) = reason.map(str::trim).filter(|s| !s.is_empty()) {
-                let today = Utc::now().format("%Y-%m-%d").to_string();
+                let today = today_date_string();
                 if !detail.description_markdown.ends_with('\n') {
                     detail.description_markdown.push('\n');
                 }
@@ -523,7 +523,7 @@ impl TrackerStorage {
                 .map(str::to_string)
                 .unwrap_or_else(|| self.git_head_short_sha());
 
-            let today = Utc::now().format("%Y-%m-%d").to_string();
+            let today = today_date_string();
             detail.manifest.history.previous_fixes.push(PreviousFix {
                 date: today,
                 commit,
@@ -640,7 +640,7 @@ impl TrackerStorage {
                 });
             }
 
-            let today = Utc::now().format("%Y-%m-%d").to_string();
+            let today = today_date_string();
             let default_scope = {
                 let trimmed = project.project.default_scope.trim();
                 if trimmed.is_empty() {
@@ -1043,5 +1043,5 @@ impl TrackerStorage {
 }
 
 pub(crate) fn now_rfc3339() -> String {
-    Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    now_timestamp_string()
 }

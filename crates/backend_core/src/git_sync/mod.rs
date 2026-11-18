@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use chrono::Utc;
+use crate::models::time::today_date_string;
 use git2::{
     build::CheckoutBuilder, BranchType, Cred, CredentialType, FetchOptions, Index, IndexAddOption,
     IndexEntry, IndexTime, Oid, PushOptions, RemoteCallbacks, Repository, Signature, Status,
@@ -1853,7 +1853,7 @@ impl TrackerStorage {
 
         if let Some((loc, mut detail)) = prepared.loaded_item {
             if prepared.auto_append_to_desc {
-                let today = Utc::now().format("%Y-%m-%d").to_string();
+                let today = today_date_string();
                 let workspace_or_changed: Vec<String> = changed_files
                     .iter()
                     .filter(|p| !is_tracker_relative_path(p))

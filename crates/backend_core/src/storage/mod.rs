@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use std::cell::Cell;
 
-use chrono::Utc;
+use crate::models::time::{now_timestamp_string, today_date_string};
 
 pub use atomic::{atomic_write_bytes, atomic_write_str};
 pub use id::parse_item_id_number;
@@ -280,8 +280,8 @@ impl TrackerStorage {
         let raw_phase_title = initial_phase_title.into();
         validate_identifier("Phase", &phase_id)?;
 
-        let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let now = now_timestamp_string();
+        let today = today_date_string();
 
         let inbox_scope = ScopeManifest {
             scope: ScopeMetadata {
