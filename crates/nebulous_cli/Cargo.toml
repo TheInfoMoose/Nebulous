@@ -18,7 +18,6 @@ path = "src/main.rs"
 arboard = { version = "3", features = ["wayland-data-control"] }
 backend_core.workspace = true
 base64 = "0.22"
-chrono.workspace = true
 jiff.workspace = true
 clap = { version = "4", features = ["derive"] }
 crossterm.workspace = true
