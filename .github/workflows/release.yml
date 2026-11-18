@@ -22,6 +22,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Release guard (tag matches Cargo.toml, dated CHANGELOG section)
+        run: |
+          mkdir -p dist
+          bash scripts/release-check.sh "${GITHUB_REF_NAME}" > dist/RELEASE_NOTES.md
+
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
@@ -55,8 +60,10 @@ jobs:
       - name: Build release binary (`neb`)
         run: cargo build -p nebulous_cli --release --locked
 
-      - name: Verify release binary (`neb --help`)
-        run: ./target/release/neb --help
+      - name: Verify release binary (`neb --help`, `neb --version`)
+        run: |
+          ./target/release/neb --help
+          test "$(./target/release/neb --version)" = "neb ${GITHUB_REF_NAME#v}"
 
       - name: Package `.tar.gz` archive and `.sha256` checksum
         run: |
@@ -67,7 +74,7 @@ jobs:
           mkdir -p "${STAGING_DIR}"
           cp target/release/neb "${STAGING_DIR}/"
           install -m 0755 scripts/install.sh "${STAGING_DIR}/install.sh"
-          cp README.md LICENSE "${STAGING_DIR}/"
+          cp README.md LICENSE CHANGELOG.md "${STAGING_DIR}/"
           cp -r docs "${STAGING_DIR}/"
 
           tar -C dist -czf "dist/${ARCHIVE_BASENAME}.tar.gz" "${ARCHIVE_BASENAME}"
@@ -88,6 +95,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
+            dist/RELEASE_NOTES.md
           if-no-files-found: error
 
   publish:
@@ -106,7 +114,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: dist/RELEASE_NOTES.md
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
           files: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
