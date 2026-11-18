@@ -1892,13 +1892,13 @@ fn test_resolve_active_or_inferred_item_id_and_whats_next_ranking() {
             .unwrap(),
         "BUG-0002"
     );
-    // 2. When no timer or in_progress item exists, returns ValidationError suggesting top recommended ID ("BUG-0003")
+    // 2. When no timer or in_progress item exists, returns ValidationError pointing to `neb next`
     let err = storage
         .resolve_active_or_inferred_item_id(None)
         .expect_err("should fail when no timer or in_progress item exists");
     assert!(matches!(
         err,
-        TrackerError::ValidationError(ref msg) if msg.contains("BUG-0003")
+        TrackerError::ValidationError(ref msg) if msg.contains("neb next")
     ));
 
     // Close BUG-0003 and FEAT-0002 so BUG-0002 (which has default placeholder `desc.md`) is the top recommended item

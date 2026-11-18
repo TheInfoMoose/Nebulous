@@ -216,7 +216,7 @@ impl TrackerStorage {
     /// 1. If `explicit_id` is `Some(id)` and non-empty, normalizes case (`id.trim().to_ascii_uppercase()`) and returns it.
     /// 2. If `.timer.toml` has an active timer, returns `timer.item_id`.
     /// 3. If there is a single `ItemStatus::InProgress` item in the active phase (or across the project if none in active phase), returns its ID.
-    /// 4. Otherwise returns a descriptive [`TrackerError::ValidationError`] explaining that no active timer or single `in_progress` item was found and suggesting the top recommended item ID.
+    /// 4. Otherwise returns a descriptive [`TrackerError::ValidationError`] explaining that no active timer or single `in_progress` item was found and pointing the user to `neb next`.
     pub fn resolve_active_or_inferred_item_id(&self, explicit_id: Option<&str>) -> Result<String> {
         if let Some(raw) = explicit_id.map(str::trim).filter(|s| !s.is_empty()) {
             return Ok(raw.to_ascii_uppercase());
@@ -247,13 +247,8 @@ impl TrackerStorage {
                 return Ok(in_progress_in_active[0].clone());
             }
             if in_progress_in_active.len() > 1 {
-                let suggested = self
-                    .compute_whats_next(None)
-                    .ok()
-                    .and_then(|r| r.top_item_id().map(str::to_string))
-                    .unwrap_or_else(|| in_progress_in_active[0].clone());
                 return Err(TrackerError::ValidationError(format!(
-                    "No active timer found and multiple in_progress items exist in '{}' ({}). Specify an explicit item ID (top recommended: {suggested}).",
+                    "No active timer found and multiple in_progress items exist in '{}' ({}). Pass one of these IDs explicitly, or run `neb next` for ranked recommendations.",
                     active_phase.phase_id,
                     in_progress_in_active.join(", ")
                 )));
@@ -271,16 +266,8 @@ impl TrackerStorage {
             return Ok(all_in_progress[0].clone());
         }
 
-        let suggestion_suffix = match self
-            .compute_whats_next(None)
-            .ok()
-            .and_then(|r| r.top_item_id().map(str::to_string))
-        {
-            Some(top_id) => format!(
-                " Top recommended item: {top_id} (run `neb start {top_id}` or pass `{top_id}` explicitly)."
-            ),
-            None => " No open work items are currently available.".to_string(),
-        };
+        let suggestion_suffix =
+            " Pass an item ID explicitly, or run `neb next` for ranked recommendations.";
 
         if all_in_progress.len() > 1 {
             Err(TrackerError::ValidationError(format!(
