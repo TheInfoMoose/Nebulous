@@ -5,6 +5,8 @@ Versions: `0.0.x` = alpha, `0.1.x` = beta, `1.0.0` = first stable release.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-18
+
 First beta (0.1.0).
 
 ### Added
