@@ -1,0 +1,6 @@
+[[servers]]
+server_id = "hybrid"
+
+[servers.transport]
+type = "Stdio"
+command = "orrery-hybrid-gate"

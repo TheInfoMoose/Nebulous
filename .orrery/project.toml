@@ -5,8 +5,8 @@ execution_mode = "Run"
 cycle_count = 0
 max_concurrent_agents = 1
 max_step_retries = 2
-validation_mode = "GateAndOperator"
-gate_tools = []
+validation_mode = "Agents"
+gate_tools = ["hybrid:step_check"]
 
 [[stages]]
 role_id = "orchestrator"
@@ -19,3 +19,10 @@ agent_ids = ["agy-impl"]
 [[stages]]
 role_id = "validator"
 agent_ids = ["claude-val"]
+
+[hooks.on_step_start]
+tool = "hybrid:step_start"
+on_failure = "Halt"
+
+[limits]
+mcp_call_timeout_secs = 1800
