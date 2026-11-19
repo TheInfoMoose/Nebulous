@@ -1,0 +1,17 @@
+[item]
+id = "BUG-0002"
+type = "bug"
+title = "Make git_fetch dry run report status without origin"
+status = "pending"
+severity = "low"
+scope_ref = "backend_core"
+created_at = "2026-11-19T01:56:43Z"
+updated_at = "2026-11-19T01:56:43Z"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []

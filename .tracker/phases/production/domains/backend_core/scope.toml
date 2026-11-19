@@ -40,8 +40,28 @@ tracked_files = [
 ]
 
 [items]
-bugs = []
 features = []
+
+[[items.bugs]]
+id = "BUG-0001"
+title = "Accept unknown fields in plan_import MCP args"
+status = "pending"
+severity = "low"
+created_at = "2026-11-19T01:56:43Z"
+
+[[items.bugs]]
+id = "BUG-0002"
+title = "Make git_fetch dry run report status without origin"
+status = "pending"
+severity = "low"
+created_at = "2026-11-19T01:56:43Z"
+
+[[items.bugs]]
+id = "BUG-0003"
+title = "Stop plan import from reverting hand-edited item titles"
+status = "pending"
+severity = "low"
+created_at = "2026-11-19T01:57:28Z"
 
 [[items.tasks]]
 id = "TASK-0001"
@@ -476,3 +496,31 @@ title = "MCP plan_import {path, phase?, dry_run = true} (path contained to proje
 status = "closed"
 severity = "medium"
 created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0084"
+title = "Add MCP protocol version 2025-11-25 to supported list"
+status = "pending"
+severity = "low"
+created_at = "2026-11-19T01:56:43Z"
+
+[[items.tasks]]
+id = "TASK-0085"
+title = "Upgrade jiff to 1.0 once it is two weeks old"
+status = "pending"
+severity = "low"
+created_at = "2026-11-19T01:56:43Z"
+
+[[items.tasks]]
+id = "TASK-0086"
+title = "Exclude pending items from stagnant warnings or label them parked"
+status = "pending"
+severity = "low"
+created_at = "2026-11-19T01:56:43Z"
+
+[[items.tasks]]
+id = "TASK-0088"
+title = "Ignore timer files in trackers created by neb init"
+status = "pending"
+severity = "low"
+created_at = "2026-11-19T01:56:52Z"
