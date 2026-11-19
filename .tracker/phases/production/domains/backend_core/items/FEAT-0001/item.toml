@@ -1,0 +1,17 @@
+[item]
+id = "FEAT-0001"
+type = "feature"
+title = "Resolve item from Orrery step context in MCP status tools"
+status = "pending"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-19T02:21:53Z"
+updated_at = "2026-11-19T02:21:53Z"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []
