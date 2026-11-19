@@ -1,0 +1,6 @@
+role_id = "orchestrator"
+display_name = "Orchestrator"
+kind = "Orchestrator"
+rules_file = "orchestrator.md"
+allowed_mcp_tools = []
+skills = ["repo-rules"]

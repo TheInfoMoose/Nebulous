@@ -1,0 +1,21 @@
+project_name = "Nebulous"
+plan_path = "STEPPED_IMPLEMENTATION_PLAN.md"
+step_marker = "### STEP "
+execution_mode = "Run"
+cycle_count = 0
+max_concurrent_agents = 1
+max_step_retries = 2
+validation_mode = "GateAndOperator"
+gate_tools = []
+
+[[stages]]
+role_id = "orchestrator"
+agent_ids = ["claude-orch"]
+
+[[stages]]
+role_id = "coder"
+agent_ids = ["agy-impl"]
+
+[[stages]]
+role_id = "validator"
+agent_ids = ["claude-val"]
