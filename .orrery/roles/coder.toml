@@ -3,4 +3,4 @@ display_name = "Implementation"
 kind = "Implementer"
 rules_file = "coder.md"
 allowed_mcp_tools = []
-skills = ["argon-executor", "repo-rules"]
+skills = ["repo-rules"]
