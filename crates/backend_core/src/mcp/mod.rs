@@ -821,11 +821,12 @@ impl McpServer {
             },
             McpToolDefinition {
                 name: "git_fetch".to_string(),
-                description: "Fetches the configured remote branch without modifying the working tree and returns updated ahead/behind commit counts.".to_string(),
+                description: "Fetches the configured remote branch without modifying the working tree and returns updated ahead/behind commit counts. Pass dry_run: true to get the current status and what would be fetched without contacting the remote.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "auth_override": { "type": "string", "description": "Optional vault credential account name; must be bound to this project in the local registry. PATs and key file paths are not accepted." }
+                        "auth_override": { "type": "string", "description": "Optional vault credential account name; must be bound to this project in the local registry. PATs and key file paths are not accepted." },
+                        "dry_run": { "type": "boolean", "default": false, "description": "When true, returns git status and what would be fetched without contacting the remote (works without a configured remote). Defaults to false: fetch is non-destructive." }
                     }
                 }),
             },
@@ -2160,12 +2161,25 @@ impl McpServer {
             auth_override: Option<String>,
             #[serde(default)]
             pat: Option<Value>,
+            #[serde(default)]
+            dry_run: bool,
         }
 
         let parsed: Args = serde_json::from_value(args)
             .map_err(|e| TrackerError::ValidationError(format!("Invalid git_fetch args: {e}")))?;
         let auth = mcp_auth_request(parsed.auth_override.as_deref(), parsed.pat.as_ref())?;
         let storage = self.resolve_active_storage()?;
+        if parsed.dry_run {
+            let status = storage.git_status()?;
+            let branch = status.branch.as_deref().unwrap_or("<none>");
+            let remote = status.remote_url.as_deref().unwrap_or("<none>");
+            let would = format!("fetch {branch} from {remote}");
+            return Ok(json!({
+                "dry_run": true,
+                "status": status,
+                "would": would
+            }));
+        }
         let status = storage.git_fetch(&auth)?;
         serde_json::to_value(status).map_err(|e| TrackerError::ValidationError(e.to_string()))
     }

@@ -2874,3 +2874,34 @@ fn mcp_status_without_timer_reports_null() {
 
     assert!(res["stopped_timer"].is_null());
 }
+
+#[test]
+fn mcp_git_fetch_dry_run_reports_status_without_a_remote() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let dir = TempDir::new().unwrap();
+    let storage = TrackerStorage::init_standard(dir.path(), "McpFetchDryRun").unwrap();
+    let repo = Repository::init(dir.path()).unwrap();
+    {
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "testuser").unwrap();
+        cfg.set_str("user.email", "testuser@example.com").unwrap();
+    }
+    storage
+        .git_commit_tracker(Some("chore: init tracker"))
+        .unwrap();
+    assert!(repo.find_remote("origin").is_err());
+
+    let mut server = McpServer::new(Some(storage));
+    let dry = server
+        .call_tool("git_fetch", json!({"dry_run": true}))
+        .expect("dry run must not need a remote");
+    assert_eq!(dry["dry_run"], json!(true));
+    assert!(dry["status"].is_object());
+    let would = dry["would"].as_str().expect("would is a string");
+    assert!(would.starts_with("fetch "), "unexpected: {would}");
+    assert!(would.ends_with(" from <none>"), "unexpected: {would}");
+
+    assert!(server.call_tool("git_fetch", json!({})).is_err());
+}
