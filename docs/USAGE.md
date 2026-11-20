@@ -265,6 +265,8 @@ The list refreshes automatically on external `.tracker/` changes.
 
 ### Configuration Snippets
 
+`--root` is optional. Without it, `neb mcp` serves the `.tracker/` found by walking up from its working directory, and only then the active project in `projects.toml`. Clients that start the server in the project root (Orrery does) can leave it out.
+
 #### Cursor (`.cursor/mcp.json`) & Claude Code (`.mcp.json`)
 ```json
 {
@@ -292,3 +294,7 @@ The `plan_import` MCP tool imports roadmap steps from a stepped plan file using 
   - `phase` (optional string): target stage for newly created tasks (defaults to `active_phase`).
   - `dry_run` (optional boolean, default `true`): when `true`, previews changes without modifying `.tracker/`; set `dry_run: false` to write changes.
 - **Strict validation & response**: unknown arguments are rejected (except the reserved `orrery` context object that Orrery adds to every call, which is accepted and ignored), and the tool returns the same JSON `ImportReport` (`created`, `retitled`, `closed`, `unchanged`) as `neb plan import --json`.
+
+### Orrery step context (`update_item_status`, `close_item_with_fix`)
+
+Orrery adds a reserved `orrery` object to every hook and gate call. When `item_id` is left out, both tools parse the step ID from `orrery.step_title` (`"3F: Title"` or `"STEP 3F: Title"`) and act on the one item whose `source_ref` is `STEP <ID>`, which is what `neb plan import` sets. No matching item, more than one, or a title without a step ID is an error. An explicit `item_id` always wins.

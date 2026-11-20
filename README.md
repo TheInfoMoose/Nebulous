@@ -31,7 +31,7 @@
 - **Two-Stage Directory Ingestion & Rolling-Release Pinning (`nebulous.component.toml`)**:
   - Walks the project tree respecting `.gitignore`, auto-detects ecosystem markers (`Cargo.toml`, `package.json`, `pyproject.toml`, `CMakeLists.txt`, `Makefile`, `Dockerfile`, or `nebulous.component.toml`), snapshots `last_known_good` (`pinned_release`) configurations, and promotes components directly into domain scopes across all stages.
 - **Model Context Protocol Server (`neb mcp`) & Enforced Git Commit Policy**:
-  - Built-in JSON-RPC 2.0 `stdio` MCP server exposing 23 tools across Task & Boundary Management, Project & Component Ingestion, Release Engineering & Self-Healing CI/CD, and Policy-Validated Git Operations.
+  - Built-in JSON-RPC 2.0 `stdio` MCP server exposing 24 tools across Task & Boundary Management, Project & Component Ingestion, Release Engineering & Self-Healing CI/CD, and Policy-Validated Git Operations.
   - Enforced `[git.commit_policy]` formats commits as `[<ITEM_ID>](<scope>) <summary>` and automatically records the commit SHA, date, changed files, and summary into `item.toml` and `desc.md`.
 
 ---
