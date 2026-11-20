@@ -625,10 +625,10 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "item_id": { "type": "string", "description": "Item ID (e.g. BUG-0001)." },
+                        "item_id": { "type": "string", "description": "Item ID (e.g. BUG-0001). Optional when the reserved orrery.step_title is present: the item whose source_ref is STEP <ID> is used." },
                         "status": { "type": "string", "description": "Target status (open, in_progress, pending, closed, merged)." }
                     },
-                    "required": ["item_id", "status"]
+                    "required": ["status"]
                 }),
             },
             McpToolDefinition {
@@ -637,12 +637,12 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "item_id": { "type": "string", "description": "Item ID (e.g. BUG-0001)." },
+                        "item_id": { "type": "string", "description": "Item ID (e.g. BUG-0001). Optional when the reserved orrery.step_title is present: the item whose source_ref is STEP <ID> is used." },
                         "summary": { "type": "string", "description": "Summary of the implemented fix." },
                         "commit": { "type": "string", "description": "Optional commit short SHA (defaults to Git HEAD or 'uncommitted')." },
                         "merged": { "type": "boolean", "description": "When true, marks status as 'merged' instead of 'closed'." }
                     },
-                    "required": ["item_id", "summary"]
+                    "required": ["summary"]
                 }),
             },
             McpToolDefinition {
@@ -1344,18 +1344,22 @@ impl McpServer {
     fn tool_update_item_status(&mut self, args: Value) -> Result<Value> {
         #[derive(Debug, Deserialize)]
         struct Args {
-            #[serde(alias = "id")]
-            item_id: String,
+            #[serde(default, alias = "id")]
+            item_id: Option<String>,
             status: String,
         }
 
-        let parsed: Args = serde_json::from_value(args).map_err(|e| {
+        let parsed: Args = serde_json::from_value(args.clone()).map_err(|e| {
             TrackerError::ValidationError(format!("Invalid update_item_status args: {e}"))
         })?;
         let storage = self.resolve_active_storage()?;
+        let item_id = match non_empty(parsed.item_id.as_deref()) {
+            Some(id) => id.to_string(),
+            None => item_id_from_orrery_step(&storage, &args)?,
+        };
         let status = ItemStatus::from_str(&parsed.status)?;
-        let loc = storage.locate_item(parsed.item_id.trim())?;
-        let change = storage.update_item_status_reporting(parsed.item_id.trim(), status)?;
+        let loc = storage.locate_item(&item_id)?;
+        let change = storage.update_item_status_reporting(&item_id, status)?;
         let detail = change.detail;
 
         Ok(json!({
@@ -1374,8 +1378,8 @@ impl McpServer {
     fn tool_close_item_with_fix(&mut self, args: Value) -> Result<Value> {
         #[derive(Debug, Deserialize)]
         struct Args {
-            #[serde(alias = "id")]
-            item_id: String,
+            #[serde(default, alias = "id")]
+            item_id: Option<String>,
             #[serde(alias = "message")]
             summary: String,
             #[serde(default, alias = "commit_sha")]
@@ -1384,12 +1388,16 @@ impl McpServer {
             merged: bool,
         }
 
-        let parsed: Args = serde_json::from_value(args).map_err(|e| {
+        let parsed: Args = serde_json::from_value(args.clone()).map_err(|e| {
             TrackerError::ValidationError(format!("Invalid close_item_with_fix args: {e}"))
         })?;
         let storage = self.resolve_active_storage()?;
+        let item_id = match non_empty(parsed.item_id.as_deref()) {
+            Some(id) => id.to_string(),
+            None => item_id_from_orrery_step(&storage, &args)?,
+        };
         let change = storage.close_item_reporting(
-            parsed.item_id.trim(),
+            &item_id,
             &parsed.summary,
             non_empty(parsed.commit.as_deref()),
             parsed.merged,
@@ -2605,6 +2613,54 @@ fn mcp_auth_request(auth_override: Option<&str>, pat: Option<&Value>) -> Result<
 
 fn non_empty(val: Option<&str>) -> Option<&str> {
     val.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Resolves the one item whose `source_ref` is `STEP <ID>`, with `<ID>` parsed from Orrery's
+/// reserved `orrery.step_title` argument (`"3F: Title"` or `"STEP 3F: Title"`).
+fn item_id_from_orrery_step(storage: &TrackerStorage, args: &Value) -> Result<String> {
+    let title = args
+        .get("orrery")
+        .and_then(|o| o.get("step_title"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            TrackerError::ValidationError(
+                "item_id is required unless orrery.step_title is present".to_string(),
+            )
+        })?;
+    let trimmed = title.trim();
+    let step_id = trimmed
+        .strip_prefix("STEP ")
+        .unwrap_or(trimmed)
+        .split_once(':')
+        .map(|(id, _)| id.trim())
+        .filter(|id| {
+            let digits = id.trim_end_matches(|c: char| c.is_ascii_uppercase());
+            !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+        })
+        .ok_or_else(|| {
+            TrackerError::ValidationError(format!(
+                "can't parse a step ID from orrery.step_title '{title}'"
+            ))
+        })?;
+    let source_ref = format!("STEP {step_id}");
+    let index = storage.load_index()?;
+    let mut hits = Vec::new();
+    for loc in index.all_items() {
+        let manifest = storage.read_item_manifest(&loc.phase_id, &loc.scope_id, &loc.stub.id)?;
+        if manifest.item.source_ref.as_deref().map(str::trim) == Some(source_ref.as_str()) {
+            hits.push(manifest.item.id);
+        }
+    }
+    match hits.len() {
+        1 => Ok(hits.remove(0)),
+        0 => Err(TrackerError::ValidationError(format!(
+            "no item has source_ref '{source_ref}'"
+        ))),
+        n => Err(TrackerError::ValidationError(format!(
+            "{n} items have source_ref '{source_ref}': {}",
+            hits.join(", ")
+        ))),
+    }
 }
 
 fn stopped_timer_json(stopped: Option<&StoppedTimerSession>) -> Value {
