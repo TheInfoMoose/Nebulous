@@ -63,3 +63,38 @@ title = "Live check through Claude Code and agy"
 status = "closed"
 severity = "medium"
 created_at = "2026-11-20T11:03:35Z"
+
+[[items.tasks]]
+id = "TASK-0103"
+title = "MCP bundle manifest and server.json templates"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T12:02:00Z"
+
+[[items.tasks]]
+id = "TASK-0104"
+title = "Release packs, hashes and smoke-tests the .mcpb"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T12:02:00Z"
+
+[[items.tasks]]
+id = "TASK-0105"
+title = "Release publishes to the MCP Registry after approval"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T12:02:00Z"
+
+[[items.tasks]]
+id = "TASK-0107"
+title = "Check the released .mcpb before you approve publish-registry"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T12:02:00Z"
+
+[[items.tasks]]
+id = "TASK-0108"
+title = "Verify the registry listing"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T12:02:00Z"

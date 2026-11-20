@@ -525,7 +525,7 @@ created_at = "2026-11-19T01:56:43Z"
 [[items.tasks]]
 id = "TASK-0088"
 title = "Ignore timer files in trackers created by neb init"
-status = "pending"
+status = "open"
 severity = "low"
 created_at = "2026-11-19T01:56:52Z"
 
@@ -577,3 +577,10 @@ title = "git_fetch dry_run (default false) works without a remote (Advances BUG-
 status = "closed"
 severity = "medium"
 created_at = "2026-11-20T11:03:35Z"
+
+[[items.tasks]]
+id = "TASK-0101"
+title = "neb init ignores the timer files (TASK-0088)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T12:02:00Z"
