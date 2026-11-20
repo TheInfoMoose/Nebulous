@@ -68,7 +68,7 @@ fn first_write_run_creates_tasks_with_source_ref() {
     let report = import_plan(&storage, &steps, None, true).expect("should import plan");
 
     let created_steps: Vec<&str> = report.created.iter().map(|e| e.step_id.as_str()).collect();
-    assert_eq!(created_steps, vec!["STEP 2A", "STEP 2B", "STEP 1A"]);
+    assert_eq!(created_steps, vec!["STEP 2A", "STEP 2B"]);
     assert!(report.retitled.is_empty());
     assert!(report.closed.is_empty());
     assert!(report.unchanged.is_empty());
@@ -91,27 +91,8 @@ fn first_write_run_creates_tasks_with_source_ref() {
     assert_eq!(detail_2a.manifest.item.status, ItemStatus::Open);
     assert!(detail_2a.description_markdown.contains("src/widget.rs"));
 
-    let id_1a = report.created[2]
-        .item_id
-        .as_deref()
-        .expect("write run should populate item_id for 1A");
-    let (_, detail_1a) = storage
-        .load_item_detail_by_id(id_1a)
-        .expect("should load 1A");
-    assert_eq!(detail_1a.manifest.item.status, ItemStatus::Closed);
-    assert_eq!(
-        detail_1a.manifest.item.source_ref.as_deref(),
-        Some("STEP 1A")
-    );
-    assert_eq!(
-        detail_1a
-            .manifest
-            .history
-            .previous_fixes
-            .last()
-            .map(|f| f.summary.as_str()),
-        Some(PLAN_CLOSE_SUMMARY)
-    );
+    let listed = storage.load_index().expect("should load index").all_items();
+    assert_eq!(listed.len(), 2, "a Completed row must not create an item");
 }
 
 #[test]
@@ -131,7 +112,7 @@ fn second_run_reports_everything_unchanged() {
         .iter()
         .map(|e| e.step_id.as_str())
         .collect();
-    assert_eq!(unchanged_steps, vec!["STEP 2A", "STEP 2B", "STEP 1A"]);
+    assert_eq!(unchanged_steps, vec!["STEP 2A", "STEP 2B"]);
     assert_eq!(second.unchanged, first.created);
 
     let empty_report = import_plan(&storage, &[], None, true).expect("empty steps import");
@@ -173,7 +154,7 @@ fn retitled_row_retitles_only() {
         .iter()
         .map(|e| e.step_id.as_str())
         .collect();
-    assert_eq!(unchanged_steps, vec!["STEP 2A", "STEP 1A"]);
+    assert_eq!(unchanged_steps, vec!["STEP 2A"]);
 
     let (loc_after, detail_after) = storage
         .load_item_detail_by_id(&id_2b)
@@ -228,6 +209,15 @@ fn row_flipped_to_completed_closes() {
         .load_item_detail_by_id(&id_2b)
         .expect("should load 2B");
     assert_eq!(detail_2b.manifest.item.status, ItemStatus::Closed);
+    assert_eq!(
+        detail_2b
+            .manifest
+            .history
+            .previous_fixes
+            .last()
+            .map(|f| f.summary.as_str()),
+        Some(PLAN_CLOSE_SUMMARY)
+    );
 }
 
 #[test]
@@ -254,7 +244,7 @@ fn manually_closed_item_stays_closed_while_row_is_open() {
         .iter()
         .map(|e| e.step_id.as_str())
         .collect();
-    assert_eq!(unchanged_steps, vec!["STEP 2A", "STEP 2B", "STEP 1A"]);
+    assert_eq!(unchanged_steps, vec!["STEP 2A", "STEP 2B"]);
 
     let (_, detail_2a) = storage
         .load_item_detail_by_id(&id_2a)
@@ -292,7 +282,7 @@ fn dry_run_leaves_tracker_byte_identical() {
         .iter()
         .map(|e| e.step_id.as_str())
         .collect();
-    assert_eq!(dry_steps, vec!["STEP 2A", "STEP 2B", "STEP 1A"]);
+    assert_eq!(dry_steps, vec!["STEP 2A", "STEP 2B"]);
     assert!(dry_report.created.iter().all(|e| e.item_id.is_none()));
     assert!(dry_report.retitled.is_empty());
     assert!(dry_report.closed.is_empty());
@@ -405,7 +395,7 @@ fn mcp_plan_import_defaults_to_dry_run() {
     assert_eq!(before, after, "dry run must leave .tracker/ byte-identical");
 
     let created = res["created"].as_array().expect("created should be array");
-    assert_eq!(created.len(), 3);
+    assert_eq!(created.len(), 2);
     assert_eq!(created[0]["step_id"].as_str(), Some("STEP 2A"));
     assert!(created.iter().all(|entry| entry["item_id"].is_null()));
 }
@@ -425,7 +415,7 @@ fn mcp_plan_import_dry_run_false_creates_tasks() {
         .expect("should run plan_import with dry_run false");
 
     let created = res["created"].as_array().expect("created should be array");
-    assert_eq!(created.len(), 3);
+    assert_eq!(created.len(), 2);
     let item_id = created[0]["item_id"]
         .as_str()
         .expect("created[0].item_id should be present");
@@ -463,4 +453,35 @@ fn mcp_plan_import_rejects_unknown_arguments() {
         .expect_err("unknown argument must fail");
     let msg = err.to_string();
     assert!(msg.contains("write"), "expected 'write' in: {msg}");
+}
+
+#[test]
+fn closed_item_is_not_retitled() {
+    let (_dir, storage) = init_test_tracker();
+    let steps = parse_roadmap(SAMPLE_PLAN).expect("should parse sample roadmap");
+    let first = import_plan(&storage, &steps, None, true).expect("first import");
+    let id_2a = first.created[0]
+        .item_id
+        .clone()
+        .expect("should have item_id for 2A");
+    storage
+        .update_item_metadata(&id_2a, Some("Widget module (reworded)".to_string()), None)
+        .expect("should reword 2A");
+    storage
+        .close_item(&id_2a, "Done", None, false)
+        .expect("should close 2A");
+
+    let second = import_plan(&storage, &steps, None, true).expect("second import");
+    assert!(second.retitled.is_empty());
+    let unchanged_steps: Vec<&str> = second
+        .unchanged
+        .iter()
+        .map(|e| e.step_id.as_str())
+        .collect();
+    assert_eq!(unchanged_steps, vec!["STEP 2A", "STEP 2B"]);
+
+    let (_, detail_2a) = storage
+        .load_item_detail_by_id(&id_2a)
+        .expect("should load 2A");
+    assert_eq!(detail_2a.manifest.item.title, "Widget module (reworded)");
 }

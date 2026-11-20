@@ -2617,7 +2617,7 @@ fn test_plan_import_dry_run_write_and_rerun() {
     let created = write_json["created"]
         .as_array()
         .expect("created should be array");
-    assert_eq!(created.len(), 3);
+    assert_eq!(created.len(), 2);
     assert_eq!(created[0]["step_id"], "STEP 2A");
     assert!(created[0]["item_id"]
         .as_str()
@@ -2629,7 +2629,7 @@ fn test_plan_import_dry_run_write_and_rerun() {
         None,
     );
     assert!(!rerun_stdout.contains("CREATE"));
-    assert!(rerun_stdout.contains("UNCHANGED 3"));
+    assert!(rerun_stdout.contains("UNCHANGED 2"));
     assert!(!rerun_stdout.contains("dry run"));
 }
 

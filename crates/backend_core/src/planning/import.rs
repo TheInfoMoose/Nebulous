@@ -30,6 +30,9 @@ pub struct ImportReport {
 
 /// Upserts task items from parsed roadmap steps by `source_ref`.
 ///
+/// Completed rows never create items; they only close a matching open item. Closed and merged
+/// items are never retitled.
+///
 /// When `write` is `true`, runs inside [`TrackerStorage::with_write_lock`]. When `write` is
 /// `false` (dry run), acquires no lock and invokes no write path.
 pub fn import_plan(
@@ -126,6 +129,9 @@ fn run(
 
         match by_source_ref.get(step_id) {
             None => {
+                if step.completed {
+                    continue;
+                }
                 let item_id = if write {
                     let scope = pick_scope(&phase_index.scopes, &default_scope, &step.target_files);
                     let desc = format_step_description(step);
@@ -136,11 +142,7 @@ fn run(
                             .with_description(desc)
                             .with_source_ref(step_id),
                     )?;
-                    let new_id = detail.manifest.item.id;
-                    if step.completed {
-                        storage.close_item(&new_id, PLAN_CLOSE_SUMMARY, None, false)?;
-                    }
-                    Some(new_id)
+                    Some(detail.manifest.item.id)
                 } else {
                     None
                 };
@@ -151,7 +153,8 @@ fn run(
                 });
             }
             Some((existing_id, existing_title, existing_status)) => {
-                let needs_retitle = existing_title.trim() != trimmed_title;
+                let needs_retitle =
+                    !existing_status.is_completed() && existing_title.trim() != trimmed_title;
                 let needs_close = step.completed && !existing_status.is_completed();
 
                 if needs_retitle {
