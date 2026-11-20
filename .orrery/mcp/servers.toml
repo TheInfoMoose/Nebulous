@@ -4,3 +4,11 @@ server_id = "hybrid"
 [servers.transport]
 type = "Stdio"
 command = "orrery-hybrid-gate"
+
+[[servers]]
+server_id = "neb"
+
+[servers.transport]
+type = "Stdio"
+command = "neb"
+args = ["mcp"]
