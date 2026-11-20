@@ -4,11 +4,11 @@ schema_version = 2
 id = "TASK-0006"
 type = "task"
 title = "Vault: keyring-primary, passphrase fallback"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "backend_core"
 created_at = "2026-11-15T14:19:19Z"
-updated_at = "2026-11-15T14:19:19Z"
+updated_at = "2026-11-20T01:41:20Z"
 source_ref = "STEP 20"
 
 [effort]
@@ -17,4 +17,8 @@ iteration_count = 1
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-20"
+commit = "none"
+summary = "Won't do: STEP 20 dropped by user (2026-11-15)"

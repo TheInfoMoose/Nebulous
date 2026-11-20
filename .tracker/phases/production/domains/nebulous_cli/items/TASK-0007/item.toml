@@ -4,11 +4,11 @@ schema_version = 2
 id = "TASK-0007"
 type = "task"
 title = "TUI panic hook, debounced filter, honest clipboard, scope confirmation"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "nebulous_cli"
 created_at = "2026-11-15T14:19:19Z"
-updated_at = "2026-11-15T14:19:19Z"
+updated_at = "2026-11-20T01:41:20Z"
 source_ref = "STEP 21"
 
 [effort]
@@ -17,4 +17,8 @@ iteration_count = 1
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-20"
+commit = "0470d3c"
+summary = "STEP 21 done (through 21F)"

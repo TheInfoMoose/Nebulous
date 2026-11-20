@@ -4,11 +4,11 @@ schema_version = 2
 id = "TASK-0001"
 type = "task"
 title = "MCP framing bounds, JSON-RPC compliance, destructive-tool dry-run, bounded context"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "backend_core"
 created_at = "2026-11-15T14:19:19Z"
-updated_at = "2026-11-15T14:19:19Z"
+updated_at = "2026-11-20T01:41:20Z"
 source_ref = "STEP 14"
 
 [effort]
@@ -17,4 +17,8 @@ iteration_count = 1
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-20"
+commit = "2aa4867"
+summary = "STEP 14 done (14A–14I)"

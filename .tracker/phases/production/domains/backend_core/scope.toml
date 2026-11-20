@@ -70,28 +70,28 @@ created_at = "2026-11-19T02:21:53Z"
 [[items.tasks]]
 id = "TASK-0001"
 title = "MCP framing bounds, JSON-RPC compliance, destructive-tool dry-run, bounded context"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-15T14:19:19Z"
 
 [[items.tasks]]
 id = "TASK-0002"
 title = "Per-operation IndexSnapshot, cached git status in assist"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-15T14:19:19Z"
 
 [[items.tasks]]
 id = "TASK-0004"
 title = "Idempotent timer stop, orphan recovery, idle cap"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-15T14:19:19Z"
 
 [[items.tasks]]
 id = "TASK-0006"
 title = "Vault: keyring-primary, passphrase fallback"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-15T14:19:19Z"
 

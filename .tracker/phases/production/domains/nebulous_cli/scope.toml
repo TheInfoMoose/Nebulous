@@ -26,21 +26,21 @@ features = []
 [[items.tasks]]
 id = "TASK-0003"
 title = "Watcher rescan, error surfacing, thread join, TUI live reload"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-15T14:19:19Z"
 
 [[items.tasks]]
 id = "TASK-0005"
 title = "start uses next ranking; stage-scoped recommendations; dry-run"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-15T14:19:19Z"
 
 [[items.tasks]]
 id = "TASK-0007"
 title = "TUI panic hook, debounced filter, honest clipboard, scope confirmation"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-15T14:19:19Z"
 
