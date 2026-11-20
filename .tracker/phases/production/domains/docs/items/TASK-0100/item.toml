@@ -4,11 +4,11 @@ schema_version = 2
 id = "TASK-0100"
 type = "task"
 title = "USAGE: agy headless needs an mcp(nebulous/<tool>) allow rule"
-status = "open"
+status = "closed"
 severity = "low"
 scope_ref = "docs"
 created_at = "2026-11-20T11:25:51Z"
-updated_at = "2026-11-20T11:53:04Z"
+updated_at = "2026-11-20T13:29:07Z"
 
 [effort]
 logged_time_minutes = 0
@@ -16,4 +16,8 @@ iteration_count = 1
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-20"
+commit = "bca1277"
+summary = "agy headless permissions.allow documented in USAGE (STEP 43B)"

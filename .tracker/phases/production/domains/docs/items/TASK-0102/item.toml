@@ -4,17 +4,22 @@ schema_version = 2
 id = "TASK-0102"
 type = "task"
 title = "Docs: tested MCP clients, agy headless allow rule (TASK-0095, TASK-0100)"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "docs"
 created_at = "2026-11-20T12:02:00Z"
-updated_at = "2026-11-20T12:02:00Z"
+updated_at = "2026-11-20T13:29:07Z"
 source_ref = "STEP 43B"
 
 [effort]
-logged_time_minutes = 0
+logged_time_minutes = 71
 iteration_count = 1
+last_timer_session = "TASK-0102@2026-11-20T12:17:28Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-20"
+commit = "bca1277"
+summary = "STEP 43B: README/USAGE name tested clients, mark Cursor/Codex untested, add agy headless permissions note"

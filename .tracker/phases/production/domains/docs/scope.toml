@@ -30,7 +30,7 @@ created_at = "2026-11-20T02:09:27Z"
 [[items.tasks]]
 id = "TASK-0095"
 title = "Verify or drop the untested Cursor, Codex and Ollama MCP claims"
-status = "open"
+status = "closed"
 severity = "low"
 created_at = "2026-11-20T10:59:42Z"
 
@@ -44,14 +44,14 @@ created_at = "2026-11-20T11:03:35Z"
 [[items.tasks]]
 id = "TASK-0100"
 title = "USAGE: agy headless needs an mcp(nebulous/<tool>) allow rule"
-status = "open"
+status = "closed"
 severity = "low"
 created_at = "2026-11-20T11:25:51Z"
 
 [[items.tasks]]
 id = "TASK-0102"
 title = "Docs: tested MCP clients, agy headless allow rule (TASK-0095, TASK-0100)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-20T12:02:00Z"
 
