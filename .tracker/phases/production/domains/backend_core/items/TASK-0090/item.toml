@@ -4,17 +4,22 @@ schema_version = 2
 id = "TASK-0090"
 type = "task"
 title = "plan_import accepts the reserved orrery object (Advances BUG-0001)"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "backend_core"
 created_at = "2026-11-20T02:09:26Z"
-updated_at = "2026-11-20T02:09:26Z"
+updated_at = "2026-11-20T02:30:33Z"
 source_ref = "STEP 41B"
 
 [effort]
-logged_time_minutes = 0
+logged_time_minutes = 13
 iteration_count = 1
+last_timer_session = "TASK-0090@2026-11-20T02:16:39Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-20"
+commit = "b601308"
+summary = "STEP 41B: plan_import accepts and ignores the reserved orrery object"
