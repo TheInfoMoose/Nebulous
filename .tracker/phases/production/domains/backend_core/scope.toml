@@ -49,7 +49,7 @@ created_at = "2026-11-19T01:56:43Z"
 [[items.bugs]]
 id = "BUG-0002"
 title = "Make git_fetch dry run report status without origin"
-status = "pending"
+status = "open"
 severity = "low"
 created_at = "2026-11-19T01:56:43Z"
 
@@ -504,7 +504,7 @@ created_at = "2026-11-15T14:19:20Z"
 [[items.tasks]]
 id = "TASK-0084"
 title = "Add MCP protocol version 2025-11-25 to supported list"
-status = "pending"
+status = "open"
 severity = "low"
 created_at = "2026-11-19T01:56:43Z"
 
@@ -556,3 +556,10 @@ title = "Skip malformed item.toml in source_ref scans instead of failing"
 status = "pending"
 severity = "low"
 created_at = "2026-11-20T02:42:00Z"
+
+[[items.tasks]]
+id = "TASK-0094"
+title = "Answer the MCP 2026-07-28 server/discover handshake"
+status = "pending"
+severity = "low"
+created_at = "2026-11-20T10:59:42Z"
