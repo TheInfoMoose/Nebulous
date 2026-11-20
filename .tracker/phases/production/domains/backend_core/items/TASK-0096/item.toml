@@ -4,17 +4,22 @@ schema_version = 2
 id = "TASK-0096"
 type = "task"
 title = "MCP 2025-11-25 supported and default; schema keyword guard test (Advances TASK-0084)"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "backend_core"
 created_at = "2026-11-20T11:03:35Z"
-updated_at = "2026-11-20T11:03:35Z"
+updated_at = "2026-11-20T11:07:08Z"
 source_ref = "STEP 42A"
 
 [effort]
-logged_time_minutes = 0
+logged_time_minutes = 3
 iteration_count = 1
+last_timer_session = "TASK-0096@2026-11-20T11:03:41Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-20"
+commit = "625c573"
+summary = "STEP 42A: 2025-11-25 supported and default; schema keyword guard test"

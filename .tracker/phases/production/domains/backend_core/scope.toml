@@ -504,7 +504,7 @@ created_at = "2026-11-15T14:19:20Z"
 [[items.tasks]]
 id = "TASK-0084"
 title = "Add MCP protocol version 2025-11-25 to supported list"
-status = "open"
+status = "closed"
 severity = "low"
 created_at = "2026-11-19T01:56:43Z"
 
@@ -567,7 +567,7 @@ created_at = "2026-11-20T10:59:42Z"
 [[items.tasks]]
 id = "TASK-0096"
 title = "MCP 2025-11-25 supported and default; schema keyword guard test (Advances TASK-0084)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-20T11:03:35Z"
 
