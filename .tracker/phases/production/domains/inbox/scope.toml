@@ -56,3 +56,10 @@ title = "Ignore timer files in trackers created by neb init"
 status = "closed"
 severity = "low"
 created_at = "2026-11-19T01:56:43Z"
+
+[[items.tasks]]
+id = "TASK-0099"
+title = "Live check through Claude Code and agy"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T11:03:35Z"

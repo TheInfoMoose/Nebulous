@@ -1,0 +1,20 @@
+schema_version = 2
+
+[item]
+id = "TASK-0099"
+type = "task"
+title = "Live check through Claude Code and agy"
+status = "open"
+severity = "medium"
+scope_ref = "inbox"
+created_at = "2026-11-20T11:03:35Z"
+updated_at = "2026-11-20T11:03:35Z"
+source_ref = "[CLAUDE] LIVE"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []

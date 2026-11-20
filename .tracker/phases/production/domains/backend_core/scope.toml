@@ -563,3 +563,17 @@ title = "Answer the MCP 2026-07-28 server/discover handshake"
 status = "pending"
 severity = "low"
 created_at = "2026-11-20T10:59:42Z"
+
+[[items.tasks]]
+id = "TASK-0096"
+title = "MCP 2025-11-25 supported and default; schema keyword guard test (Advances TASK-0084)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T11:03:35Z"
+
+[[items.tasks]]
+id = "TASK-0097"
+title = "git_fetch dry_run (default false) works without a remote (Advances BUG-0002)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T11:03:35Z"
