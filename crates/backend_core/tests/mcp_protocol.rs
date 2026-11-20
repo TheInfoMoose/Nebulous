@@ -240,7 +240,7 @@ fn initialize_unknown_or_missing_version_gets_newest() {
         r#"{"protocolVersion":42}"#,
         r#"{}"#,
     ] {
-        assert_eq!(initialize_version(params), "2025-06-18");
+        assert_eq!(initialize_version(params), "2025-11-25");
     }
 }
 
@@ -248,7 +248,7 @@ fn initialize_unknown_or_missing_version_gets_newest() {
 fn default_protocol_version_is_newest_supported() {
     assert_eq!(
         SUPPORTED_MCP_PROTOCOL_VERSIONS,
-        ["2025-06-18", "2025-03-26", "2024-11-05"]
+        ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
     );
     assert_eq!(
         DEFAULT_MCP_PROTOCOL_VERSION,

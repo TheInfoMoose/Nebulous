@@ -21,10 +21,11 @@ use crate::storage::{contained_path, normalize_relative_path_str, ItemLocation, 
 use crate::workflow::{CreateItemInput, StoppedTimerSession};
 
 /// MCP protocol versions this server speaks, newest first.
-pub const SUPPORTED_MCP_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+pub const SUPPORTED_MCP_PROTOCOL_VERSIONS: &[&str] =
+    &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 /// Version `initialize` answers with when the client asks for one not in [`SUPPORTED_MCP_PROTOCOL_VERSIONS`] (or none): the newest supported version.
-pub const DEFAULT_MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+pub const DEFAULT_MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Largest JSON-RPC message accepted on stdio (header line, raw JSON line, or `Content-Length` body).
 pub const MAX_MCP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
@@ -2769,6 +2770,45 @@ mod tests {
                 "duplicate tool name '{}'",
                 tool.name
             );
+        }
+    }
+
+    #[test]
+    fn every_input_schema_is_an_object_schema_with_2020_12_keywords() {
+        // MCP 2025-11-25 reads inputSchema as JSON Schema 2020-12 when `$schema` is absent.
+        const KNOWN: [&str; 7] = [
+            "additionalProperties",
+            "default",
+            "description",
+            "items",
+            "properties",
+            "required",
+            "type",
+        ];
+        fn check(tool: &str, schema: &Value) {
+            let Some(obj) = schema.as_object() else {
+                panic!("{tool}: schema node is not an object: {schema}");
+            };
+            for (key, value) in obj {
+                assert!(
+                    KNOWN.contains(&key.as_str()),
+                    "{tool}: unexpected keyword '{key}'"
+                );
+                match key.as_str() {
+                    "properties" => {
+                        for prop in value.as_object().expect("properties is an object").values() {
+                            check(tool, prop);
+                        }
+                    }
+                    "items" => check(tool, value),
+                    "additionalProperties" if value.is_object() => check(tool, value),
+                    _ => {}
+                }
+            }
+        }
+        for tool in McpServer::tools_list() {
+            assert_eq!(tool.input_schema["type"], json!("object"), "{}", tool.name);
+            check(&tool.name, &tool.input_schema);
         }
     }
 
