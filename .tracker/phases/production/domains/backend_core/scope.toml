@@ -42,7 +42,7 @@ tracked_files = [
 [[items.bugs]]
 id = "BUG-0001"
 title = "Accept unknown fields in plan_import MCP args"
-status = "pending"
+status = "open"
 severity = "low"
 created_at = "2026-11-19T01:56:43Z"
 
@@ -56,14 +56,14 @@ created_at = "2026-11-19T01:56:43Z"
 [[items.bugs]]
 id = "BUG-0003"
 title = "Stop plan import from reverting hand-edited item titles"
-status = "pending"
+status = "open"
 severity = "low"
 created_at = "2026-11-19T01:57:28Z"
 
 [[items.features]]
 id = "FEAT-0001"
 title = "Resolve item from Orrery step context in MCP status tools"
-status = "pending"
+status = "open"
 severity = "medium"
 created_at = "2026-11-19T02:21:53Z"
 
@@ -528,3 +528,24 @@ title = "Ignore timer files in trackers created by neb init"
 status = "pending"
 severity = "low"
 created_at = "2026-11-19T01:56:52Z"
+
+[[items.tasks]]
+id = "TASK-0089"
+title = "plan import: Completed rows never create items; closed items are never retitled (Advances BUG-0003)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T02:09:26Z"
+
+[[items.tasks]]
+id = "TASK-0090"
+title = "plan_import accepts the reserved orrery object (Advances BUG-0001)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T02:09:26Z"
+
+[[items.tasks]]
+id = "TASK-0091"
+title = "update_item_status / close_item_with_fix resolve the item from orrery.step_title (Advances FEAT-0001)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T02:09:27Z"
