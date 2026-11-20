@@ -291,4 +291,4 @@ The `plan_import` MCP tool imports roadmap steps from a stepped plan file using 
   - `path` (required string): path to the plan Markdown file, relative to the project root (paths escaping the project root are rejected).
   - `phase` (optional string): target stage for newly created tasks (defaults to `active_phase`).
   - `dry_run` (optional boolean, default `true`): when `true`, previews changes without modifying `.tracker/`; set `dry_run: false` to write changes.
-- **Strict validation & response**: unknown arguments are rejected, and the tool returns the same JSON `ImportReport` (`created`, `retitled`, `closed`, `unchanged`) as `neb plan import --json`.
+- **Strict validation & response**: unknown arguments are rejected (except the reserved `orrery` context object that Orrery adds to every call, which is accepted and ignored), and the tool returns the same JSON `ImportReport` (`created`, `retitled`, `closed`, `unchanged`) as `neb plan import --json`.

@@ -734,7 +734,8 @@ impl McpServer {
                     "properties": {
                         "path": { "type": "string", "description": "Plan Markdown file, relative to the project root." },
                         "phase": { "type": "string", "description": "Optional target phase ID (defaults to project.active_phase)." },
-                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), previews changes without modifying .tracker/." }
+                        "dry_run": { "type": "boolean", "default": true, "description": "When true (default), previews changes without modifying .tracker/." },
+                        "orrery": { "type": "object", "description": "Reserved for Orrery's per-call context; accepted and ignored." }
                     },
                     "required": ["path"],
                     "additionalProperties": false
@@ -938,6 +939,9 @@ impl McpServer {
             phase: Option<String>,
             #[serde(default = "default_true")]
             dry_run: bool,
+            /// Orrery's reserved per-call context object; accepted and ignored.
+            #[serde(default, rename = "orrery")]
+            _orrery: Option<Value>,
         }
 
         let parsed: Args = serde_json::from_value(args)

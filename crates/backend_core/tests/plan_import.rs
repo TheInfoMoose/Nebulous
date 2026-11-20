@@ -485,3 +485,19 @@ fn closed_item_is_not_retitled() {
         .expect("should load 2A");
     assert_eq!(detail_2a.manifest.item.title, "Widget module (reworded)");
 }
+
+#[test]
+fn mcp_plan_import_accepts_orrery_context_object() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let (_dir, storage) = mcp_tracker_with_plan();
+    let mut server = McpServer::new(Some(storage));
+    let res = server
+        .call_tool(
+            "plan_import",
+            json!({ "path": "PLAN.md", "orrery": { "step_number": 1, "step_title": "2A: Build widget module" } }),
+        )
+        .expect("the reserved orrery object must be accepted");
+    assert_eq!(res["created"].as_array().map(Vec::len), Some(2));
+}
