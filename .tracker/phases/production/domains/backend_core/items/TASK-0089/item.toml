@@ -4,17 +4,22 @@ schema_version = 2
 id = "TASK-0089"
 type = "task"
 title = "plan import: Completed rows never create items; closed items are never retitled (Advances BUG-0003)"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "backend_core"
 created_at = "2026-11-20T02:09:26Z"
-updated_at = "2026-11-20T02:09:26Z"
+updated_at = "2026-11-20T02:16:24Z"
 source_ref = "STEP 41A"
 
 [effort]
-logged_time_minutes = 0
+logged_time_minutes = 6
 iteration_count = 1
+last_timer_session = "TASK-0089@2026-11-20T02:09:46Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-20"
+commit = "484058c"
+summary = "STEP 41A: Completed rows never create items; closed items never retitled"
