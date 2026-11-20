@@ -63,7 +63,7 @@ created_at = "2026-11-19T01:57:28Z"
 [[items.features]]
 id = "FEAT-0001"
 title = "Resolve item from Orrery step context in MCP status tools"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-19T02:21:53Z"
 
@@ -546,6 +546,13 @@ created_at = "2026-11-20T02:09:26Z"
 [[items.tasks]]
 id = "TASK-0091"
 title = "update_item_status / close_item_with_fix resolve the item from orrery.step_title (Advances FEAT-0001)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-20T02:09:27Z"
+
+[[items.tasks]]
+id = "TASK-0093"
+title = "Skip malformed item.toml in source_ref scans instead of failing"
+status = "pending"
+severity = "low"
+created_at = "2026-11-20T02:42:00Z"

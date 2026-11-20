@@ -2,11 +2,11 @@
 id = "FEAT-0001"
 type = "feature"
 title = "Resolve item from Orrery step context in MCP status tools"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "backend_core"
 created_at = "2026-11-19T02:21:53Z"
-updated_at = "2026-11-20T02:09:38Z"
+updated_at = "2026-11-20T02:42:00Z"
 
 [effort]
 logged_time_minutes = 0
@@ -14,4 +14,8 @@ iteration_count = 1
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-20"
+commit = "6a0e7a6"
+summary = "Delivered by STEP 41C: update_item_status / close_item_with_fix resolve the step's item from orrery.step_title"
