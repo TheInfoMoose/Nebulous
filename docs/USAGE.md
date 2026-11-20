@@ -286,6 +286,28 @@ command = "neb"
 args = ["mcp", "--root", "/abs/path/to/workspace"]
 ```
 
+#### Claude Code CLI (`claude mcp add`)
+Claude Code starts the server in the directory you run `claude` from, so `--root` isn't needed:
+```bash
+# Every project on this machine
+claude mcp add --scope user nebulous -- neb mcp
+
+# This repository only, shared through a committed .mcp.json
+claude mcp add --scope project nebulous -- neb mcp
+```
+
+#### Antigravity CLI (`agy mcp add`)
+`agy` keeps one global list of MCP servers. Without `--root`, `neb mcp` serves the `.tracker/` found from its working directory, then the active project in `projects.toml` (`neb project switch`):
+```bash
+agy mcp add nebulous neb mcp
+
+# Pin one repository instead
+agy mcp add nebulous -- neb mcp --root /abs/path/to/repo
+```
+
+#### Protocol versions
+`initialize` answers with the client's `protocolVersion` when it is `2025-11-25`, `2025-06-18`, `2025-03-26` or `2024-11-05`, and with `2025-11-25` otherwise. The `2026-07-28` `server/discover` request gets `-32601 Method not found`; Claude Code then falls back to `initialize`.
+
 ### `plan_import` MCP Tool
 
 The `plan_import` MCP tool imports roadmap steps from a stepped plan file using the same engine as `neb plan import`:
