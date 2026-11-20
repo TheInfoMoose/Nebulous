@@ -4,17 +4,22 @@ schema_version = 2
 id = "TASK-0092"
 type = "task"
 title = "Docs: 24 tools, --root discovery, Orrery step context"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "docs"
 created_at = "2026-11-20T02:09:27Z"
-updated_at = "2026-11-20T02:09:27Z"
+updated_at = "2026-11-20T02:51:14Z"
 source_ref = "STEP 41D"
 
 [effort]
-logged_time_minutes = 0
+logged_time_minutes = 8
 iteration_count = 1
+last_timer_session = "TASK-0092@2026-11-20T02:42:21Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-20"
+commit = "63feb6f"
+summary = "STEP 41D: README 24 tools; USAGE --root discovery and Orrery step context"
