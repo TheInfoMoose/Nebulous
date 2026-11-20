@@ -22,6 +22,10 @@ pub use reconcile::ReconcileReport;
 /// Advisory lock file name inside `.tracker/`.
 pub const LOCK_FILE_NAME: &str = ".lock";
 
+/// Contents of the `.tracker/.gitignore` that `init` writes: the lock file and the
+/// timer's runtime state, none of which belong in git.
+pub const DEFAULT_TRACKER_GITIGNORE: &str = ".lock\n.timer.toml\n.timer.toml.bak\n";
+
 /// Default timeout when waiting to acquire the exclusive `.tracker/.lock` file lock.
 pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -350,7 +354,7 @@ impl TrackerStorage {
         storage.write_project(&project)?;
         let gitignore_path = storage.tracker_dir.join(".gitignore");
         if !gitignore_path.exists() {
-            storage.write_tracker_file(&gitignore_path, &format!("{LOCK_FILE_NAME}\n"))?;
+            storage.write_tracker_file(&gitignore_path, DEFAULT_TRACKER_GITIGNORE)?;
         }
 
         for (sid, stitle) in &stages_to_scaffold {
@@ -566,7 +570,7 @@ impl TrackerStorage {
             updated.push('\n');
             self.write_tracker_file(&gitignore_path, &updated)
         } else {
-            self.write_tracker_file(&gitignore_path, &format!("{LOCK_FILE_NAME}\n"))
+            self.write_tracker_file(&gitignore_path, DEFAULT_TRACKER_GITIGNORE)
         }
     }
 
@@ -1701,6 +1705,33 @@ mod lock_tests {
         assert!(storage.lock_path().is_file());
         let contents = fs::read_to_string(&gitignore).expect("read gitignore");
         assert!(contents.lines().any(|line| line == LOCK_FILE_NAME));
+    }
+
+    #[test]
+    fn init_gitignore_lists_lock_and_timer_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = TrackerStorage::init_standard(dir.path(), "t").expect("init_standard");
+        let gitignore = storage.tracker_dir().join(".gitignore");
+        let contents = fs::read_to_string(&gitignore).expect("read gitignore");
+        assert_eq!(contents, DEFAULT_TRACKER_GITIGNORE);
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(
+            lines,
+            vec![LOCK_FILE_NAME, ".timer.toml", ".timer.toml.bak"]
+        );
+    }
+
+    #[test]
+    fn write_lock_recreates_missing_gitignore_with_timer_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = TrackerStorage::init_standard(dir.path(), "t").expect("init_standard");
+        let gitignore = storage.tracker_dir().join(".gitignore");
+        fs::remove_file(&gitignore).expect("remove gitignore");
+        storage
+            .with_write_lock(|_| Ok(()))
+            .expect("with_write_lock");
+        let contents = fs::read_to_string(&gitignore).expect("read gitignore");
+        assert_eq!(contents, DEFAULT_TRACKER_GITIGNORE);
     }
 
     #[test]
