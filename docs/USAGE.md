@@ -3,7 +3,7 @@
 Nebulous provides three synchronized terminal and agent interfaces operating on the same `.tracker/` directory and global project registry:
 - **`neb` CLI**: Ergonomic zero-ID command-line interface with predictive scope/item inference, 3-stage lifecycle management, and `--json` output mode.
 - **`neb` / `neb tui` (`neb ui`)**: Interactive retro Amber-on-Black CRT phosphor terminal dashboard (`ratatui` + `crossterm`) with an aspect-locked ASCII Nebula + `NEBULOUS` header and responsive scaling locks.
-- **`neb mcp`**: Built-in JSON-RPC 2.0 `stdio` Model Context Protocol server for Cursor, Claude Code, Codex, Ollama, and automated self-healing CI/CD pipelines.
+- **`neb mcp`**: Built-in JSON-RPC 2.0 `stdio` Model Context Protocol server for Claude Code, Antigravity (`agy`), Orrery, and automated self-healing CI/CD pipelines.
 
 ---
 
@@ -267,7 +267,9 @@ The list refreshes automatically on external `.tracker/` changes.
 
 `--root` is optional. Without it, `neb mcp` serves the `.tracker/` found by walking up from its working directory, and only then the active project in `projects.toml`. Clients that start the server in the project root (Orrery does) can leave it out.
 
-#### Cursor (`.cursor/mcp.json`) & Claude Code (`.mcp.json`)
+Tested clients: Orrery, Claude Code and Antigravity (`agy`). The Cursor and Codex snippets follow each client's documented format but haven't been run against `neb mcp`.
+
+#### Cursor (`.cursor/mcp.json`, untested) & Claude Code (`.mcp.json`)
 ```json
 {
   "mcpServers": {
@@ -279,7 +281,7 @@ The list refreshes automatically on external `.tracker/` changes.
 }
 ```
 
-#### OpenAI Codex CLI (`~/.codex/config.toml`)
+#### OpenAI Codex CLI (`~/.codex/config.toml`, untested)
 ```toml
 [mcp_servers.nebulous]
 command = "neb"
@@ -304,6 +306,12 @@ agy mcp add nebulous neb mcp
 # Pin one repository instead
 agy mcp add nebulous -- neb mcp --root /abs/path/to/repo
 ```
+
+Headless runs (`agy -p`) can't ask for permission, so agy 1.5.12 denies every MCP call unless `permissions.allow` names each tool as `mcp(nebulous/<tool>)`. `mcp(nebulous)` alone doesn't match. For one session:
+```bash
+agy -p 'call nebulous list_items' --settings '{"permissions":{"allow":["mcp(nebulous/list_items)"]}}'
+```
+The same `permissions.allow` list works in agy's settings file.
 
 #### Protocol versions
 `initialize` answers with the client's `protocolVersion` when it is `2025-11-25`, `2025-06-18`, `2025-03-26` or `2024-11-05`, and with `2025-11-25` otherwise. The `2026-07-28` `server/discover` request gets `-32601 Method not found`; Claude Code then falls back to `initialize`.

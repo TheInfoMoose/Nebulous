@@ -146,7 +146,7 @@ neb tui
 
 ### 4. Configure `neb mcp` for AI Coding Agents
 
-Run `neb mcp` as a JSON-RPC 2.0 `stdio` server in **Cursor** (`.cursor/mcp.json`), **Claude Code** (`.mcp.json`), **Codex**, or local **Ollama** agent harnesses:
+Run `neb mcp` as a JSON-RPC 2.0 `stdio` server. Tested with **Orrery**, **Claude Code** and **Antigravity** (`agy`); the Cursor and Codex snippets in [`docs/USAGE.md`](docs/USAGE.md) are untested. A client config looks like this:
 
 ```json
 {
