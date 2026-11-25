@@ -75,7 +75,7 @@ ALLOWED_SECTION="$(awk '
     f && /^(READ_ONLY_REFS|FORBIDDEN_SCOPE):|^\[/ { exit }
     f { print }
 ' <<<"$BLOCK")"
-mapfile -t ALLOWED < <(sed -nE 's/^[[:space:]]*-[[:space:]]+([^[:space:]]+).*/\1/p' <<<"$ALLOWED_SECTION")
+mapfile -t ALLOWED < <(sed -nE 's/^[[:space:]]*-[[:space:]]+`*([^[:space:]`]+)`*.*/\1/p' <<<"$ALLOWED_SECTION")
 [[ ${#ALLOWED[@]} -gt 0 ]] || { echo "STEP ${STEP_ID} has no ALLOWED_FILES entries" >&2; exit 2; }
 grep -q 'Cargo\.lock' <<<"$ALLOWED_SECTION" && ALLOWED+=("Cargo.lock")
 POST_GATE="$(awk '/^\[POST_GATE\]/ { getline; print; exit }' <<<"$BLOCK")"

@@ -213,7 +213,7 @@ ALLOWED_SECTION="$(awk '
     f && /^(READ_ONLY_REFS|FORBIDDEN_SCOPE):|^\[/ { exit }
     f { print }
 ' <<<"$BLOCK")"
-mapfile -t ALLOWED < <(sed -nE 's/^[[:space:]]*-[[:space:]]+([^[:space:]]+).*/\1/p' <<<"$ALLOWED_SECTION")
+mapfile -t ALLOWED < <(sed -nE 's/^[[:space:]]*-[[:space:]]+`*([^[:space:]`]+)`*.*/\1/p' <<<"$ALLOWED_SECTION")
 [[ ${#ALLOWED[@]} -gt 0 ]] || { echo "STEP ${STEP_ID} has no ALLOWED_FILES entries" >&2; exit 2; }
 grep -q 'Cargo\.lock' <<<"$ALLOWED_SECTION" && ALLOWED+=("Cargo.lock")
 PRE_GATE="$(awk '/^\[PRE_GATE\]/ { getline; print; exit }' <<<"$BLOCK")"
@@ -243,7 +243,7 @@ matches_any() { # <path> <glob>...
     return 1
 }
 code_stamp() { # tree fingerprint minus .tracker/ (Hydrogen may file findings after check)
-    fingerprint | grep -v '^[^ ]*  \.tracker/' | sha256sum | cut -d' ' -f1
+    fingerprint | { grep -v '^[^ ]*  \.tracker/' || true; } | sha256sum | cut -d' ' -f1
 }
 changed_since_snapshot() {
     comm -3 <(sort -u "${SNAP}/tree") <(fingerprint) | sed -E 's/^\t//; s/^[^ ]+  //' | sort -u
@@ -266,7 +266,7 @@ PY
 }
 tracker_items() { # item IDs that exist now
     [[ -d .tracker ]] || return 0
-    find .tracker -path '*/items/*/item.toml' -printf '%h\n' | sed 's#.*/##' | sort -u
+    find .tracker -path '*/items/*/item.toml' | sed 's#/item\.toml$##; s#.*/##' | sort -u
 }
 
 # Validates the amendment; prints POST_GATE\t…, EXTRA\t<path>\t<kind>, ERR\t… lines.
