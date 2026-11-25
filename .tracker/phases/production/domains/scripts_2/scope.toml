@@ -33,6 +33,6 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.tasks]]
 id = "TASK-0118"
 title = "Fix scripts/phased-step.sh code_stamp() under set -euo pipefail, portable find, and backtick stripping in ALLOWED (BUG-0016 / AUD-09)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-25T19:15:12Z"

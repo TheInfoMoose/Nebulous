@@ -4,17 +4,22 @@ schema_version = 2
 id = "TASK-0118"
 type = "task"
 title = "Fix scripts/phased-step.sh code_stamp() under set -euo pipefail, portable find, and backtick stripping in ALLOWED (BUG-0016 / AUD-09)"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "scripts_2"
 created_at = "2026-11-25T19:15:12Z"
-updated_at = "2026-11-25T19:15:12Z"
+updated_at = "2026-11-25T19:43:06Z"
 source_ref = "STEP 44B"
 
 [effort]
-logged_time_minutes = 0
+logged_time_minutes = 5
 iteration_count = 1
+last_timer_session = "TASK-0118@2026-11-25T19:37:11Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-25"
+commit = "97a5781"
+summary = "STEP 44B: Fix `scripts/phased-step.sh` `code_stamp()`, portable `find`, and `ALLOWED` backtick stripping (phased check PASS)"
