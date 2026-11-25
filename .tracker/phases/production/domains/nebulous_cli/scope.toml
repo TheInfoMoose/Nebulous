@@ -20,8 +20,49 @@ tracked_files = [
 ]
 
 [items]
-bugs = []
 features = []
+
+[[items.bugs]]
+id = "BUG-0015"
+title = "[AUD-08] neb done -c (handle_close) lacks outer .tracker/.lock across close+commit and swallows rollback errors"
+status = "open"
+severity = "high"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0022"
+title = "[AUD-19] arboard blocks indefinitely on stalled X11 sockets (neb start --copy, neb context --copy, TUI s/c)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0027"
+title = "[AUD-24] CLI correctness bugs & silent error swallowing (handle_sync, handle_start, handle_move, handle_sync_index, handle_init, Rollback)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0028"
+title = "[AUD-25] TUI stability, UX, and performance issues (hardcoded phases, per-keystroke reads, swallowed errors, filter jump, panic hook)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0029"
+title = "[AUD-26] TUI hash-ID column clipping (Constraint::Length(9)) and CloseModal Unicode char-count truncation"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0031"
+title = "[AUD-31] Minor CLI hygiene & input validation (NEB_GIT_PAT zeroization, --json stderr warnings, case-sensitive timer IDs, invalid --type, Wayland feature)"
+status = "open"
+severity = "low"
+created_at = "2026-11-25T03:28:23Z"
 
 [[items.tasks]]
 id = "TASK-0003"
@@ -113,3 +154,10 @@ title = "neb plan import <PATH> [--phase] [--write] (dry run default); CREATE/RE
 status = "closed"
 severity = "medium"
 created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0113"
+title = "[AUD-28] Split monolithic commands/mod.rs (3,146 LOC), reconcile overlapping commands, and fix dead --use flag"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"

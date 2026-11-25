@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# neon-dispatch — Hydrogen's headless launcher for Neon (phased workflow, desktop path).
+#
+#   neon-dispatch <STEP_ID> [--note "<correction text>"] [--plan <path>]
+#
+# Runs one fresh, non-interactive agy session as Neon from the repo root,
+# logs it to .git/phased/steps/<ID>/neon-<UTC>.log, and prints the log's tail
+# (Neon's report). Exit code = agy's.
+#
+# Env: NEON_MODEL (default gemini-4-neon-medium)
+#      NEON_FLAGS (default "--dangerously-skip-permissions"; settled in verify
+#                  step V2, e.g. "--sandbox --dangerously-skip-permissions")
+# Never commits; the snapshot check (phased-step.sh) is what catches overreach.
+set -euo pipefail
+
+[[ $# -ge 1 ]] || { sed -n '4p' "${BASH_SOURCE[0]}" | sed 's/^# //' >&2; exit 2; }
+ID="$1"
+shift
+[[ "$ID" =~ ^[0-9]+[A-Z]*$ ]] || { echo "STEP_ID must look like 13A, 25 or 7AB" >&2; exit 2; }
+NOTE=""
+PLAN="${PHASED_PLAN:-STEPPED_IMPLEMENTATION_PLAN.md}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --note) NOTE="${2:?--note needs text}"; shift ;;
+        --plan) PLAN="${2:?--plan needs a path}"; shift ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+command -v agy >/dev/null || { echo "agy not on PATH" >&2; exit 2; }
+SNAP="$(git rev-parse --git-dir)/phased/steps/${ID}"
+[[ -d "$SNAP" ]] || { echo "no snapshot for STEP ${ID}; run phased-step.sh start ${ID} first" >&2; exit 2; }
+
+if [[ -n "$NOTE" ]]; then
+    PROMPT="${NOTE}"$'\n\n'"(Plan: ${PLAN}. Use the neon-coder skill. Do not commit.)"
+else
+    PROMPT="Execute STEP ${ID} from ${PLAN} using the neon-coder skill. Do not commit."
+fi
+
+LOG="${SNAP}/neon-$(date -u +%Y%m%dT%H%M%SZ).log"
+read -r -a FLAGS <<<"${NEON_FLAGS:---dangerously-skip-permissions}"
+set +e
+agy --model "${NEON_MODEL:-gemini-4-neon-medium}" "${FLAGS[@]}" --print-timeout 0 -p "$PROMPT" >"$LOG" 2>&1
+rc=$?
+set -e
+echo "Neon log: ${LOG} (agy exit ${rc})"
+tail -n 60 "$LOG"
+exit "$rc"

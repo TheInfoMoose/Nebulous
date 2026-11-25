@@ -45,5 +45,5 @@ type = "build_scripts"
 path = "domains/scripts_2"
 
 [summary]
-total_items = 112
+total_items = 154
 completed_items = 102

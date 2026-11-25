@@ -1,0 +1,19 @@
+schema_version = 2
+
+[item]
+id = "TASK-0111"
+type = "task"
+title = "[AUD-15] Pre-release ssh-key 0.7.0-rc.11 splits RustCrypto stack into dual incompatible versions"
+status = "open"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-25T03:28:23Z"
+updated_at = "2026-11-25T03:28:23Z"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []

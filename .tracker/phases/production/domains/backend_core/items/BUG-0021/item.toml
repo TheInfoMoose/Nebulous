@@ -1,0 +1,17 @@
+[item]
+id = "BUG-0021"
+type = "bug"
+title = "[AUD-18] MCP protocol & tool gaps: git_fetch dry_run, missing deny_unknown_fields, EOF frame crash, non-atomic writes, path leaks"
+status = "open"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-25T03:28:23Z"
+updated_at = "2026-11-25T03:28:23Z"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []

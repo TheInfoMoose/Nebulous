@@ -60,6 +60,132 @@ status = "closed"
 severity = "low"
 created_at = "2026-11-19T01:57:28Z"
 
+[[items.bugs]]
+id = "BUG-0004"
+title = "Treat an empty documented commit as success when the caller allows it"
+status = "open"
+severity = "medium"
+created_at = "2026-11-20T22:21:29Z"
+
+[[items.bugs]]
+id = "BUG-0008"
+title = "[AUD-01] Locked url 2.5.8 triggers RUSTSEC-2026-0592, failing cargo deny and CI/release gates"
+status = "open"
+severity = "high"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0009"
+title = "[AUD-02] Pre-0600 creation window, ignored dir/ACL hardening errors, and /tmp/nebulous fallback for vault files"
+status = "open"
+severity = "high"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0010"
+title = "[AUD-03] .tracker/ root symlink escape bypass and TOCTOU window in guard_tracker_path / contained_path"
+status = "open"
+severity = "high"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0011"
+title = "[AUD-04] SecureStorage keyring-first read + silent keyring write failure causes credential split-brain"
+status = "open"
+severity = "high"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0012"
+title = "[AUD-05] move_item_to_phase leaves ghost TASK-* stubs and corrupts source phase.toml summary"
+status = "open"
+severity = "high"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0013"
+title = "[AUD-06] Non-canonicalized HELD_WRITE_LOCKS & PROJECT_CACHE key causes same-thread 30s self-deadlock"
+status = "open"
+severity = "high"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0014"
+title = "[AUD-07] git_sync merge-reconcile error suppression, unchecked duplicate_ids push, and git_commit_documented pre-amend failure window"
+status = "open"
+severity = "high"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0018"
+title = "[AUD-12] agent_context::synthesize_bounded_prompt fails to sanitize/fence untrusted single-line fields"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0019"
+title = "[AUD-14] Cross-host HTTPS redirect PAT leakage via libgit2 default redirects"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0020"
+title = "[AUD-17] Unsynchronized public TrackerStorage mutators, lockless read_active_timer quarantine race, and process-local-only projects.toml lock"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0021"
+title = "[AUD-18] MCP protocol & tool gaps: git_fetch dry_run, missing deny_unknown_fields, EOF frame crash, non-atomic writes, path leaks"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0023"
+title = "[AUD-20] TrackerWatcher::drop blocks up to 30s on contended locks and hash_index_files follows directory symlinks without cycle guards"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0024"
+title = "[AUD-21] reconcile_indexes and compute_metrics_at abort globally on one corrupt/future-schema file"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0025"
+title = "[AUD-22] compat::unknown_keys re-injects explicit default fields in O(K*N) and write_versioned downgrades schema_version"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0026"
+title = "[AUD-23] planning/mod.rs & planning/import.rs parser fragility and cross-phase source_ref hijack/collision"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0030"
+title = "[AUD-27] assist.rs redundant I/O & fallback quirks, timer.rs u32 truncation, and lifecycle.rs double timer call"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0032"
+title = "[AUD-32] Minor robustness & path-normalization hygiene (registry.rs, git_sync, ingestion, .gitignore)"
+status = "open"
+severity = "low"
+created_at = "2026-11-25T03:28:23Z"
+
 [[items.features]]
 id = "FEAT-0001"
 title = "Resolve item from Orrery step context in MCP status tools"
@@ -584,3 +710,38 @@ title = "neb init ignores the timer files (TASK-0088)"
 status = "closed"
 severity = "medium"
 created_at = "2026-11-20T12:02:00Z"
+
+[[items.tasks]]
+id = "TASK-0109"
+title = "[AUD-11] Scope lapse: remove leftover OS/ISO rolling-release artifacts and review Orrery/harness coupling"
+status = "open"
+severity = "high"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.tasks]]
+id = "TASK-0110"
+title = "[AUD-13] Harden vault.key/KDF, zeroize PATs in git_sync, and avoid silently stripping SSH passphrases"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.tasks]]
+id = "TASK-0111"
+title = "[AUD-15] Pre-release ssh-key 0.7.0-rc.11 splits RustCrypto stack into dual incompatible versions"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.tasks]]
+id = "TASK-0116"
+title = "[AUD-33] Replace wildcard lib.rs re-exports and fix test-suite hazards (env::set_var) & regression coverage gaps"
+status = "open"
+severity = "low"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.tasks]]
+id = "TASK-0121"
+title = "Replace std::env::set_var/remove_var in storage_integration.rs with *_in/*_from/*_to helpers (TASK-0116 test-hazard slice / AUD-33)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T19:15:13Z"

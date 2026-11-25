@@ -3,4 +3,7 @@ display_name = "Validator"
 kind = "Validator"
 rules_file = "validator.md"
 allowed_mcp_tools = []
-skills = ["hybrid-validator", "repo-rules"]
+skills = [
+    "phased-validator",
+    "repo-rules",
+]

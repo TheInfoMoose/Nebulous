@@ -1,28 +1,43 @@
 project_name = "Nebulous"
 plan_path = "STEPPED_IMPLEMENTATION_PLAN.md"
 step_marker = "### STEP "
-execution_mode = "Run"
+execution_mode = "Loop"
 cycle_count = 0
 max_concurrent_agents = 1
 max_step_retries = 2
 validation_mode = "Agents"
-gate_tools = ["hybrid:step_check"]
+on_retries_exhausted = "Defer"
+gate_tools = ["phased:step_check"]
 
 [[stages]]
 role_id = "orchestrator"
-agent_ids = ["claude-orch"]
+agent_ids = ["agy-hydrogen-orch"]
 
 [[stages]]
 role_id = "coder"
-agent_ids = ["agy-impl"]
+agent_ids = ["agy-neon-impl"]
 
 [[stages]]
 role_id = "validator"
-agent_ids = ["claude-val"]
+agent_ids = ["agy-hydrogen-val"]
 
 [hooks.on_step_start]
-tool = "hybrid:step_start"
+tool = "phased:step_start"
+on_failure = "Defer"
+
+[hooks.on_step_pass]
+tool = "phased:step_commit"
+on_failure = "Halt"
+
+[hooks.on_step_defer]
+tool = "phased:step_defer"
 on_failure = "Halt"
 
 [limits]
+max_tool_calls = 50
+model_idle_timeout_secs = 300
 mcp_call_timeout_secs = 1800
+live_stream_ring_capacity = 2000
+live_stream_max_file_bytes = 10485760
+live_stream_max_files = 3
+max_deferred_steps = 2

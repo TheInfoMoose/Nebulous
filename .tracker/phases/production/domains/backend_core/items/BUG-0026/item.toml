@@ -1,0 +1,17 @@
+[item]
+id = "BUG-0026"
+type = "bug"
+title = "[AUD-23] planning/mod.rs & planning/import.rs parser fragility and cross-phase source_ref hijack/collision"
+status = "open"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-25T03:28:23Z"
+updated_at = "2026-11-25T03:28:23Z"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []

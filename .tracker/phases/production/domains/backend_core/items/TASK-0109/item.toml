@@ -1,0 +1,19 @@
+schema_version = 2
+
+[item]
+id = "TASK-0109"
+type = "task"
+title = "[AUD-11] Scope lapse: remove leftover OS/ISO rolling-release artifacts and review Orrery/harness coupling"
+status = "open"
+severity = "high"
+scope_ref = "backend_core"
+created_at = "2026-11-25T03:28:23Z"
+updated_at = "2026-11-25T03:28:23Z"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []

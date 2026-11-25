@@ -1,9 +1,9 @@
 [[servers]]
-server_id = "hybrid"
+server_id = "phased"
 
 [servers.transport]
 type = "Stdio"
-command = "orrery-hybrid-gate"
+command = "orrery-phased-gate"
 
 [[servers]]
 server_id = "neb"

@@ -7,8 +7,14 @@ bound_component = "scripts_2"
 tracked_files = ["scripts/install.sh"]
 
 [items]
-bugs = []
 features = []
+
+[[items.bugs]]
+id = "BUG-0016"
+title = "[AUD-09] scripts/phased-step.sh code_stamp() crashes under set -euo pipefail on clean/.tracker/-only trees (+ macOS/Markdown fragility)"
+status = "open"
+severity = "high"
+created_at = "2026-11-25T03:28:23Z"
 
 [[items.tasks]]
 id = "TASK-0051"
@@ -16,3 +22,17 @@ title = "Neutrality ratchet: scripts/check-neutral.sh (exact-count allowlist, 9 
 status = "closed"
 severity = "medium"
 created_at = "2026-11-15T14:19:20Z"
+
+[[items.tasks]]
+id = "TASK-0112"
+title = "[AUD-16] CI/release supply-chain SHA pinning, cargo deny licenses/sources gate, docs/ packaging, and install.sh/bump-version.sh fixes"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T03:28:23Z"
+
+[[items.tasks]]
+id = "TASK-0118"
+title = "Fix scripts/phased-step.sh code_stamp() under set -euo pipefail, portable find, and backtick stripping in ALLOWED (BUG-0016 / AUD-09)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-25T19:15:12Z"

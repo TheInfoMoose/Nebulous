@@ -1,0 +1,17 @@
+[item]
+id = "BUG-0014"
+type = "bug"
+title = "[AUD-07] git_sync merge-reconcile error suppression, unchecked duplicate_ids push, and git_commit_documented pre-amend failure window"
+status = "open"
+severity = "high"
+scope_ref = "backend_core"
+created_at = "2026-11-25T03:28:23Z"
+updated_at = "2026-11-25T03:28:23Z"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []
