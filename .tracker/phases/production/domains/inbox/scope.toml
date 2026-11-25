@@ -129,7 +129,7 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.tasks]]
 id = "TASK-0117"
 title = "Update url (>= 2.5.9) in Cargo.lock to resolve RUSTSEC-2026-0592 (BUG-0008 / AUD-01)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-25T19:15:12Z"
 

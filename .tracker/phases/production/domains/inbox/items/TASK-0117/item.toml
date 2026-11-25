@@ -4,17 +4,22 @@ schema_version = 2
 id = "TASK-0117"
 type = "task"
 title = "Update url (>= 2.5.9) in Cargo.lock to resolve RUSTSEC-2026-0592 (BUG-0008 / AUD-01)"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "inbox"
 created_at = "2026-11-25T19:15:12Z"
-updated_at = "2026-11-25T19:15:12Z"
+updated_at = "2026-11-25T19:37:11Z"
 source_ref = "STEP 44A"
 
 [effort]
-logged_time_minutes = 0
+logged_time_minutes = 20
 iteration_count = 1
+last_timer_session = "TASK-0117@2026-11-25T19:16:50Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-25"
+commit = "ee1f2a6"
+summary = "STEP 44A: Update `url` (`>= 2.5.9`) in `Cargo.lock` (`RUSTSEC-2026-0592`) (phased check PASS)"
