@@ -745,3 +745,38 @@ title = "Replace std::env::set_var/remove_var in storage_integration.rs with *_i
 status = "closed"
 severity = "medium"
 created_at = "2026-11-25T19:15:13Z"
+
+[[items.tasks]]
+id = "TASK-0125"
+title = "Fix move_item_to_phase to remove TASK-* stubs via ScopeItems::remove_id with regression test (BUG-0012 / AUD-05)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-26T14:47:35Z"
+
+[[items.tasks]]
+id = "TASK-0126"
+title = "Canonicalize HELD_WRITE_LOCKS and PROJECT_CACHE keys to prevent same-thread 30s self-deadlock (BUG-0013 / AUD-06)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-26T14:47:35Z"
+
+[[items.tasks]]
+id = "TASK-0127"
+title = "Reject symlinked .tracker/ roots in discover and guard_tracker_path with Unix O_NOFOLLOW hardening and containment tests (BUG-0010 / AUD-03)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-26T14:47:36Z"
+
+[[items.tasks]]
+id = "TASK-0128"
+title = "Lock public TrackerStorage mutators, read_active_timer quarantine, tool_pin_stable_release, and projects.toml registry (projects.lock) (BUG-0020 / AUD-17)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-26T14:47:36Z"
+
+[[items.tasks]]
+id = "TASK-0129"
+title = "Add AtomicBool shutdown signal to TrackerWatcher::drop (including contended lock waits) and skip symlinks in hash_index_files (BUG-0023 / AUD-20)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-26T14:47:37Z"

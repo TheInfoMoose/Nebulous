@@ -36,3 +36,10 @@ title = "Fix scripts/phased-step.sh code_stamp() under set -euo pipefail, portab
 status = "closed"
 severity = "medium"
 created_at = "2026-11-25T19:15:12Z"
+
+[[items.tasks]]
+id = "TASK-0124"
+title = "Exclude planning, audit, and tracker prose in scripts/check-neutral.sh while keeping source, tests, scripts, and user docs enforced (TASK-0123)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-26T14:47:34Z"

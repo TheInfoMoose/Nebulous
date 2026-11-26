@@ -23,7 +23,7 @@ Nebulous is a Git-backed, CLI/TUI-first and MCP-enabled project, bug, and task t
 - **Neon** never commits, never edits this file or the forbidden paths, and files bugs and scope lapses as **pending** neb items.
 - **Repeated failures** or a scope lapse defer the step. A step whose PRE_GATE then fails is deferred without running. Too many deferrals (`max(2, ceil(steps/3))`) stop the phase.
 
-**Phase goal (Phase 26):** Unblock `cargo deny`/CI (`url >= 2.5.9`), fix `scripts/phased-step.sh` under `set -euo pipefail` + macOS/backticks, align `.orrery/skills/repo-rules.md` and `.gitignore` with the phased workflow, fix broken `--all` doc examples in `docs/USAGE.md`, and remove `std::env::set_var`/`remove_var` hazards in `storage_integration.rs`.
+**Phase goal (Phase 27):** Unblock repo-wide CI neutrality (`scripts/check-neutral.sh` excluding planning/audit/tracker prose) and eliminate `.tracker/` index corruption, 30s same-thread lock deadlocks, symlink root escapes, unsynchronized mutators, and watcher shutdown/symlink hangs, each guarded by a regression test.
 
 **Side findings, bugs and scope lapses** become **pending neb items**, reviewed once at phase end. Every Up Next row has a neb task (`source_ref` = step ID); commits start with `[<TASK-ID>](<scope>)`.
 
@@ -33,11 +33,12 @@ Nebulous is a Git-backed, CLI/TUI-first and MCP-enabled project, bug, and task t
 
 | # | Step | Command | Scope | Target Files | Waits on |
 | :---: | :--- | :---: | :--- | :--- | :--- |
-| 1 | **STEP 44A** | `/goal` | Update `url` (`>= 2.5.9`) in `Cargo.lock` to resolve `RUSTSEC-2026-0592` (`BUG-0008` / `AUD-01`) | `Cargo.lock` | — |
-| 2 | **STEP 44B** | `/goal` | Fix `scripts/phased-step.sh` `code_stamp()` under `set -euo pipefail`, portable `find`, and backtick stripping in `ALLOWED` (`BUG-0016` / `AUD-09`) | `scripts/phased-step.sh`, `scripts/validate-step.sh` | — |
-| 3 | **STEP 44C** | `/goal` | Align `.orrery/skills/repo-rules.md` and `.gitignore` with phased workflow (`TASK-0115` / `AUD-30`) | `.orrery/skills/repo-rules.md`, `.gitignore` | — |
-| 4 | **STEP 44D** | `/goal` | Fix `docs/USAGE.md` removed `--all` examples on `neb git commit` and `neb sync` (`BUG-0017` / `AUD-10`) | `docs/USAGE.md` | — |
-| 5 | **STEP 44E** | `/goal` | Replace `std::env::set_var`/`remove_var` in `storage_integration.rs` with `*_in`/`*_from`/`*_to` helpers (`TASK-0116` test-hazard slice / `AUD-33`) | `crates/backend_core/tests/storage_integration.rs` | — |
+| 1 | **STEP 45A** | `/goal` | Exclude planning, audit, and tracker prose in `scripts/check-neutral.sh` while keeping source, tests, scripts, and user docs enforced (`TASK-0123`) | `scripts/check-neutral.sh` | — |
+| 2 | **STEP 45B** | `/goal` | Fix `move_item_to_phase` to remove `TASK-*` stubs via `ScopeItems::remove_id` with regression test (`BUG-0012` / `AUD-05`) | `crates/backend_core/src/workflow/lifecycle.rs`, `crates/backend_core/tests/workflow_integration.rs` | — |
+| 3 | **STEP 45C** | `/goal` | Canonicalize `HELD_WRITE_LOCKS` and `PROJECT_CACHE` keys to prevent same-thread 30s self-deadlock (`BUG-0013` / `AUD-06`) | `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/tests/storage_integration.rs` | — |
+| 4 | **STEP 45D** | `/boost` | Reject symlinked `.tracker/` roots in `discover` and `guard_tracker_path` with Unix `O_NOFOLLOW` hardening and containment tests (`BUG-0010` / `AUD-03`) | `crates/backend_core/Cargo.toml`, `Cargo.lock`, `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/tests/path_containment.rs` | `STEP 45C` |
+| 5 | **STEP 45E** | `/boost` | Lock public `TrackerStorage` mutators, `read_active_timer` quarantine, `tool_pin_stable_release`, and `projects.toml` registry (`projects.lock`) (`BUG-0020` / `AUD-17`) | `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/src/models/registry.rs`, `crates/backend_core/src/mcp/mod.rs`, `crates/backend_core/tests/storage_integration.rs` | `STEP 45C`, `STEP 45D` |
+| 6 | **STEP 45F** | `/goal` | Add `AtomicBool` shutdown signal to `TrackerWatcher::drop` (including contended lock waits) and skip symlinks in `hash_index_files` (`BUG-0023` / `AUD-20`) | `crates/backend_core/src/watcher/mod.rs`, `crates/backend_core/tests/watcher_integration.rs` | — |
 
 ### Completed
 
@@ -224,21 +225,16 @@ Rows 1–12 are recorded from git history; their `POST_GATE`s weren't re-run whe
 | **[CLAUDE] LIVE (Phase 24)** | **COMPLETED** (2026-11-20) | — | 5/5 runs passed; see "Phase 24 live check". Side finding TASK-0100 pending (agy headless needs a `mcp(nebulous/<tool>)` allow rule) | this plan file |
 | **STEP 43A** | **COMPLETED** (`2d340d8`) | `/goal` | `neb init` ignores the timer files (Gemini; validate-step PASS; Advances TASK-0088, closed) | `crates/backend_core/src/storage/mod.rs` |
 | **STEP 43B** | **COMPLETED** (`bca1277`) | `/goal` | Docs list only tested MCP clients; agy headless allow rule (Gemini; validate-step PASS; Advances TASK-0095, TASK-0100, closed) | `README.md`, `docs/USAGE.md` |
+| **STEP 44A** | **COMPLETED** (`ee1f2a6`) | `/goal` | Update `url` (`>= 2.5.9`) in `Cargo.lock` to resolve `RUSTSEC-2026-0592` (`BUG-0008` / `AUD-01`; `TASK-0117` closed) | `Cargo.lock` |
+| **STEP 44B** | **COMPLETED** (`97a5781`) | `/goal` | Fix `scripts/phased-step.sh` `code_stamp()` under `set -euo pipefail`, portable `find`, and backtick stripping in `ALLOWED` (`BUG-0016` / `AUD-09`; `TASK-0118` closed) | `scripts/phased-step.sh`, `scripts/validate-step.sh` |
+| **STEP 44C** | **COMPLETED** (`7c12853`) | `/goal` | Align `.orrery/skills/repo-rules.md` and `.gitignore` with phased workflow (applied host-side because Orrery masks `.orrery/`; `TASK-0115`, `TASK-0119` closed) | `.orrery/skills/repo-rules.md`, `.gitignore` |
+| **STEP 44D** | **COMPLETED** (`c20aa19`) | `/goal` | Fix `docs/USAGE.md` removed `--all` examples on `neb git commit` and `neb sync` (`BUG-0017` / `AUD-10`; `TASK-0120` closed) | `docs/USAGE.md` |
+| **STEP 44E** | **COMPLETED** (`2db073f`) | `/goal` | Replace `std::env::set_var`/`remove_var` in `storage_integration.rs` with `*_in`/`*_from`/`*_to` helpers (`TASK-0116` test-hazard slice / `AUD-33`; `TASK-0121` closed) | `crates/backend_core/tests/storage_integration.rs` |
 
 
 ### Future phases
 
 Outlines only (goal, done criteria, and step titles). `/phase-plan` writes the contract step blocks just before each phase starts.
-
-- **Phase 27 — Storage Containment, Locking & Core Data Integrity (High-Risk Core)**
-  - **Goal:** Eliminate `.tracker/` index corruption, 30s same-thread lock deadlocks, symlink root escapes, unsynchronized mutators, and watcher shutdown/symlink hangs, each guarded by a regression test.
-  - **Done when:** Moving `TASK-*` items across phases leaves zero ghost stubs; mixed relative/canonical `TrackerStorage` paths never self-deadlock; symlinked `.tracker/` roots are rejected; all public `TrackerStorage` mutators, timer quarantine, and `projects.toml` writes hold cross-process file locks; `TrackerWatcher::drop` stops promptly under lock contention and skips directory symlinks.
-  - **Steps:**
-    - Fix `move_item_to_phase` to remove `TASK-*` stubs via `ScopeItems::remove_id` with regression test (`BUG-0012` / `AUD-05`)
-    - Canonicalize `HELD_WRITE_LOCKS` and `PROJECT_CACHE` keys to prevent same-thread 30s self-deadlock (`BUG-0013` / `AUD-06`)
-    - Reject symlinked `.tracker/` roots in `discover` and `guard_tracker_path` (+ Unix `O_NOFOLLOW` hardening) with containment tests (`BUG-0010` / `AUD-03`)
-    - Lock public `TrackerStorage` mutators, `read_active_timer` quarantine, and `projects.toml` registry (`projects.lock`) (`BUG-0020` / `AUD-17`)
-    - Add `AtomicBool` shutdown signal to `TrackerWatcher::drop` and skip symlinks in `hash_index_files` (`BUG-0023` / `AUD-20`)
 
 - **Phase 28 — Secret Vault, Keyring & Security Hardening (High-Risk Security)**
   - **Goal:** Close vault file creation permission windows, keyring/vault credential split-brain, cross-host HTTPS PAT leakage, prompt-injection gaps, and un-zeroized PAT residency without breaking existing user vaults.
@@ -563,6 +559,311 @@ Tests:
 
 [POST_GATE]
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && ! grep -qE 'set_var|remove_var' crates/backend_core/tests/storage_integration.rs && grep -q 'register_project_in' crates/backend_core/tests/storage_integration.rs && grep -q 'load_global_registry_from' crates/backend_core/tests/storage_integration.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+## Phase 27 Step Contracts
+
+### STEP 45A: Exclude planning, audit, and tracker prose in `scripts/check-neutral.sh`
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 45A: Exclude `STEPPED_IMPLEMENTATION_PLAN.md`, `docs/codebase-audit-report.md`, and `.tracker/` from default repo-wide scans in `scripts/check-neutral.sh` so Ubuntu CI passes while keeping source, tests, scripts, and user docs enforced (`TASK-0123`).
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - scripts/check-neutral.sh
+READ_ONLY_REFS:
+  - .github/workflows/ci.yml (Ubuntu neutrality gate invocation)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not relax `PATTERN`, add entries to `ALLOWLIST`, or weaken explicit-file checks when arguments are passed to `scripts/check-neutral.sh`. Never touch the forbidden path listed in the plan header.
+
+[PRE_GATE]
+true
+
+[MUTATION_SPEC]
+Goal: Restore a passing repo-wide `bash scripts/check-neutral.sh` gate on Ubuntu CI without weakening neutrality enforcement on Rust source, tests, scripts, CI workflows, or user-facing documentation (`README.md`, `docs/USAGE.md`, `docs/ARCHITECTURE.md`, `CHANGELOG.md`).
+
+Contract & Behavior:
+  1. `scripts/check-neutral.sh` (default `no_args == 1` `git ls-files` filter):
+     - Extend the `grep -vE` exclusion filter to skip `^STEPPED_IMPLEMENTATION_PLAN\.md$`, `^docs/codebase-audit-report\.md$`, and `^\.tracker/` in addition to the existing `^archive/`, `^Cargo\.lock$`, and `^scripts/check-neutral\.sh$` exclusions.
+     - Keep `PATTERN` and the empty `ALLOWLIST` unchanged.
+     - Keep explicit-argument mode (`bash scripts/check-neutral.sh <file> ...`) unchanged so passing any file path directly still scans that file and fails on missing files or hits.
+  2. Running `bash scripts/check-neutral.sh` with no arguments from repo root must exit `0` and print `check-neutral: OK (0 allowlisted file(s), 0 line(s) left to scrub)`.
+
+Must still work:
+  - `bash scripts/check-neutral.sh README.md docs/USAGE.md` exits `0`.
+  - `bash scripts/check-neutral.sh` fails (non-zero) when given an explicit file containing a forbidden token or a nonexistent path.
+  - All Rust source, tests, scripts, workflows, and user docs remain scanned in default no-arg mode.
+
+Drops: none
+
+Tests:
+  - Shell verification in `POST_GATE`: `bash -n scripts/check-neutral.sh` and `bash scripts/check-neutral.sh` exit `0` on the current repository.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash -n scripts/check-neutral.sh && bash scripts/check-neutral.sh
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 45B: Fix `move_item_to_phase` to remove `TASK-*` stubs via `ScopeItems::remove_id`
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 45B: Fix `remove_item_from_parent_indexes` in `crates/backend_core/src/workflow/lifecycle.rs` to use `ScopeItems::remove_id` so moving `TASK-*` items leaves zero ghost stubs, with a regression test (`BUG-0012` / `AUD-05`).
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/workflow/lifecycle.rs
+  - crates/backend_core/tests/workflow_integration.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/models/scope.rs:85-105 (ScopeItems::remove_id)
+  - crates/backend_core/src/workflow/lifecycle.rs:920-1043 (move_item_to_phase, remove_item_from_parent_indexes, sync_parent_indexes_for_item)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change public signatures on `TrackerStorage`, `ScopeItems`, or `ItemLocation`. Never touch the forbidden path listed in the plan header.
+
+[PRE_GATE]
+true
+
+[MUTATION_SPEC]
+Goal: Moving a `TASK-*` item between phases removes its stub from the source `scope.toml`, updates the source `phase.toml` summary counts accurately, inserts it into the target phase, and keeps subsequent lookups working without requiring `reconcile_indexes`.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/workflow/lifecycle.rs` (`remove_item_from_parent_indexes`):
+     - Replace the manual `.bugs.retain(...)` and `.features.retain(...)` calls with `scope_manifest.items.remove_id(item_id);` so all `ItemType` variants (`Bug`, `Feature`, `Task`) are removed uniformly, matching `sync_parent_indexes_for_item`.
+     - Preserve writing the updated `scope.toml` and recomputing the source `phase.toml` summary via `recompute_phase_summary_with_scope`.
+
+Must still work:
+  - Moving `BUG-*` and `FEAT-*` items across phases (existing move tests in `workflow_integration.rs`).
+  - Active timer `phase_id` update when moving the item with an active timer.
+
+Drops: none
+
+Tests:
+  - `move_task_between_phases_removes_source_stub_and_updates_summary` in `crates/backend_core/tests/workflow_integration.rs`: create a `TASK-*` item in `pre_production`/`inbox` via `create_item`, call `move_item_to_phase(&task_id, "production")` -> source `scope.toml` `items.tasks` does not contain `task_id`, source `phase.toml` `summary.total_items == 0`, target `scope.toml` `items.tasks` contains `task_id`, target `phase.toml` `summary.total_items == 1`, and `load_item_detail_by_id(&task_id)` succeeds with `phase_id == "production"`.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'remove_id(item_id)' crates/backend_core/src/workflow/lifecycle.rs && grep -q 'fn move_task_between_phases_removes_source_stub_and_updates_summary' crates/backend_core/tests/workflow_integration.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 45C: Canonicalize `HELD_WRITE_LOCKS` and `PROJECT_CACHE` keys
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 45C: Canonicalize the thread-local `HELD_WRITE_LOCKS` and `PROJECT_CACHE` key in `crates/backend_core/src/storage/mod.rs` so mixed relative/unnormalized/canonical `TrackerStorage` instances never self-deadlock on the same thread (`BUG-0013` / `AUD-06`).
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/storage/mod.rs
+  - crates/backend_core/tests/storage_integration.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/storage/mod.rs:32-70 (HELD_WRITE_LOCKS, PROJECT_CACHE, ReentrantLockGuard)
+  - crates/backend_core/src/storage/mod.rs:489-556 (lock_path, holds_write_lock, with_write_lock_timeout)
+  - crates/backend_core/src/storage/mod.rs:719-767 (read_project, write_project)
+  - crates/backend_core/src/storage/mod.rs:1339-1384 (canonicalize_existing_prefix)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change the public return value of `TrackerStorage::lock_path(&self)` or weaken `PROJECT_DISK_READS` caching tests. Never touch the forbidden path listed in the plan header.
+
+[PRE_GATE]
+true
+
+[MUTATION_SPEC]
+Goal: Nested same-thread `with_write_lock` / `with_write_lock_timeout` calls across two `TrackerStorage` instances pointing to the same `.tracker/` directory via different path spellings (e.g., canonical `discover` vs relative or `./` unnormalized `new`/`from_tracker_dir`) re-enter immediately without timing out and share the same `PROJECT_CACHE` entry.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/storage/mod.rs`:
+     - Add a single internal helper (e.g. `fn lock_key(&self) -> PathBuf`) that derives the canonicalized lock/cache key from `canonicalize_existing_prefix(&self.tracker_dir)` (falling back to `lexical_normalize_path(&self.tracker_dir)` if canonicalization errors) joined with `LOCK_FILE_NAME`.
+     - Use that canonical key consistently in `holds_write_lock`, `with_write_lock_timeout` (both the reentrancy check and `ReentrantLockGuard::acquire`), `read_project`, and `write_project` (cache insert and error-path removal).
+     - Keep `pub fn lock_path(&self) -> PathBuf` returning `self.tracker_dir.join(LOCK_FILE_NAME)` unchanged.
+
+Must still work:
+  - Existing lock timeout between distinct threads (`write_lock_times_out_when_contended`), error release (`write_lock_propagates_error_and_releases_lock`), and `project.toml` cache tests (`create_item_reads_project_toml_at_most_twice`, `project_cache_is_dropped_when_lock_releases`, `write_inside_lock_updates_cache`).
+  - Locking before `.tracker/` exists on disk (`create_tracker_dir_all` inside `with_write_lock_timeout`).
+
+Drops: none
+
+Tests:
+  - `nested_write_lock_with_mixed_path_spellings_is_reentrant` in `crates/backend_core/tests/storage_integration.rs`: initialize a tracker in a temp dir, construct `storage_canon = TrackerStorage::discover(temp.path())` and `storage_unnorm = TrackerStorage::new(temp.path().join("."))` (plus a `from_tracker_dir` variant with `.`), verify `storage_canon.with_write_lock(|_| storage_unnorm.with_write_lock_timeout(Duration::from_millis(200), |s| { let mut p = s.read_project()?; p.project.name = "updated".to_string(); s.write_project(&p)?; Ok(()) }))` succeeds without `LockTimeout` and `storage_canon.read_project()` inside the outer lock observes `"updated"`.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'fn nested_write_lock_with_mixed_path_spellings_is_reentrant' crates/backend_core/tests/storage_integration.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 45D: Reject symlinked `.tracker/` roots and harden Unix tracker opens with `O_NOFOLLOW`
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 45D: Reject symlinked `.tracker/` roots in `TrackerStorage::discover` and `guard_tracker_path`, harden Unix tracker file/lock opens with `O_NOFOLLOW`, and add containment regression tests (`BUG-0010` / `AUD-03`).
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/Cargo.toml
+  - Cargo.lock
+  - crates/backend_core/src/storage/mod.rs
+  - crates/backend_core/tests/path_containment.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/storage/mod.rs:212-250 (TrackerStorage::discover)
+  - crates/backend_core/src/storage/mod.rs:417-470 (guard_tracker_path, read_tracker_file, write_tracker_file, create_tracker_dir_*)
+  - crates/backend_core/src/storage/mod.rs:507-556 (with_write_lock_timeout)
+  - crates/backend_core/src/storage/mod.rs:1281-1384 (contained_path, resolve_contained, canonicalize_existing_prefix)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not weaken existing path containment checks or reject trackers whose ancestor directories (e.g. macOS `/var -> /private/var`) contain symlinks when `.tracker` itself is a real directory. Never touch the forbidden path listed in the plan header.
+
+[PRE_GATE]
+grep -q 'nested_write_lock_with_mixed_path_spellings_is_reentrant' crates/backend_core/tests/storage_integration.rs
+
+[MUTATION_SPEC]
+Goal: A symlinked `.tracker` root directory can no longer bypass `discover` or `guard_tracker_path` containment checks, and Unix tracker file reads and lock opens refuse final-component symlinks at the kernel open boundary via `O_NOFOLLOW`.
+
+Contract & Behavior:
+  1. `crates/backend_core/Cargo.toml` + `Cargo.lock`:
+     - Add `libc = "0.2"` under `[target.'cfg(unix)'.dependencies]` (already present in `Cargo.lock`; do not add any other crate or change unrelated versions).
+  2. `crates/backend_core/src/storage/mod.rs`:
+     - `TrackerStorage::discover`: check `fs::symlink_metadata` on the `.tracker` candidate (both when `start_dir` itself names a symlinked `.tracker` before canonicalization and when `dir.join(".tracker")` is probed during ancestor walk). If the `.tracker` entry itself is a symlink, return `Err(TrackerError::ValidationError(...))` mentioning `"symlink"` rather than accepting or silently following it.
+     - `guard_tracker_path`: before delegating to `contained_path`, check `fs::symlink_metadata(&self.tracker_dir)`; if it exists and `file_type().is_symlink()`, return `Err(TrackerError::ValidationError(...))` mentioning `"symlink"`.
+     - Unix `O_NOFOLLOW` hardening: in `read_tracker_file` and `with_write_lock_timeout` (opening `guarded_lock_path`), apply `OpenOptionsExt::custom_flags(libc::O_NOFOLLOW)` under `#[cfg(unix)]` so a race swapping the final component for a symlink fails at `open(2)` instead of following it. Ensure `#[cfg(not(unix))]` builds cleanly with zero unused-import warnings.
+
+Must still work:
+  - Legitimate `.tracker/` directories located under symlinked ancestor directories (such as macOS `/var/folders/...` -> `/private/var/folders/...` or a workspace symlink pointing to a repo containing a real `.tracker/` directory).
+  - All existing tests in `crates/backend_core/tests/path_containment.rs` and `cargo test --workspace`.
+
+Drops: none
+
+Tests:
+  - `symlinked_tracker_root_rejected` in `crates/backend_core/tests/path_containment.rs` (`#[cfg(unix)]`): initialize a real tracker in an outside temp dir, create a workspace dir with `.tracker` symlinked to that outside `.tracker`, and verify:
+    1. `TrackerStorage::discover(workspace.path())` returns `Err(TrackerError::ValidationError(_))` mentioning `"symlink"`.
+    2. `TrackerStorage::discover(workspace.path().join(".tracker"))` returns `Err(TrackerError::ValidationError(_))` mentioning `"symlink"`.
+    3. `TrackerStorage::new(workspace.path())` rejects `read_project()`, `write_item_desc(...)`, and `with_write_lock(...)` with `Err(TrackerError::ValidationError(_))` mentioning `"symlink"`, leaving the outside tracker unmodified.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'O_NOFOLLOW' crates/backend_core/src/storage/mod.rs && grep -q 'fn symlinked_tracker_root_rejected' crates/backend_core/tests/path_containment.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 45E: Lock public `TrackerStorage` mutators, timer quarantine, `tool_pin_stable_release`, and `projects.toml`
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 45E: Acquire `.tracker/.lock` inside public `TrackerStorage` mutators, `read_active_timer` quarantine, and MCP `tool_pin_stable_release`, and add cross-process `projects.lock` `fd_lock` serialization to `models/registry.rs` (`BUG-0020` / `AUD-17`).
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/storage/mod.rs
+  - crates/backend_core/src/models/registry.rs
+  - crates/backend_core/src/mcp/mod.rs
+  - crates/backend_core/tests/storage_integration.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/crypto/mod.rs:55-95 (with_vault_lock fd_lock pattern)
+  - crates/backend_core/src/storage/mod.rs:274-390 (init)
+  - crates/backend_core/src/storage/mod.rs:472-478,746-946,1053-1131 (public mutators, read_active_timer, resolve_phase_and_scope)
+  - crates/backend_core/src/models/registry.rs:16-40,374-576 (registry_lock, load/save/register/remove/set_active/credential helpers)
+  - crates/backend_core/src/mcp/mod.rs:1971-2050 (tool_pin_stable_release)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change public method signatures on `TrackerStorage`, `GlobalProjectRegistry`, or MCP tool schemas. Never touch the forbidden path listed in the plan header.
+
+[PRE_GATE]
+grep -q 'symlinked_tracker_root_rejected' crates/backend_core/tests/path_containment.rs
+
+[MUTATION_SPEC]
+Goal: All public `TrackerStorage` mutators, corrupt timer quarantine, MCP release pinning, and global `projects.toml` operations are serialized across processes with file locks instead of racing unlocked or relying solely on an in-process mutex.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/storage/mod.rs`:
+     - Acquire `with_write_lock` inside public mutators: `init` (wrapping the filesystem writes after validation), `ensure_items_dir`, `write_project`, `write_phase`, `write_scope`, `write_item_manifest`, `write_item_desc`, `write_item_detail`, `write_active_timer`, `clear_active_timer`, and `resolve_phase_and_scope`. Keep `pub(crate)` internal helpers unlocked where callers already hold the lock or re-enter cleanly via reentrant `with_write_lock`.
+     - In `read_active_timer`: keep the happy path (missing or valid `.timer.toml`) lock-free; when parsing fails, acquire `with_write_lock`, re-check `.timer.toml` (return `Ok(None)` if removed or `Ok(Some(timer))` if a concurrent writer replaced it with valid TOML), and only then call `quarantine_active_timer()` under the lock.
+  2. `crates/backend_core/src/models/registry.rs`:
+     - Export `pub const GLOBAL_PROJECTS_LOCK_FILE_NAME: &str = "projects.lock";`.
+     - Serialize all registry file operations (`load_global_registry_from`, `save_global_registry_to`, `register_project_in`, `remove_project_in`, `set_active_project_in`, `credential_accounts_for_root_in`, `bind_credential_account_in`) with both the in-process `registry_lock()` mutex and a cross-process `fd_lock::RwLock` on sibling `projects.lock` (using `DEFAULT_LOCK_TIMEOUT` and returning `TrackerError::LockTimeout` on contention, matching `with_vault_lock`).
+     - For read-only loads (`load_global_registry_from`, `credential_accounts_for_root_in`), if the registry file and its parent directory do not exist yet, return default/empty without creating the parent directory on disk.
+     - In `load_registry_unlocked`, when `registry.prune_unsafe_projects()` returns `true`, propagate any error from `save_registry_unlocked(path, &registry)?` instead of discarding it with `let _ = ...`.
+  3. `crates/backend_core/src/mcp/mod.rs`:
+     - Wrap `tool_pin_stable_release`'s `read_component_manifest`, optional `write_component_manifest`, and `pin_component_release` sequence in a single `storage.with_write_lock(|storage| ...)`.
+
+Must still work:
+  - Reentrant nested lock calls inside `create_item`, `reconcile_indexes`, `move_item_to_phase`, `init_standard`, and `PROJECT_DISK_READS` caching (`create_item_reads_project_toml_at_most_twice`).
+  - Corrupt `.timer.toml` quarantine tests (`workflow_integration.rs`) and `path_containment.rs` symlink rejections.
+  - All existing `registry` and MCP tests (`cli_integration.rs`, `workflow_integration.rs`, `mcp_protocol.rs`).
+
+Drops: none
+
+Tests:
+  - `public_mutator_waits_for_write_lock` in `crates/backend_core/tests/storage_integration.rs`: hold `.tracker/.lock` on thread A for ~200ms while thread B calls `storage.write_item_desc(...)` -> thread B blocks until thread A releases the lock, then succeeds and writes the description.
+  - `registry_writes_serialize_on_projects_lock` in `crates/backend_core/tests/storage_integration.rs`: hold an exclusive `fd_lock::RwLock` on `<cfg_dir>/projects.lock` on thread A for ~200ms while thread B calls `register_project_in(&cfg_dir, ...)` -> thread B waits until thread A releases `projects.lock`, then succeeds and persists the project entry.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'GLOBAL_PROJECTS_LOCK_FILE_NAME' crates/backend_core/src/models/registry.rs && grep -q 'fn public_mutator_waits_for_write_lock' crates/backend_core/tests/storage_integration.rs && grep -q 'fn registry_writes_serialize_on_projects_lock' crates/backend_core/tests/storage_integration.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 45F: Add `AtomicBool` shutdown signal to `TrackerWatcher::drop` and skip symlinks in `hash_index_files`
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 45F: Add an `Arc<AtomicBool>` shutdown signal to `TrackerWatcher::drop` so dropping under lock contention or settlement exits promptly, and skip symlinks in `hash_index_files` (`BUG-0023` / `AUD-20`).
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/watcher/mod.rs
+  - crates/backend_core/tests/watcher_integration.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/storage/mod.rs:505-556 (with_write_lock_timeout)
+  - crates/backend_core/src/storage/reconcile.rs:34-40 (reconcile_indexes)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change `TrackerWatcher` public method signatures or weaken `echo_path_tests::own_index_echo_matches_through_symlinked_path` (watching through a symlinked root ancestor like macOS `/var`). Never touch the forbidden path listed in the plan header.
+
+[PRE_GATE]
+true
+
+[MUTATION_SPEC]
+Goal: Dropping a `TrackerWatcher` always terminates its worker thread promptly (well under 2 seconds) even when `.tracker/.lock` is held by another thread/process or an item directory is mid-settlement, and `hash_index_files` never follows symlinks or loops on directory symlink cycles inside `.tracker/`.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/watcher/mod.rs`:
+     - Store `shutdown: Arc<AtomicBool>` on `TrackerWatcher` (initialized `false`), set `shutdown.store(true, Ordering::Release)` in `Drop::drop` before dropping `self.watcher` and joining `self.worker`.
+     - Check `shutdown.load(Ordering::Acquire)` in the worker loop: on every iteration, during the 50ms debounce loop, during the 300ms settlement loop, and while acquiring `.tracker/.lock` for `auto_reconcile`.
+     - For `auto_reconcile`, acquire the write lock in short slices via `storage_for_worker.with_write_lock_timeout(Duration::from_millis(50..100), |s| s.reconcile_indexes())` up to `DEFAULT_LOCK_TIMEOUT` total elapsed, checking `shutdown` on each `Err(TrackerError::LockTimeout { .. })`: if `shutdown` is set, exit the worker loop immediately without waiting the full 30s; if `DEFAULT_LOCK_TIMEOUT` elapses without shutdown, report `reconcile_error = Some(err.to_string())` as before.
+     - In `hash_index_files`: inspect `entry.file_type()` (which does not follow symlinks) instead of `path.is_dir()`; skip entries where `file_type.is_symlink()`, recurse only when `file_type.is_dir()`, and hash derived index files only when `file_type.is_file()`.
+
+Must still work:
+  - `own_index_echo_matches_through_symlinked_path` (watching a directory accessed via a symlinked ancestor path still matches echo hashes).
+  - `reconcile_error_is_reported`, `drop_joins_worker_promptly`, and `external_scope_edit_after_reconcile_is_processed` in `watcher_integration.rs`.
+
+Drops: none
+
+Tests:
+  - `drop_stops_promptly_under_contended_write_lock` in `crates/backend_core/tests/watcher_integration.rs`: start `TrackerWatcher`, hold `.tracker/.lock` on a background thread (via `storage.with_write_lock`), trigger a filesystem write under `.tracker/` so the watcher attempts `reconcile_indexes`, sleep briefly so the worker enters lock contention, then `drop(watcher)` -> `drop` returns in `< 2s` while the lock is still held.
+  - `hash_index_files_skips_directory_symlink_cycles` in `crates/backend_core/src/watcher/mod.rs` (`#[cfg(all(test, unix))]`): create a temp dir with `scope.toml` and a self-referential directory symlink (`loop_dir -> .`) plus a symlinked `phase.toml` -> `hash_index_files` terminates promptly, includes the real `scope.toml`, and does not include or recurse through either symlink.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'AtomicBool' crates/backend_core/src/watcher/mod.rs && grep -q 'fn drop_stops_promptly_under_contended_write_lock' crates/backend_core/tests/watcher_integration.rs && grep -q 'fn hash_index_files_skips_directory_symlink_cycles' crates/backend_core/src/watcher/mod.rs
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.

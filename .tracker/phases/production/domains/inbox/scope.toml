@@ -122,7 +122,7 @@ created_at = "2026-11-20T12:02:00Z"
 [[items.tasks]]
 id = "TASK-0115"
 title = "[AUD-30] Resolve workflow & plan drift (994 KB STEPPED_IMPLEMENTATION_PLAN.md, .orrery/ vs .phased/, .gitignore, STEP 43C PRE_GATE)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-25T03:28:23Z"
 
@@ -136,7 +136,7 @@ created_at = "2026-11-25T19:15:12Z"
 [[items.tasks]]
 id = "TASK-0119"
 title = "Align .orrery/skills/repo-rules.md and .gitignore with phased workflow (TASK-0115 / AUD-30)"
-status = "pending"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-25T19:15:12Z"
 
