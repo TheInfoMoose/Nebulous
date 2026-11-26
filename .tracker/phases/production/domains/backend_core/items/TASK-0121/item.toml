@@ -4,17 +4,22 @@ schema_version = 2
 id = "TASK-0121"
 type = "task"
 title = "Replace std::env::set_var/remove_var in storage_integration.rs with *_in/*_from/*_to helpers (TASK-0116 test-hazard slice / AUD-33)"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "backend_core"
 created_at = "2026-11-25T19:15:13Z"
-updated_at = "2026-11-25T19:15:13Z"
+updated_at = "2026-11-26T02:25:20Z"
 source_ref = "STEP 44E"
 
 [effort]
-logged_time_minutes = 0
+logged_time_minutes = 6
 iteration_count = 1
+last_timer_session = "TASK-0121@2026-11-26T02:19:14Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-26"
+commit = "2db073f"
+summary = "STEP 44E: Replace `std::env::set_var`/`remove_var` in `storage_integration.rs` with explicit-path helpers (phased check PASS)"
