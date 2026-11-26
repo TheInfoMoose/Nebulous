@@ -136,6 +136,13 @@ created_at = "2026-11-25T19:15:12Z"
 [[items.tasks]]
 id = "TASK-0119"
 title = "Align .orrery/skills/repo-rules.md and .gitignore with phased workflow (TASK-0115 / AUD-30)"
-status = "open"
+status = "pending"
 severity = "medium"
 created_at = "2026-11-25T19:15:12Z"
+
+[[items.tasks]]
+id = "TASK-0122"
+title = "Unblock STEP 44C editing of .orrery/skills/repo-rules.md outside masked container"
+status = "pending"
+severity = "high"
+created_at = "2026-11-26T02:01:40Z"
