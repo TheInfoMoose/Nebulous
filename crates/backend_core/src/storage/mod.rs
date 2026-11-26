@@ -7,6 +7,9 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -218,10 +221,23 @@ impl TrackerStorage {
         } else {
             start.to_path_buf()
         };
+        let norm_abs = lexical_normalize_path(&abs);
+        for anc in norm_abs.ancestors() {
+            if anc.file_name() == Some(OsStr::new(".tracker")) {
+                if let Ok(meta) = fs::symlink_metadata(anc) {
+                    if meta.file_type().is_symlink() {
+                        return Err(TrackerError::ValidationError(format!(
+                            "Tracker root '{}' must not be a symlink",
+                            anc.display()
+                        )));
+                    }
+                }
+            }
+        }
         let resolved_start = if abs.exists() {
-            fs::canonicalize(&abs).unwrap_or_else(|_| lexical_normalize_path(&abs))
+            fs::canonicalize(&abs).unwrap_or_else(|_| norm_abs.clone())
         } else {
-            lexical_normalize_path(&abs)
+            norm_abs
         };
 
         let mut current = Some(resolved_start.as_path());
@@ -237,6 +253,14 @@ impl TrackerStorage {
             }
             if !is_unsafe_broad_directory(dir) {
                 let candidate = dir.join(".tracker");
+                if let Ok(meta) = fs::symlink_metadata(&candidate) {
+                    if meta.file_type().is_symlink() {
+                        return Err(TrackerError::ValidationError(format!(
+                            "Tracker root '{}' must not be a symlink",
+                            candidate.display()
+                        )));
+                    }
+                }
                 if candidate.join("project.toml").is_file() {
                     return Ok(Self {
                         tracker_dir: candidate,
@@ -417,6 +441,15 @@ impl TrackerStorage {
     /// Proves `path` (which must be lexically beneath `tracker_dir`) stays inside `.tracker/` on
     /// disk and is not a symlink, via [`contained_path`].
     pub(crate) fn guard_tracker_path(&self, path: &Path) -> Result<PathBuf> {
+        let tracker_probe = lexical_normalize_path(&self.tracker_dir);
+        if let Ok(meta) = fs::symlink_metadata(&tracker_probe) {
+            if meta.file_type().is_symlink() {
+                return Err(TrackerError::ValidationError(format!(
+                    "Tracker root '{}' must not be a symlink",
+                    self.tracker_dir.display()
+                )));
+            }
+        }
         let rel = path.strip_prefix(&self.tracker_dir).map_err(|_| {
             TrackerError::ValidationError(format!(
                 "Path '{}' is not inside tracker directory '{}'",
@@ -430,7 +463,18 @@ impl TrackerStorage {
     /// Reads a UTF-8 file under `.tracker/` after containment checks.
     pub(crate) fn read_tracker_file(&self, path: &Path) -> Result<String> {
         let path = self.guard_tracker_path(path)?;
-        fs::read_to_string(&path).map_err(|source| TrackerError::Io { path, source })
+        let mut opts = fs::OpenOptions::new();
+        opts.read(true);
+        #[cfg(unix)]
+        opts.custom_flags(libc::O_NOFOLLOW);
+        let mut file = opts.open(&path).map_err(|source| TrackerError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .map_err(|source| TrackerError::Io { path, source })?;
+        Ok(contents)
     }
 
     /// Atomically writes a UTF-8 file under `.tracker/` after containment checks.
@@ -522,10 +566,11 @@ impl TrackerStorage {
         let lock_path = self.lock_path();
         self.create_tracker_dir_all(&self.tracker_dir)?;
         let guarded_lock_path = self.guard_tracker_path(&lock_path)?;
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
+        let mut lock_opts = fs::OpenOptions::new();
+        lock_opts.create(true).truncate(false).write(true);
+        #[cfg(unix)]
+        lock_opts.custom_flags(libc::O_NOFOLLOW);
+        let file = lock_opts
             .open(&guarded_lock_path)
             .map_err(|source| TrackerError::Io {
                 path: guarded_lock_path.clone(),

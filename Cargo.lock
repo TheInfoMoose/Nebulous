@@ -216,6 +216,7 @@ dependencies = [
  "ignore",
  "jiff",
  "keyring",
+ "libc",
  "notify",
  "rand",
  "serde",

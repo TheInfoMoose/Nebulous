@@ -274,4 +274,75 @@ mod unix {
         );
         assert_eq!(fs::read_to_string(&foreign).unwrap(), "id = \"x\"\n");
     }
+
+    #[test]
+    fn symlinked_tracker_root_rejected() {
+        fn assert_symlink_rejected<T: std::fmt::Debug>(
+            result: backend_core::Result<T>,
+            what: &str,
+        ) {
+            match result {
+                Err(TrackerError::ValidationError(msg)) => {
+                    assert!(
+                        msg.contains("symlink"),
+                        "{what}: expected error mentioning 'symlink', got: {msg}"
+                    );
+                }
+                other => {
+                    panic!("{what}: expected ValidationError mentioning 'symlink', got {other:?}")
+                }
+            }
+        }
+
+        let outside = TempDir::new("tracker_root_outside");
+        let workspace = TempDir::new("tracker_root_workspace");
+        let outside_storage = TrackerStorage::init_standard(outside.path(), "outside").unwrap();
+        let outside_project_before =
+            fs::read_to_string(outside_storage.project_toml_path()).unwrap();
+
+        symlink(
+            outside.path().join(".tracker"),
+            workspace.path().join(".tracker"),
+        )
+        .unwrap();
+
+        // 1. discover(workspace) rejects symlinked .tracker during ancestor walk.
+        assert_symlink_rejected(
+            TrackerStorage::discover(workspace.path()),
+            "discover(workspace)",
+        );
+
+        // 2. discover(workspace/.tracker) rejects symlinked .tracker before canonicalization.
+        assert_symlink_rejected(
+            TrackerStorage::discover(workspace.path().join(".tracker")),
+            "discover(workspace/.tracker)",
+        );
+
+        // 3. TrackerStorage::new(workspace) rejects reads, writes, and write locks.
+        let storage = TrackerStorage::new(workspace.path());
+        assert_symlink_rejected(storage.read_project(), "read_project");
+        assert_symlink_rejected(
+            storage.write_item_desc("pre_production", "inbox", "BUG-0001", "pwned"),
+            "write_item_desc",
+        );
+        assert_symlink_rejected(storage.with_write_lock(|_| Ok(())), "with_write_lock");
+
+        // Outside tracker must remain unmodified.
+        assert_eq!(
+            fs::read_to_string(outside_storage.project_toml_path()).unwrap(),
+            outside_project_before
+        );
+        assert!(!outside_storage
+            .item_dir("pre_production", "inbox", "BUG-0001")
+            .unwrap()
+            .exists());
+
+        // Legitimate .tracker under a symlinked workspace ancestor must still work.
+        let alias_parent = TempDir::new("tracker_root_alias");
+        let ws_alias = alias_parent.path().join("ws_link");
+        symlink(outside.path(), &ws_alias).unwrap();
+        let discovered = TrackerStorage::discover(&ws_alias)
+            .expect("real .tracker under symlinked ancestor must still be discovered");
+        assert_eq!(discovered.read_project().unwrap().project.name, "outside");
+    }
 }
