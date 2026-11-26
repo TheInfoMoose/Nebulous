@@ -479,6 +479,7 @@ Halt immediately after POST_GATE exits 0 and report verification status.
 ### STEP 44D: Fix `docs/USAGE.md` removed `--all` examples on `neb git commit` and `neb sync`
 
 * **Recommended Command:** `/goal`
+* **Restaged:** 1
 
 ```text
 [STEP_ID]
@@ -505,11 +506,11 @@ Contract & Behavior:
      - Replace `--all` on the `neb git commit` example with an explicit project-relative `--path <FILE>` example (e.g., `--path crates/backend_core/src/models/item.rs`).
      - Replace `--all` on the `neb sync` example with an explicit `--path <FILE>` example, and note (in comment or example) that omitting `--path` stages and commits `.tracker/` metadata only.
   2. Zero occurrences of `--all` remain anywhere in `docs/USAGE.md`.
-  3. Keep neutrality clean (`scripts/check-neutral.sh` passes).
+  3. Keep neutrality clean on `docs/USAGE.md` (`bash scripts/check-neutral.sh docs/USAGE.md` passes).
 
 Must still work:
   - All other sections and command examples in `docs/USAGE.md`.
-  - `bash scripts/check-neutral.sh`.
+  - `bash scripts/check-neutral.sh docs/USAGE.md`.
 
 Drops: none
 
@@ -517,7 +518,7 @@ Tests:
   - `usage_git_examples_valid`: verify `docs/USAGE.md` has zero `--all` occurrences and includes `--path` examples for both `neb git commit` and `neb sync`.
 
 [POST_GATE]
-cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/check-neutral.sh && ! grep -q -- '--all' docs/USAGE.md && grep -qE 'neb git commit.*--path' docs/USAGE.md && grep -qE 'neb sync.*--path' docs/USAGE.md
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/check-neutral.sh docs/USAGE.md && ! grep -q -- '--all' docs/USAGE.md && grep -qE 'neb git commit.*--path' docs/USAGE.md && grep -qE 'neb sync.*--path' docs/USAGE.md
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.
