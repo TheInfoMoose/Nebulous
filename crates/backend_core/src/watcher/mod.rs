@@ -2,15 +2,17 @@ use std::collections::HashMap;
 use std::fs;
 use std::hash::{DefaultHasher, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use notify::event::ModifyKind;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::error::Result;
-use crate::storage::{ReconcileReport, TrackerStorage};
+use crate::error::{Result, TrackerError};
+use crate::storage::{ReconcileReport, TrackerStorage, DEFAULT_LOCK_TIMEOUT};
 
 /// Notification emitted by [`TrackerWatcher`] when `.tracker/` files change on disk.
 #[derive(Debug, Clone)]
@@ -35,6 +37,7 @@ pub struct TrackerWatcher {
     watcher: Option<RecommendedWatcher>,
     worker: Option<JoinHandle<()>>,
     watched_dir: PathBuf,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl TrackerWatcher {
@@ -87,12 +90,20 @@ impl TrackerWatcher {
 
         let storage_for_worker = storage;
         let watched_dir_for_worker = watched_dir.clone();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_for_worker = Arc::clone(&shutdown);
         let worker = thread::spawn(move || {
+            const LOCK_SLICE: Duration = Duration::from_millis(50);
+
             let mut own_index_hashes: HashMap<PathBuf, u64> = HashMap::new();
             let mut pending_batch: Option<Vec<PathBuf>> = None;
             let mut pending_rescan = false;
 
-            loop {
+            'worker: loop {
+                if shutdown_for_worker.load(Ordering::Acquire) {
+                    break;
+                }
+
                 let mut rescan = std::mem::take(&mut pending_rescan);
                 let mut batch = match pending_batch.take() {
                     Some(b) => b,
@@ -107,16 +118,29 @@ impl TrackerWatcher {
                     },
                 };
 
+                if shutdown_for_worker.load(Ordering::Acquire) {
+                    break;
+                }
+
                 let mut deduped = Vec::new();
                 extend_unique(&mut deduped, batch);
                 batch = deduped;
 
                 // 1. Coalesce additional paths arriving within a 50ms quiet/debounce window.
-                while let Ok(more) = raw_rx.recv_timeout(Duration::from_millis(50)) {
-                    match more {
-                        RawSignal::Paths(paths) => extend_unique(&mut batch, paths),
-                        RawSignal::Rescan => rescan = true,
+                loop {
+                    if shutdown_for_worker.load(Ordering::Acquire) {
+                        break 'worker;
                     }
+                    match raw_rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(RawSignal::Paths(paths)) => extend_unique(&mut batch, paths),
+                        Ok(RawSignal::Rescan) => rescan = true,
+                        Err(RecvTimeoutError::Timeout) => break,
+                        Err(RecvTimeoutError::Disconnected) => break 'worker,
+                    }
+                }
+
+                if shutdown_for_worker.load(Ordering::Acquire) {
+                    break;
                 }
 
                 if !rescan && batch.is_empty() {
@@ -136,6 +160,9 @@ impl TrackerWatcher {
                     // or still has an active `.tmp.` atomic write file, poll up to 300ms (in 15ms steps).
                     let settle_start = Instant::now();
                     while settle_start.elapsed() < Duration::from_millis(300) {
+                        if shutdown_for_worker.load(Ordering::Acquire) {
+                            break 'worker;
+                        }
                         while let Ok(more) = raw_rx.try_recv() {
                             match more {
                                 RawSignal::Paths(paths) => extend_unique(&mut batch, paths),
@@ -146,6 +173,9 @@ impl TrackerWatcher {
                             break;
                         }
                         thread::sleep(Duration::from_millis(15));
+                    }
+                    if shutdown_for_worker.load(Ordering::Acquire) {
+                        break;
                     }
                     while let Ok(more) = raw_rx.try_recv() {
                         match more {
@@ -166,8 +196,37 @@ impl TrackerWatcher {
                 // 4. Reconcile indexes if enabled, record index file content hashes, drain immediate
                 // index-only echo events, and emit TrackerWatchEvent.
                 let (reconcile_report, reconcile_error) = if auto_reconcile {
+                    // Acquire `.tracker/.lock` in short slices so shutdown exits promptly under contention.
+                    let lock_start = Instant::now();
+                    let reconcile_result = loop {
+                        if shutdown_for_worker.load(Ordering::Acquire) {
+                            break 'worker;
+                        }
+                        let remaining = DEFAULT_LOCK_TIMEOUT.saturating_sub(lock_start.elapsed());
+                        let slice = LOCK_SLICE.min(remaining);
+                        match storage_for_worker
+                            .with_write_lock_timeout(slice, |s| s.reconcile_indexes())
+                        {
+                            Err(TrackerError::LockTimeout { path, .. }) => {
+                                if shutdown_for_worker.load(Ordering::Acquire) {
+                                    break 'worker;
+                                }
+                                let elapsed = lock_start.elapsed();
+                                if elapsed >= DEFAULT_LOCK_TIMEOUT {
+                                    break Err(TrackerError::LockTimeout {
+                                        path,
+                                        waited_ms: elapsed.as_millis() as u64,
+                                    });
+                                }
+                            }
+                            other => break other,
+                        }
+                    };
+                    if shutdown_for_worker.load(Ordering::Acquire) {
+                        break;
+                    }
                     // Why: errors were silently swallowed.
-                    let (report, error) = match storage_for_worker.reconcile_indexes() {
+                    let (report, error) = match reconcile_result {
                         Ok(r) => (Some(r), None),
                         Err(e) => (None, Some(e.to_string())),
                     };
@@ -210,6 +269,7 @@ impl TrackerWatcher {
                 watcher: Some(watcher),
                 worker: Some(worker),
                 watched_dir,
+                shutdown,
             },
             rx,
         ))
@@ -223,6 +283,7 @@ impl TrackerWatcher {
 
 impl Drop for TrackerWatcher {
     fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
         drop(self.watcher.take());
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -337,10 +398,16 @@ fn hash_index_files(dir: &Path) -> HashMap<PathBuf, u64> {
             continue;
         };
         for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
             let path = entry.path();
-            if path.is_dir() {
+            if file_type.is_dir() {
                 stack.push(path);
-            } else if is_derived_index_file(&path) {
+            } else if file_type.is_file() && is_derived_index_file(&path) {
                 if let Some(hash) = hash_file_bytes(&path) {
                     hashes.insert(path, hash);
                 }
@@ -401,5 +468,27 @@ mod echo_path_tests {
 
         fs::write(real.join("scope.toml"), "b").expect("overwrite scope.toml");
         assert!(!is_own_index_echo(&[link.join("scope.toml")], &hashes));
+    }
+
+    #[test]
+    fn hash_index_files_skips_directory_symlink_cycles() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        fs::write(root.join("scope.toml"), "scope = 1\n").expect("write scope.toml");
+        let target_phase = root.join("target_phase.toml");
+        fs::write(&target_phase, "phase = 1\n").expect("write target_phase.toml");
+
+        symlink(".", root.join("loop_dir")).expect("create self-referential dir symlink");
+        symlink(&target_phase, root.join("phase.toml")).expect("create phase.toml symlink");
+
+        let hashes = hash_index_files(root);
+        let canonical_root = fs::canonicalize(root).expect("canonicalize root");
+
+        assert_eq!(hashes.len(), 1);
+        assert!(hashes.contains_key(&canonical_root.join("scope.toml")));
+        assert!(!hashes.contains_key(&canonical_root.join("phase.toml")));
+        assert!(!hashes
+            .keys()
+            .any(|p| p.components().any(|c| c.as_os_str() == "loop_dir")));
     }
 }
