@@ -491,9 +491,15 @@ impl TrackerStorage {
         self.tracker_dir.join(LOCK_FILE_NAME)
     }
 
+    fn lock_key(&self) -> PathBuf {
+        canonicalize_existing_prefix(&self.tracker_dir)
+            .unwrap_or_else(|_| lexical_normalize_path(&self.tracker_dir))
+            .join(LOCK_FILE_NAME)
+    }
+
     fn holds_write_lock(&self) -> bool {
-        let lock_path = self.lock_path();
-        HELD_WRITE_LOCKS.with(|held| held.borrow().contains(&lock_path))
+        let lock_key = self.lock_key();
+        HELD_WRITE_LOCKS.with(|held| held.borrow().contains(&lock_key))
     }
 
     /// Acquires an exclusive, thread-reentrant advisory lock on `.tracker/.lock` with
@@ -509,11 +515,11 @@ impl TrackerStorage {
         timeout: Duration,
         f: impl FnOnce(&Self) -> Result<T>,
     ) -> Result<T> {
-        let lock_path = self.lock_path();
-        if HELD_WRITE_LOCKS.with(|held| held.borrow().contains(&lock_path)) {
+        if self.holds_write_lock() {
             return f(self);
         }
 
+        let lock_path = self.lock_path();
         self.create_tracker_dir_all(&self.tracker_dir)?;
         let guarded_lock_path = self.guard_tracker_path(&lock_path)?;
         let file = fs::OpenOptions::new()
@@ -550,7 +556,7 @@ impl TrackerStorage {
             }
         };
 
-        let _reentrancy_guard = ReentrantLockGuard::acquire(lock_path);
+        let _reentrancy_guard = ReentrantLockGuard::acquire(self.lock_key());
         self.ensure_lock_gitignore()?;
         f(self)
     }
@@ -718,11 +724,10 @@ impl TrackerStorage {
 
     /// Reads and parses Tier 1 `.tracker/project.toml`.
     pub fn read_project(&self) -> Result<ProjectManifest> {
-        let lock_path = self.lock_path();
+        let lock_key = self.lock_key();
         let locked = self.holds_write_lock();
         if locked {
-            if let Some(cached) =
-                PROJECT_CACHE.with(|cache| cache.borrow().get(&lock_path).cloned())
+            if let Some(cached) = PROJECT_CACHE.with(|cache| cache.borrow().get(&lock_key).cloned())
             {
                 return Ok(cached);
             }
@@ -737,7 +742,7 @@ impl TrackerStorage {
         normalize_project_manifest_paths(&mut manifest);
         if locked {
             PROJECT_CACHE.with(|cache| {
-                cache.borrow_mut().insert(lock_path, manifest.clone());
+                cache.borrow_mut().insert(lock_key, manifest.clone());
             });
         }
         Ok(manifest)
@@ -747,19 +752,19 @@ impl TrackerStorage {
     pub fn write_project(&self, manifest: &ProjectManifest) -> Result<()> {
         let mut normalized = manifest.clone();
         normalize_project_manifest_paths(&mut normalized);
-        let lock_path = self.lock_path();
+        let lock_key = self.lock_key();
         match self.write_versioned(&self.project_toml_path(), &normalized, 1) {
             Ok(()) => {
                 if self.holds_write_lock() {
                     PROJECT_CACHE.with(|cache| {
-                        cache.borrow_mut().insert(lock_path, normalized);
+                        cache.borrow_mut().insert(lock_key, normalized);
                     });
                 }
                 Ok(())
             }
             Err(err) => {
                 PROJECT_CACHE.with(|cache| {
-                    cache.borrow_mut().remove(&lock_path);
+                    cache.borrow_mut().remove(&lock_key);
                 });
                 Err(err)
             }

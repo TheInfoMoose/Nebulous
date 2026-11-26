@@ -3052,3 +3052,41 @@ fn component_write_waits_for_tracker_lock() {
     );
     handle.join().unwrap();
 }
+
+#[test]
+fn nested_write_lock_with_mixed_path_spellings_is_reentrant() {
+    use std::time::Duration;
+
+    let temp = TempTrackerDir::new("nested_lock_mixed_paths");
+    TrackerStorage::init_standard(temp.path(), "InitialName").expect("init_standard");
+
+    let storage_canon = TrackerStorage::discover(temp.path()).expect("discover");
+    let storage_unnorm = TrackerStorage::new(temp.path().join("."));
+    let storage_from_dir = TrackerStorage::from_tracker_dir(temp.path().join(".").join(".tracker"));
+
+    storage_canon
+        .with_write_lock(|outer| {
+            assert_eq!(outer.read_project()?.project.name, "InitialName");
+
+            storage_unnorm.with_write_lock_timeout(Duration::from_millis(200), |s| {
+                let mut p = s.read_project()?;
+                p.project.name = "updated".to_string();
+                s.write_project(&p)?;
+                Ok(())
+            })?;
+
+            assert_eq!(outer.read_project()?.project.name, "updated");
+
+            storage_from_dir.with_write_lock_timeout(Duration::from_millis(200), |s| {
+                let mut p = s.read_project()?;
+                assert_eq!(p.project.name, "updated");
+                p.project.name = "updated_again".to_string();
+                s.write_project(&p)?;
+                Ok(())
+            })?;
+
+            assert_eq!(outer.read_project()?.project.name, "updated_again");
+            Ok(())
+        })
+        .expect("mixed path spellings should re-enter write lock without LockTimeout");
+}
