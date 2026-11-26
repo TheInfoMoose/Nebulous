@@ -770,7 +770,7 @@ created_at = "2026-11-26T14:47:36Z"
 [[items.tasks]]
 id = "TASK-0128"
 title = "Lock public TrackerStorage mutators, read_active_timer quarantine, tool_pin_stable_release, and projects.toml registry (projects.lock) (BUG-0020 / AUD-17)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-26T14:47:36Z"
 

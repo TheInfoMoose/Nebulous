@@ -4,17 +4,22 @@ schema_version = 2
 id = "TASK-0128"
 type = "task"
 title = "Lock public TrackerStorage mutators, read_active_timer quarantine, tool_pin_stable_release, and projects.toml registry (projects.lock) (BUG-0020 / AUD-17)"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "backend_core"
 created_at = "2026-11-26T14:47:36Z"
-updated_at = "2026-11-26T14:47:36Z"
+updated_at = "2026-11-26T15:37:59Z"
 source_ref = "STEP 45E"
 
 [effort]
-logged_time_minutes = 0
+logged_time_minutes = 9
 iteration_count = 1
+last_timer_session = "TASK-0128@2026-11-26T15:28:08Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-26"
+commit = "1002a15"
+summary = "STEP 45E: Lock public `TrackerStorage` mutators, timer quarantine, `tool_pin_stable_release`, and `projects.toml` (phased check PASS)"
