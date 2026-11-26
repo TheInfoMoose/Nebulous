@@ -375,39 +375,43 @@ impl TrackerStorage {
             components: ComponentRegistry::default(),
         };
 
-        storage.write_project(&project)?;
-        let gitignore_path = storage.tracker_dir.join(".gitignore");
-        if !gitignore_path.exists() {
-            storage.write_tracker_file(&gitignore_path, DEFAULT_TRACKER_GITIGNORE)?;
-        }
+        storage.with_write_lock(|storage| {
+            storage.write_project(&project)?;
+            let gitignore_path = storage.tracker_dir.join(".gitignore");
+            if !gitignore_path.exists() {
+                storage.write_tracker_file(&gitignore_path, DEFAULT_TRACKER_GITIGNORE)?;
+            }
 
-        for (sid, stitle) in &stages_to_scaffold {
-            let phase = PhaseManifest {
-                phase: PhaseMetadata {
-                    id: sid.clone(),
-                    title: stitle.clone(),
-                    status: if *sid == phase_id {
-                        PhaseStatus::InProgress
-                    } else {
-                        PhaseStatus::Planned
+            for (sid, stitle) in &stages_to_scaffold {
+                let phase = PhaseManifest {
+                    phase: PhaseMetadata {
+                        id: sid.clone(),
+                        title: stitle.clone(),
+                        status: if *sid == phase_id {
+                            PhaseStatus::InProgress
+                        } else {
+                            PhaseStatus::Planned
+                        },
+                        start_date: Some(today.clone()),
+                        end_date: None,
                     },
-                    start_date: Some(today.clone()),
-                    end_date: None,
-                },
-                scopes: ScopeRegistry {
-                    manifest: vec![ScopeRegistryEntry {
-                        id: "inbox".to_string(),
-                        scope_type: "inbox".to_string(),
-                        path: "domains/inbox".to_string(),
-                    }],
-                },
-                summary: PhaseSummary::default(),
-            };
+                    scopes: ScopeRegistry {
+                        manifest: vec![ScopeRegistryEntry {
+                            id: "inbox".to_string(),
+                            scope_type: "inbox".to_string(),
+                            path: "domains/inbox".to_string(),
+                        }],
+                    },
+                    summary: PhaseSummary::default(),
+                };
 
-            storage.write_phase(sid, &phase)?;
-            storage.write_scope(sid, "inbox", &inbox_scope)?;
-            storage.ensure_items_dir(sid, "inbox")?;
-        }
+                storage.write_phase(sid, &phase)?;
+                storage.write_scope(sid, "inbox", &inbox_scope)?;
+                storage.ensure_items_dir(sid, "inbox")?;
+            }
+
+            Ok(())
+        })?;
 
         Ok(storage)
     }
@@ -515,9 +519,11 @@ impl TrackerStorage {
 
     /// Creates `items/` for `(phase_id, scope_id)` under `.tracker/` after containment checks.
     pub fn ensure_items_dir(&self, phase_id: &str, scope_id: &str) -> Result<PathBuf> {
-        let dir = self.items_dir(phase_id, scope_id)?;
-        self.create_tracker_dir_all(&dir)?;
-        Ok(dir)
+        self.with_write_lock(|storage| {
+            let dir = storage.items_dir(phase_id, scope_id)?;
+            storage.create_tracker_dir_all(&dir)?;
+            Ok(dir)
+        })
     }
 
     /// Returns `.tracker/project.toml`.
@@ -795,25 +801,25 @@ impl TrackerStorage {
 
     /// Atomically writes Tier 1 `.tracker/project.toml`.
     pub fn write_project(&self, manifest: &ProjectManifest) -> Result<()> {
-        let mut normalized = manifest.clone();
-        normalize_project_manifest_paths(&mut normalized);
-        let lock_key = self.lock_key();
-        match self.write_versioned(&self.project_toml_path(), &normalized, 1) {
-            Ok(()) => {
-                if self.holds_write_lock() {
+        self.with_write_lock(|storage| {
+            let mut normalized = manifest.clone();
+            normalize_project_manifest_paths(&mut normalized);
+            let lock_key = storage.lock_key();
+            match storage.write_versioned(&storage.project_toml_path(), &normalized, 1) {
+                Ok(()) => {
                     PROJECT_CACHE.with(|cache| {
                         cache.borrow_mut().insert(lock_key, normalized);
                     });
+                    Ok(())
                 }
-                Ok(())
+                Err(err) => {
+                    PROJECT_CACHE.with(|cache| {
+                        cache.borrow_mut().remove(&lock_key);
+                    });
+                    Err(err)
+                }
             }
-            Err(err) => {
-                PROJECT_CACHE.with(|cache| {
-                    cache.borrow_mut().remove(&lock_key);
-                });
-                Err(err)
-            }
-        }
+        })
     }
 
     /// Reads and parses Tier 2 `.tracker/phases/<phase_id>/phase.toml`.
@@ -837,8 +843,10 @@ impl TrackerStorage {
 
     /// Atomically writes Tier 2 `.tracker/phases/<phase_id>/phase.toml`.
     pub fn write_phase(&self, phase_id: &str, manifest: &PhaseManifest) -> Result<()> {
-        let path = self.phase_toml_path(phase_id)?;
-        self.write_phase_to_path(&path, manifest)
+        self.with_write_lock(|storage| {
+            let path = storage.phase_toml_path(phase_id)?;
+            storage.write_phase_to_path(&path, manifest)
+        })
     }
 
     pub(crate) fn write_phase_to_path(&self, path: &Path, manifest: &PhaseManifest) -> Result<()> {
@@ -872,8 +880,10 @@ impl TrackerStorage {
         scope_id: &str,
         manifest: &ScopeManifest,
     ) -> Result<()> {
-        let path = self.scope_toml_path(phase_id, scope_id)?;
-        self.write_scope_to_path(&path, manifest)
+        self.with_write_lock(|storage| {
+            let path = storage.scope_toml_path(phase_id, scope_id)?;
+            storage.write_scope_to_path(&path, manifest)
+        })
     }
 
     pub(crate) fn write_scope_to_path(&self, path: &Path, manifest: &ScopeManifest) -> Result<()> {
@@ -907,9 +917,11 @@ impl TrackerStorage {
         item_id: &str,
         manifest: &ItemManifest,
     ) -> Result<()> {
-        let path = self.item_toml_path(phase_id, scope_id, item_id)?;
-        let version = manifest.item.item_type.min_schema_version();
-        self.write_versioned(&path, manifest, version)
+        self.with_write_lock(|storage| {
+            let path = storage.item_toml_path(phase_id, scope_id, item_id)?;
+            let version = manifest.item.item_type.min_schema_version();
+            storage.write_versioned(&path, manifest, version)
+        })
     }
 
     /// Reads Tier 4 `items/<item_id>/desc.md`.
@@ -926,8 +938,10 @@ impl TrackerStorage {
         item_id: &str,
         description_markdown: &str,
     ) -> Result<()> {
-        let path = self.item_desc_path(phase_id, scope_id, item_id)?;
-        self.write_tracker_file(&path, description_markdown)
+        self.with_write_lock(|storage| {
+            let path = storage.item_desc_path(phase_id, scope_id, item_id)?;
+            storage.write_tracker_file(&path, description_markdown)
+        })
     }
 
     /// Atomically writes both `item.toml` and `desc.md` for an [`ItemDetail`].
@@ -937,10 +951,12 @@ impl TrackerStorage {
         scope_id: &str,
         detail: &ItemDetail,
     ) -> Result<()> {
-        let item_id = &detail.manifest.item.id;
-        self.write_item_manifest(phase_id, scope_id, item_id, &detail.manifest)?;
-        self.write_item_desc(phase_id, scope_id, item_id, &detail.description_markdown)?;
-        Ok(())
+        self.with_write_lock(|storage| {
+            let item_id = &detail.manifest.item.id;
+            storage.write_item_manifest(phase_id, scope_id, item_id, &detail.manifest)?;
+            storage.write_item_desc(phase_id, scope_id, item_id, &detail.description_markdown)?;
+            Ok(())
+        })
     }
 
     /// Moves `.tracker/.timer.toml` to `.tracker/.timer.toml.bak` (overwriting any previous backup)
@@ -972,26 +988,40 @@ impl TrackerStorage {
         let raw = self.read_tracker_file(&path)?;
         match ActiveTimer::from_toml_str(&raw) {
             Ok(timer) => Ok(Some(timer)),
-            Err(_) => {
-                self.quarantine_active_timer()?;
-                Ok(None)
-            }
+            Err(_) => self.with_write_lock(|storage| {
+                let locked_path = storage.timer_toml_path();
+                if !locked_path.is_file() {
+                    return Ok(None);
+                }
+                let locked_raw = storage.read_tracker_file(&locked_path)?;
+                match ActiveTimer::from_toml_str(&locked_raw) {
+                    Ok(timer) => Ok(Some(timer)),
+                    Err(_) => {
+                        storage.quarantine_active_timer()?;
+                        Ok(None)
+                    }
+                }
+            }),
         }
     }
 
     /// Atomically writes `.tracker/.timer.toml`.
     pub fn write_active_timer(&self, timer: &ActiveTimer) -> Result<()> {
-        let serialized = timer.to_toml_string()?;
-        self.write_tracker_file(&self.timer_toml_path(), &serialized)
+        self.with_write_lock(|storage| {
+            let serialized = timer.to_toml_string()?;
+            storage.write_tracker_file(&storage.timer_toml_path(), &serialized)
+        })
     }
 
     /// Removes `.tracker/.timer.toml` if it exists.
     pub fn clear_active_timer(&self) -> Result<()> {
-        let path = self.guard_tracker_path(&self.timer_toml_path())?;
-        if path.exists() {
-            fs::remove_file(&path).map_err(|source| TrackerError::Io { path, source })?;
-        }
-        Ok(())
+        self.with_write_lock(|storage| {
+            let path = storage.guard_tracker_path(&storage.timer_toml_path())?;
+            if path.exists() {
+                fs::remove_file(&path).map_err(|source| TrackerError::Io { path, source })?;
+            }
+            Ok(())
+        })
     }
 
     /// Loads only the top-level index files (`project.toml`, `phase.toml`, and `scope.toml`)
@@ -1105,79 +1135,81 @@ impl TrackerStorage {
         phase_id: Option<&str>,
         scope_id: Option<&str>,
     ) -> Result<(String, String)> {
-        let project = self.read_project()?;
+        self.with_write_lock(|storage| {
+            let project = storage.read_project()?;
 
-        let resolved_phase = match phase_id.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(p) => self.ensure_canonical_phase_if_missing(p)?,
-            None => {
-                let active = resolve_phase_alias(project.project.active_phase.trim());
-                validate_identifier("Phase", active)?;
-                active.to_string()
+            let resolved_phase = match phase_id.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(p) => storage.ensure_canonical_phase_if_missing(p)?,
+                None => {
+                    let active = resolve_phase_alias(project.project.active_phase.trim());
+                    validate_identifier("Phase", active)?;
+                    active.to_string()
+                }
+            };
+
+            // Ensure phase exists
+            let mut phase_manifest = storage.read_phase(&resolved_phase)?;
+
+            let default_scope = {
+                let trimmed = project.project.default_scope.trim();
+                if trimmed.is_empty() {
+                    "inbox".to_string()
+                } else {
+                    trimmed.to_string()
+                }
+            };
+
+            let resolved_scope = match scope_id.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(s) => {
+                    validate_identifier("Scope", s)?;
+                    s.to_string()
+                }
+                None => {
+                    validate_identifier("Scope", &default_scope)?;
+                    default_scope.clone()
+                }
+            };
+
+            let scope_toml = storage.scope_toml_path(&resolved_phase, &resolved_scope)?;
+            if !scope_toml.is_file() {
+                if resolved_scope == default_scope || resolved_scope == "inbox" {
+                    let inbox_manifest = ScopeManifest {
+                        scope: ScopeMetadata {
+                            id: resolved_scope.clone(),
+                            target: ".tracker".to_string(),
+                            tech_stack: Vec::new(),
+                            description: Some("Default unscoped triage inbox".to_string()),
+                            bound_component: None,
+                            tracked_files: Vec::new(),
+                        },
+                        items: ScopeItems::default(),
+                    };
+                    storage.write_scope(&resolved_phase, &resolved_scope, &inbox_manifest)?;
+                    storage.ensure_items_dir(&resolved_phase, &resolved_scope)?;
+                } else {
+                    return Err(TrackerError::NotFound {
+                        kind: "Scope",
+                        id: resolved_scope,
+                    });
+                }
             }
-        };
 
-        // Ensure phase exists
-        let mut phase_manifest = self.read_phase(&resolved_phase)?;
-
-        let default_scope = {
-            let trimmed = project.project.default_scope.trim();
-            if trimmed.is_empty() {
-                "inbox".to_string()
-            } else {
-                trimmed.to_string()
-            }
-        };
-
-        let resolved_scope = match scope_id.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(s) => {
-                validate_identifier("Scope", s)?;
-                s.to_string()
-            }
-            None => {
-                validate_identifier("Scope", &default_scope)?;
-                default_scope.clone()
-            }
-        };
-
-        let scope_toml = self.scope_toml_path(&resolved_phase, &resolved_scope)?;
-        if !scope_toml.is_file() {
-            if resolved_scope == default_scope || resolved_scope == "inbox" {
-                let inbox_manifest = ScopeManifest {
-                    scope: ScopeMetadata {
-                        id: resolved_scope.clone(),
-                        target: ".tracker".to_string(),
-                        tech_stack: Vec::new(),
-                        description: Some("Default unscoped triage inbox".to_string()),
-                        bound_component: None,
-                        tracked_files: Vec::new(),
-                    },
-                    items: ScopeItems::default(),
-                };
-                self.write_scope(&resolved_phase, &resolved_scope, &inbox_manifest)?;
-                self.ensure_items_dir(&resolved_phase, &resolved_scope)?;
-            } else {
-                return Err(TrackerError::NotFound {
-                    kind: "Scope",
-                    id: resolved_scope,
+            if !phase_manifest
+                .scopes
+                .manifest
+                .iter()
+                .any(|s| s.id == resolved_scope)
+            {
+                phase_manifest.scopes.manifest.push(ScopeRegistryEntry {
+                    id: resolved_scope.clone(),
+                    scope_type: infer_default_scope_type(&resolved_scope),
+                    path: format!("domains/{resolved_scope}"),
                 });
+                storage.write_phase(&resolved_phase, &phase_manifest)?;
             }
-        }
 
-        if !phase_manifest
-            .scopes
-            .manifest
-            .iter()
-            .any(|s| s.id == resolved_scope)
-        {
-            phase_manifest.scopes.manifest.push(ScopeRegistryEntry {
-                id: resolved_scope.clone(),
-                scope_type: infer_default_scope_type(&resolved_scope),
-                path: format!("domains/{resolved_scope}"),
-            });
-            self.write_phase(&resolved_phase, &phase_manifest)?;
-        }
-
-        Ok((resolved_phase, resolved_scope))
+            Ok((resolved_phase, resolved_scope))
+        })
     }
 }
 

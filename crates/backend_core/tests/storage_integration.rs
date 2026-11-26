@@ -3090,3 +3090,99 @@ fn nested_write_lock_with_mixed_path_spellings_is_reentrant() {
         })
         .expect("mixed path spellings should re-enter write lock without LockTimeout");
 }
+
+#[test]
+fn public_mutator_waits_for_write_lock() {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let temp = TempTrackerDir::new("public_mutator_lock");
+    let storage = TrackerStorage::init_standard(temp.path(), "PublicMutatorLockTest").unwrap();
+    let (loc, _) = storage
+        .create_bug("Lock test bug", None, None, Severity::Medium, None)
+        .unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let held_storage = storage.clone();
+    let handle = thread::spawn(move || {
+        held_storage
+            .with_write_lock(|_| {
+                tx.send(()).unwrap();
+                thread::sleep(Duration::from_millis(250));
+                Ok(())
+            })
+            .unwrap();
+    });
+
+    rx.recv().unwrap();
+    let started = Instant::now();
+    storage
+        .write_item_desc(
+            &loc.phase_id,
+            &loc.scope_id,
+            &loc.stub.id,
+            "Updated under write lock",
+        )
+        .expect("write_item_desc should succeed after lock release");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "expected write_item_desc to wait for tracker lock (>=150ms), elapsed={elapsed:?}"
+    );
+    handle.join().unwrap();
+
+    let desc = storage
+        .read_item_desc(&loc.phase_id, &loc.scope_id, &loc.stub.id)
+        .unwrap();
+    assert_eq!(desc, "Updated under write lock");
+}
+
+#[test]
+fn registry_writes_serialize_on_projects_lock() {
+    use backend_core::models::registry::GLOBAL_PROJECTS_LOCK_FILE_NAME;
+    use backend_core::{load_global_registry_from, register_project_in};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let temp = TempTrackerDir::new("registry_projects_lock");
+    let cfg_dir = temp.path().join("cfg");
+    let proj_dir = temp.path().join("proj");
+    fs::create_dir_all(&cfg_dir).unwrap();
+    TrackerStorage::init_standard(&proj_dir, "LockedProject").unwrap();
+
+    let lock_path = cfg_dir.join(GLOBAL_PROJECTS_LOCK_FILE_NAME);
+    let (tx, rx) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        let mut rw_lock = fd_lock::RwLock::new(file);
+        let _guard = rw_lock.write().unwrap();
+        tx.send(()).unwrap();
+        thread::sleep(Duration::from_millis(250));
+    });
+
+    rx.recv().unwrap();
+    let started = Instant::now();
+    let entry = register_project_in(&cfg_dir, &proj_dir, None, vec!["locked".to_string()], true)
+        .expect("register_project_in should succeed after projects.lock release");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "expected register_project_in to wait for projects.lock (>=150ms), elapsed={elapsed:?}"
+    );
+    handle.join().unwrap();
+
+    let registry = load_global_registry_from(&cfg_dir).unwrap();
+    assert_eq!(registry.projects.len(), 1);
+    assert_eq!(registry.projects[0].id, entry.id);
+    assert_eq!(registry.projects[0].name, "LockedProject");
+    assert_eq!(registry.projects[0].tags, vec!["locked".to_string()]);
+}

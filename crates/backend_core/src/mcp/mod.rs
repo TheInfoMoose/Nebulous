@@ -1987,64 +1987,66 @@ impl McpServer {
             TrackerError::ValidationError(format!("Invalid pin_stable_release args: {e}"))
         })?;
         let storage = self.resolve_active_storage()?;
-        let mut manifest = storage.read_component_manifest(parsed.component_id.trim())?;
+        let pinned_manifest = storage.with_write_lock(|storage| {
+            let mut manifest = storage.read_component_manifest(parsed.component_id.trim())?;
 
-        if let Some(explicit_pins) = parsed.dependency_pins {
-            for (dep_name, dep_ver) in explicit_pins {
-                if let Some(existing) = manifest
-                    .dependencies
-                    .iter_mut()
-                    .find(|d| d.name == dep_name)
-                {
-                    existing.current_version = dep_ver;
-                } else {
-                    manifest.dependencies.push(ComponentDependency {
-                        name: dep_name,
-                        kind: "custom".to_string(),
-                        version_constraint: "*".to_string(),
-                        current_version: dep_ver,
-                        upstream_source: String::new(),
-                    });
+            if let Some(explicit_pins) = parsed.dependency_pins {
+                for (dep_name, dep_ver) in explicit_pins {
+                    if let Some(existing) = manifest
+                        .dependencies
+                        .iter_mut()
+                        .find(|d| d.name == dep_name)
+                    {
+                        existing.current_version = dep_ver;
+                    } else {
+                        manifest.dependencies.push(ComponentDependency {
+                            name: dep_name,
+                            kind: "custom".to_string(),
+                            version_constraint: "*".to_string(),
+                            current_version: dep_ver,
+                            upstream_source: String::new(),
+                        });
+                    }
                 }
+                storage.write_component_manifest(&manifest)?;
             }
-            storage.write_component_manifest(&manifest)?;
-        }
 
-        let inferred_script = non_empty(parsed.build_script_path.as_deref())
-            .map(str::to_string)
-            .or_else(|| {
-                manifest
-                    .rolling_updates
-                    .iter()
-                    .rev()
-                    .find_map(|u| u.build_script_path.clone())
-            })
-            .or_else(|| {
-                manifest
-                    .pinned_release
-                    .as_ref()
-                    .and_then(|p| p.build_script_path.clone())
-            });
+            let inferred_script = non_empty(parsed.build_script_path.as_deref())
+                .map(str::to_string)
+                .or_else(|| {
+                    manifest
+                        .rolling_updates
+                        .iter()
+                        .rev()
+                        .find_map(|u| u.build_script_path.clone())
+                })
+                .or_else(|| {
+                    manifest
+                        .pinned_release
+                        .as_ref()
+                        .and_then(|p| p.build_script_path.clone())
+                });
 
-        let latest_verification = manifest
-            .rolling_updates
-            .iter()
-            .rev()
-            .find_map(|u| u.verification_run.clone())
-            .or_else(|| {
-                manifest
-                    .pinned_release
-                    .as_ref()
-                    .and_then(|p| p.last_verification_run.clone())
-            });
+            let latest_verification = manifest
+                .rolling_updates
+                .iter()
+                .rev()
+                .find_map(|u| u.verification_run.clone())
+                .or_else(|| {
+                    manifest
+                        .pinned_release
+                        .as_ref()
+                        .and_then(|p| p.last_verification_run.clone())
+                });
 
-        let pinned_manifest = storage.pin_component_release(
-            &manifest.id,
-            non_empty(parsed.commit_sha.as_deref()),
-            inferred_script,
-            parsed.build_flags,
-            latest_verification,
-        )?;
+            storage.pin_component_release(
+                &manifest.id,
+                non_empty(parsed.commit_sha.as_deref()),
+                inferred_script,
+                parsed.build_flags,
+                latest_verification,
+            )
+        })?;
         let pin = pinned_manifest.pinned_release.clone();
 
         Ok(json!({
