@@ -78,7 +78,7 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.tasks]]
 id = "TASK-0120"
 title = "Fix docs/USAGE.md removed --all examples on neb git commit and neb sync (BUG-0017 / AUD-10)"
-status = "pending"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-25T19:15:12Z"
 

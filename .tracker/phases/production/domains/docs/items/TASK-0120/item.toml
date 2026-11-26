@@ -4,18 +4,22 @@ schema_version = 2
 id = "TASK-0120"
 type = "task"
 title = "Fix docs/USAGE.md removed --all examples on neb git commit and neb sync (BUG-0017 / AUD-10)"
-status = "pending"
+status = "closed"
 severity = "medium"
 scope_ref = "docs"
 created_at = "2026-11-25T19:15:12Z"
-updated_at = "2026-11-26T02:19:13Z"
+updated_at = "2026-11-26T02:45:25Z"
 source_ref = "STEP 44D"
 
 [effort]
-logged_time_minutes = 11
+logged_time_minutes = 16
 iteration_count = 1
-last_timer_session = "TASK-0120@2026-11-26T02:08:10Z"
+last_timer_session = "TASK-0120@2026-11-26T02:39:45Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-26"
+commit = "c20aa19"
+summary = "STEP 44D: Fix `docs/USAGE.md` removed `--all` examples on `neb git commit` and `neb sync` (phased check PASS)"
