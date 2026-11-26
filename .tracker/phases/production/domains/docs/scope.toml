@@ -85,6 +85,6 @@ created_at = "2026-11-25T19:15:12Z"
 [[items.tasks]]
 id = "TASK-0123"
 title = "Scope STEP 44D check-neutral.sh gate to docs/USAGE.md or scrub pre-existing tracked hits"
-status = "pending"
+status = "closed"
 severity = "high"
 created_at = "2026-11-26T02:16:04Z"

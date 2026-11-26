@@ -84,7 +84,7 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.bugs]]
 id = "BUG-0010"
 title = "[AUD-03] .tracker/ root symlink escape bypass and TOCTOU window in guard_tracker_path / contained_path"
-status = "open"
+status = "closed"
 severity = "high"
 created_at = "2026-11-25T03:28:23Z"
 
@@ -98,14 +98,14 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.bugs]]
 id = "BUG-0012"
 title = "[AUD-05] move_item_to_phase leaves ghost TASK-* stubs and corrupts source phase.toml summary"
-status = "open"
+status = "closed"
 severity = "high"
 created_at = "2026-11-25T03:28:23Z"
 
 [[items.bugs]]
 id = "BUG-0013"
 title = "[AUD-06] Non-canonicalized HELD_WRITE_LOCKS & PROJECT_CACHE key causes same-thread 30s self-deadlock"
-status = "open"
+status = "closed"
 severity = "high"
 created_at = "2026-11-25T03:28:23Z"
 
@@ -133,7 +133,7 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.bugs]]
 id = "BUG-0020"
 title = "[AUD-17] Unsynchronized public TrackerStorage mutators, lockless read_active_timer quarantine race, and process-local-only projects.toml lock"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-25T03:28:23Z"
 
@@ -147,7 +147,7 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.bugs]]
 id = "BUG-0023"
 title = "[AUD-20] TrackerWatcher::drop blocks up to 30s on contended locks and hash_index_files follows directory symlinks without cycle guards"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-25T03:28:23Z"
 
@@ -185,6 +185,20 @@ title = "[AUD-32] Minor robustness & path-normalization hygiene (registry.rs, gi
 status = "open"
 severity = "low"
 created_at = "2026-11-25T03:28:23Z"
+
+[[items.bugs]]
+id = "BUG-0033"
+title = "Read-only registry lookups open projects.lock for write and fail on read-only config dirs"
+status = "pending"
+severity = "medium"
+created_at = "2026-11-26T16:39:35Z"
+
+[[items.bugs]]
+id = "BUG-0034"
+title = "Sibling component read-modify-write paths lack outer with_write_lock (CLI ComponentCommand::Pin, MCP upsert_component_manifest and record_rolling_update)"
+status = "pending"
+severity = "medium"
+created_at = "2026-11-26T16:39:35Z"
 
 [[items.features]]
 id = "FEAT-0001"
