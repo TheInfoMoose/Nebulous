@@ -162,11 +162,12 @@ neb git fetch
 neb git pull
 neb git push
 
-# Create a policy-validated, self-documenting commit linked to BUG-0001
-neb git commit -i BUG-0001 -m "Fix unquoted TOML datetime deserialization" --all
+# Create a policy-validated, self-documenting commit linked to BUG-0001 (omit --path to stage .tracker/ metadata only)
+neb git commit -i BUG-0001 -m "Fix unquoted TOML datetime deserialization" --path crates/backend_core/src/models/item.rs
 
-# Full one-command sync (stage/commit + pull + reconcile + push)
-neb sync -i BUG-0001 -m "Fix unquoted TOML datetime deserialization" --all
+# Full one-command sync (stage/commit + pull + reconcile + push; omitting --path stages and commits .tracker/ metadata only)
+neb sync -i BUG-0001 -m "Fix unquoted TOML datetime deserialization" --path crates/backend_core/src/models/item.rs
+neb sync -m "Sync tracker metadata"
 ```
 
 ---
