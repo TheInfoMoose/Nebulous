@@ -749,7 +749,7 @@ created_at = "2026-11-25T19:15:13Z"
 [[items.tasks]]
 id = "TASK-0125"
 title = "Fix move_item_to_phase to remove TASK-* stubs via ScopeItems::remove_id with regression test (BUG-0012 / AUD-05)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-26T14:47:35Z"
 
