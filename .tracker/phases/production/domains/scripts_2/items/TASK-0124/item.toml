@@ -4,17 +4,22 @@ schema_version = 2
 id = "TASK-0124"
 type = "task"
 title = "Exclude planning, audit, and tracker prose in scripts/check-neutral.sh while keeping source, tests, scripts, and user docs enforced (TASK-0123)"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "scripts_2"
 created_at = "2026-11-26T14:47:34Z"
-updated_at = "2026-11-26T14:47:34Z"
+updated_at = "2026-11-26T14:59:25Z"
 source_ref = "STEP 45A"
 
 [effort]
-logged_time_minutes = 0
+logged_time_minutes = 5
 iteration_count = 1
+last_timer_session = "TASK-0124@2026-11-26T14:53:38Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-26"
+commit = "d23d44e"
+summary = "STEP 45A: Exclude planning, audit, and tracker prose in `scripts/check-neutral.sh` (phased check PASS)"
