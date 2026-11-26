@@ -970,14 +970,7 @@ impl TrackerStorage {
         item_id: &str,
     ) -> Result<()> {
         let mut scope_manifest = self.read_scope(phase_id, scope_id)?;
-        scope_manifest
-            .items
-            .bugs
-            .retain(|existing| existing.id != item_id);
-        scope_manifest
-            .items
-            .features
-            .retain(|existing| existing.id != item_id);
+        scope_manifest.items.remove_id(item_id);
         self.write_scope(phase_id, scope_id, &scope_manifest)?;
         self.recompute_phase_summary_with_scope(phase_id, scope_id, &scope_manifest)
     }

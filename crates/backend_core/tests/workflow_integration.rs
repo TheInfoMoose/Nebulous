@@ -2905,3 +2905,53 @@ fn mcp_git_fetch_dry_run_reports_status_without_a_remote() {
 
     assert!(server.call_tool("git_fetch", json!({})).is_err());
 }
+
+#[test]
+fn move_task_between_phases_removes_source_stub_and_updates_summary() {
+    let dir = TempDir::new().expect("should create tempdir");
+    let storage = TrackerStorage::init_standard(dir.path(), "TaskMovePhaseProject")
+        .expect("should init_standard");
+
+    let (created_loc, created_detail) = storage
+        .create_item(
+            CreateItemInput::new(ItemType::Task, "Move task across phases")
+                .with_phase("pre_production")
+                .with_scope("inbox"),
+        )
+        .expect("should create task in pre_production/inbox");
+    let task_id = created_detail.manifest.item.id;
+    assert_eq!(created_loc.phase_id, "pre_production");
+    assert_eq!(created_loc.scope_id, "inbox");
+    assert!(task_id.starts_with("TASK-"));
+
+    let (moved_loc, _) = storage
+        .move_item_to_phase(&task_id, "production")
+        .expect("should move task to production");
+    assert_eq!(moved_loc.phase_id, "production");
+
+    let source_scope = storage
+        .read_scope("pre_production", "inbox")
+        .expect("should read source scope");
+    assert!(!source_scope.items.tasks.iter().any(|s| s.id == task_id));
+
+    let source_phase = storage
+        .read_phase("pre_production")
+        .expect("should read source phase");
+    assert_eq!(source_phase.summary.total_items, 0);
+
+    let target_scope = storage
+        .read_scope("production", "inbox")
+        .expect("should read target scope");
+    assert!(target_scope.items.tasks.iter().any(|s| s.id == task_id));
+
+    let target_phase = storage
+        .read_phase("production")
+        .expect("should read target phase");
+    assert_eq!(target_phase.summary.total_items, 1);
+
+    let (loaded_loc, loaded_detail) = storage
+        .load_item_detail_by_id(&task_id)
+        .expect("should load moved task by id without reconcile_indexes");
+    assert_eq!(loaded_loc.phase_id, "production");
+    assert_eq!(loaded_detail.manifest.item.id, task_id);
+}
