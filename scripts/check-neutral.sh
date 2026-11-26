@@ -30,7 +30,7 @@ if [[ $# -eq 0 ]]; then
     [[ -e "$f" ]] || continue
     files+=("$f")
     SEEN_TRACKED["$f"]=1
-  done < <(git ls-files | grep -vE '^archive/|^Cargo\.lock$|^scripts/check-neutral\.sh$')
+  done < <(git ls-files | grep -vE '^archive/|^Cargo\.lock$|^scripts/check-neutral\.sh$|^STEPPED_IMPLEMENTATION_PLAN\.md$|^docs/codebase-audit-report\.md$|^\.tracker/')
 else
   files=("$@")
 fi
