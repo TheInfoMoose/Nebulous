@@ -1402,8 +1402,8 @@ fn test_orbit_component_manifest_pinning_rolling_updates_and_rollback() {
 #[test]
 fn test_ingestion_subpath_duplicate_leaf_ids_and_promote_all() {
     use backend_core::{
-        load_global_registry, register_project, remove_project, save_global_registry,
-        set_active_project, IngestionOptions,
+        load_global_registry_from, register_project_in, remove_project_in, save_global_registry_to,
+        set_active_project_in, IngestionOptions,
     };
 
     let temp = TempTrackerDir::new("subpath_and_dup_ids");
@@ -1453,10 +1453,10 @@ fn test_ingestion_subpath_duplicate_leaf_ids_and_promote_all() {
     assert!(project.components.find("utils").is_some());
     assert!(project.components.find("packages_utils").is_some());
 
-    // Also exercise the top-level global registry functions via NEBULOUS_CONFIG_DIR
+    // Also exercise the explicit-path global registry helpers against an isolated config directory
     let cfg_dir = temp.path().join("env_global_cfg");
-    std::env::set_var("NEBULOUS_CONFIG_DIR", &cfg_dir);
-    let reg_entry = register_project(
+    let reg_entry = register_project_in(
+        &cfg_dir,
         &root,
         Some("DupLeafWorkspace"),
         vec!["polyglot".into()],
@@ -1464,18 +1464,20 @@ fn test_ingestion_subpath_duplicate_leaf_ids_and_promote_all() {
     )
     .unwrap();
     assert_eq!(reg_entry.id, "dupleafworkspace");
-    let loaded_reg = load_global_registry().unwrap();
+    let loaded_reg = load_global_registry_from(&cfg_dir).unwrap();
     assert_eq!(
         loaded_reg.active_project_id.as_deref(),
         Some("dupleafworkspace")
     );
-    save_global_registry(&loaded_reg).unwrap();
-    let switched = set_active_project("dupleafworkspace").unwrap();
+    save_global_registry_to(&cfg_dir, &loaded_reg).unwrap();
+    let switched = set_active_project_in(&cfg_dir, "dupleafworkspace").unwrap();
     assert_eq!(switched.id, "dupleafworkspace");
-    let removed = remove_project("dupleafworkspace").unwrap();
+    let removed = remove_project_in(&cfg_dir, "dupleafworkspace").unwrap();
     assert_eq!(removed.id, "dupleafworkspace");
-    assert!(load_global_registry().unwrap().projects.is_empty());
-    std::env::remove_var("NEBULOUS_CONFIG_DIR");
+    assert!(load_global_registry_from(&cfg_dir)
+        .unwrap()
+        .projects
+        .is_empty());
 }
 
 #[test]
