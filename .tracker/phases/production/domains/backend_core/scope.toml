@@ -763,7 +763,7 @@ created_at = "2026-11-26T14:47:35Z"
 [[items.tasks]]
 id = "TASK-0127"
 title = "Reject symlinked .tracker/ roots in discover and guard_tracker_path with Unix O_NOFOLLOW hardening and containment tests (BUG-0010 / AUD-03)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-26T14:47:36Z"
 
