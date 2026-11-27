@@ -819,7 +819,7 @@ created_at = "2026-11-27T01:59:57Z"
 [[items.tasks]]
 id = "TASK-0133"
 title = "Pin libgit2 PAT credentials and disable cross-host redirects (RemoteRedirect::None) to the configured HTTPS remote host (BUG-0019 / AUD-14)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-27T01:59:58Z"
 
