@@ -15,10 +15,25 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// - On Unix the parent directory is fsynced after the rename so the new directory entry is
 ///   durable.
 /// - There is no non-atomic fallback: if the rename fails, the target is left untouched and
-///   the error is returned. On Windows only, a read-only attribute or a transient handle lock
-///   is worked around by clearing the attribute, retrying, and as a last resort replacing the
-///   target via remove-then-rename (Windows cannot rename over a read-only file).
+///   the error is returned. On Windows, a read-only attribute or a transient handle lock is
+///   retried after clearing `FILE_ATTRIBUTE_READONLY`, returning the I/O error if retries fail.
 pub fn atomic_write_bytes(target_path: &Path, contents: &[u8]) -> Result<()> {
+    atomic_write_bytes_with_mode(target_path, contents, None)
+}
+
+/// Atomically writes `contents` to `target_path`, optionally enforcing an explicit Unix file
+/// mode (`unix_mode`) from temporary file creation through rename.
+///
+/// - On Unix, when `unix_mode` is `Some(mode)`, the sibling temporary file is created with
+///   `OpenOptionsExt::mode(mode)` and explicitly `fchmod`'d via `set_permissions` before
+///   `sync_all()` so process umask cannot widen or alter the final mode.
+/// - When `unix_mode` is `None`, any existing regular target file's permissions are preserved
+///   verbatim.
+pub fn atomic_write_bytes_with_mode(
+    target_path: &Path,
+    contents: &[u8],
+    unix_mode: Option<u32>,
+) -> Result<()> {
     let io_err = |source: std::io::Error| TrackerError::Io {
         path: target_path.to_path_buf(),
         source,
@@ -48,7 +63,7 @@ pub fn atomic_write_bytes(target_path: &Path, contents: &[u8]) -> Result<()> {
         .unwrap_or("tracker_file");
 
     let pid = std::process::id();
-    let (temp_path, mut temp_file) = create_unique_temp_file(parent, file_name, pid)?;
+    let (temp_path, mut temp_file) = create_unique_temp_file(parent, file_name, pid, unix_mode)?;
 
     // Capture the existing regular file's permissions verbatim (never follow a symlink here).
     let original_permissions = fs::symlink_metadata(target_path)
@@ -59,10 +74,24 @@ pub fn atomic_write_bytes(target_path: &Path, contents: &[u8]) -> Result<()> {
     let write_result = (|| -> std::io::Result<()> {
         temp_file.write_all(contents)?;
         temp_file.flush()?;
-        // Apply the original mode via the open descriptor (fchmod), so even a read-only
-        // original mode does not block the write above.
-        if let Some(perms) = original_permissions.clone() {
-            temp_file.set_permissions(perms)?;
+        // Apply the requested Unix mode (or preserved original mode) via the open descriptor
+        // (fchmod), so even a read-only mode does not block the write above and process umask
+        // cannot alter an explicit mode.
+        #[cfg(unix)]
+        {
+            if let Some(mode) = unix_mode {
+                use std::os::unix::fs::PermissionsExt;
+                temp_file.set_permissions(fs::Permissions::from_mode(mode))?;
+            } else if let Some(perms) = original_permissions.clone() {
+                temp_file.set_permissions(perms)?;
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = unix_mode;
+            if let Some(perms) = original_permissions.clone() {
+                temp_file.set_permissions(perms)?;
+            }
         }
         temp_file.sync_all()?;
         Ok(())
@@ -103,13 +132,14 @@ fn replace_target(temp_path: &Path, target_path: &Path) -> std::io::Result<()> {
 
 /// Windows: `MoveFileEx(REPLACE_EXISTING)` fails on read-only targets and on targets held open
 /// by indexers/watchers, so clear the read-only attribute (the preserved attribute was already
-/// applied to the temp file) and retry briefly before falling back to remove-then-rename.
+/// applied to the temp file) and retry briefly. If all retries fail, leave the existing target
+/// intact and return the I/O error.
 #[cfg(windows)]
 fn replace_target(temp_path: &Path, target_path: &Path) -> std::io::Result<()> {
     use std::thread;
     use std::time::Duration;
 
-    let first = match fs::rename(temp_path, target_path) {
+    let mut last_err = match fs::rename(temp_path, target_path) {
         Ok(()) => return Ok(()),
         Err(err)
             if err.kind() == ErrorKind::PermissionDenied
@@ -134,15 +164,13 @@ fn replace_target(temp_path: &Path, target_path: &Path) -> std::io::Result<()> {
         if attempt > 0 {
             thread::sleep(Duration::from_millis(5 * attempt));
         }
-        if fs::rename(temp_path, target_path).is_ok() {
-            return Ok(());
+        match fs::rename(temp_path, target_path) {
+            Ok(()) => return Ok(()),
+            Err(err) => last_err = err,
         }
     }
 
-    if fs::remove_file(target_path).is_ok() {
-        return fs::rename(temp_path, target_path);
-    }
-    Err(first)
+    Err(last_err)
 }
 
 /// Fsyncs a directory so a completed rename inside it survives power loss.
@@ -155,17 +183,25 @@ fn create_unique_temp_file(
     parent: &Path,
     file_name: &str,
     pid: u32,
+    unix_mode: Option<u32>,
 ) -> Result<(PathBuf, fs::File)> {
+    #[cfg(not(unix))]
+    let _ = unix_mode;
+
     for _ in 0..1024 {
         let seq = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let temp_name = format!(".{file_name}.tmp.{pid}.{seq}");
         let temp_path = parent.join(temp_name);
 
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        if let Some(mode) = unix_mode {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(mode);
+        }
+
+        match opts.open(&temp_path) {
             Ok(file) => return Ok((temp_path, file)),
             Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
             Err(source) => {
@@ -245,6 +281,19 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
             .collect();
         assert!(leftovers.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_bytes_with_mode_creates_file_with_0600() {
+        let dir = temp_dir("mode0600");
+        let target = dir.join("vault.key");
+
+        atomic_write_bytes_with_mode(&target, b"secret", Some(0o600)).unwrap();
+
+        assert!(target.is_file());
+        assert_eq!(fs::read(&target).unwrap(), b"secret");
+        assert_eq!(mode(&target), 0o600);
         let _ = fs::remove_dir_all(&dir);
     }
 }

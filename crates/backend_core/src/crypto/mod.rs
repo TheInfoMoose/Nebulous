@@ -19,7 +19,7 @@ pub use keys::{KeyPairManager, SshKeyPairRecord, SshPublicKeyInfo};
 pub use zeroize::Zeroizing;
 
 use crate::error::{Result, TrackerError};
-use crate::storage::atomic_write_bytes;
+use crate::storage::atomic_write_bytes_with_mode;
 
 /// Default OS keyring service identifier for Nebulous secrets.
 pub const DEFAULT_KEYRING_SERVICE: &str = "nebulous-tracker";
@@ -144,6 +144,78 @@ pub fn nebulous_config_dir() -> PathBuf {
     )
 }
 
+/// Resolves the cross-platform Nebulous configuration directory, returning an error if no
+/// config or home environment variable is set.
+///
+/// Follows the same precedence as [`nebulous_config_dir`] without falling back to a shared
+/// temporary directory.
+pub fn try_nebulous_config_dir() -> Result<PathBuf> {
+    let nebulous_override = std::env::var("NEBULOUS_CONFIG_DIR").ok();
+    let xdg_config_home = std::env::var("XDG_CONFIG_HOME").ok();
+    let appdata = std::env::var("APPDATA").ok();
+    let home = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok());
+
+    resolve_nebulous_config_dir_checked(
+        nebulous_override.as_deref(),
+        xdg_config_home.as_deref(),
+        appdata.as_deref(),
+        home.as_deref(),
+        std::env::consts::OS,
+    )
+}
+
+/// Deterministic checked helper for resolving the Nebulous config directory across platforms
+/// (`linux`, `macos`, `windows`), returning `Err(TrackerError::ValidationError(_))` when all
+/// config/home variables are unset or empty.
+pub fn resolve_nebulous_config_dir_checked(
+    nebulous_override: Option<&str>,
+    xdg_config_home: Option<&str>,
+    appdata: Option<&str>,
+    home: Option<&str>,
+    target_os: &str,
+) -> Result<PathBuf> {
+    if let Some(custom) = nebulous_override.map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(PathBuf::from(custom));
+    }
+
+    if let Some(xdg) = xdg_config_home.map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(PathBuf::from(xdg).join("nebulous"));
+    }
+
+    match target_os {
+        "windows" => {
+            if let Some(app) = appdata.map(str::trim).filter(|s| !s.is_empty()) {
+                return Ok(PathBuf::from(app).join("nebulous"));
+            }
+            if let Some(h) = home.map(str::trim).filter(|s| !s.is_empty()) {
+                return Ok(PathBuf::from(h)
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("nebulous"));
+            }
+        }
+        "macos" => {
+            if let Some(h) = home.map(str::trim).filter(|s| !s.is_empty()) {
+                return Ok(PathBuf::from(h)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("nebulous"));
+            }
+        }
+        _ => {
+            if let Some(h) = home.map(str::trim).filter(|s| !s.is_empty()) {
+                return Ok(PathBuf::from(h).join(".config").join("nebulous"));
+            }
+        }
+    }
+
+    Err(TrackerError::ValidationError(
+        "Unable to determine Nebulous config directory: set NEBULOUS_CONFIG_DIR, XDG_CONFIG_HOME, APPDATA, HOME, or USERPROFILE".to_string(),
+    ))
+}
+
 /// Deterministic helper for resolving the Nebulous config directory across platforms (`linux`, `macos`, `windows`).
 pub fn resolve_nebulous_config_dir_from(
     nebulous_override: Option<&str>,
@@ -152,42 +224,14 @@ pub fn resolve_nebulous_config_dir_from(
     home: Option<&str>,
     target_os: &str,
 ) -> PathBuf {
-    if let Some(custom) = nebulous_override.map(str::trim).filter(|s| !s.is_empty()) {
-        return PathBuf::from(custom);
-    }
-
-    if let Some(xdg) = xdg_config_home.map(str::trim).filter(|s| !s.is_empty()) {
-        return PathBuf::from(xdg).join("nebulous");
-    }
-
-    match target_os {
-        "windows" => {
-            if let Some(app) = appdata.map(str::trim).filter(|s| !s.is_empty()) {
-                return PathBuf::from(app).join("nebulous");
-            }
-            if let Some(h) = home.map(str::trim).filter(|s| !s.is_empty()) {
-                return PathBuf::from(h)
-                    .join("AppData")
-                    .join("Roaming")
-                    .join("nebulous");
-            }
-        }
-        "macos" => {
-            if let Some(h) = home.map(str::trim).filter(|s| !s.is_empty()) {
-                return PathBuf::from(h)
-                    .join("Library")
-                    .join("Application Support")
-                    .join("nebulous");
-            }
-        }
-        _ => {
-            if let Some(h) = home.map(str::trim).filter(|s| !s.is_empty()) {
-                return PathBuf::from(h).join(".config").join("nebulous");
-            }
-        }
-    }
-
-    std::env::temp_dir().join("nebulous")
+    resolve_nebulous_config_dir_checked(
+        nebulous_override,
+        xdg_config_home,
+        appdata,
+        home,
+        target_os,
+    )
+    .unwrap_or_else(|_| std::env::temp_dir().join("nebulous"))
 }
 
 /// Derives a 256-bit key from `secret` and `context` using SHA-256, wrapped in [`Zeroizing`].
@@ -301,12 +345,12 @@ impl std::fmt::Debug for SecureStorage {
 }
 
 impl SecureStorage {
-    /// Creates a `SecureStorage` instance rooted at [`nebulous_config_dir()`].
+    /// Creates a `SecureStorage` instance rooted at [`try_nebulous_config_dir()`].
     ///
     /// Uses the OS keyring as primary storage (unless `NEBULOUS_DISABLE_KEYRING=1` is set)
     /// and maintains an AES-256-GCM encrypted vault fallback at `<config_dir>/vault.enc`.
     pub fn new() -> Result<Self> {
-        Self::with_config_dir(nebulous_config_dir())
+        Self::with_config_dir(try_nebulous_config_dir()?)
     }
 
     /// Creates a `SecureStorage` instance using `config_dir` for `vault.enc` and `vault.key`.
@@ -541,7 +585,7 @@ impl SecureStorage {
             TrackerError::KeyringError(format!("Failed to serialize vault JSON: {e}"))
         })?);
         let encrypted = encrypt_aes256_gcm(&self.master_key, &serialized)?;
-        atomic_write_bytes(&self.vault_path, &encrypted)?;
+        atomic_write_bytes_with_mode(&self.vault_path, &encrypted, Some(0o600))?;
         set_secure_file_permissions(&self.vault_path)?;
         Ok(())
     }
@@ -600,11 +644,25 @@ fn load_or_create_vault_master_key(key_path: &Path) -> Result<Zeroizing<[u8; AES
         if let Some(parent) = key_path.parent() {
             ensure_secure_dir(parent)?;
         }
-        atomic_write_bytes(key_path, encoded.as_bytes())?;
+        atomic_write_bytes_with_mode(key_path, encoded.as_bytes(), Some(0o600))?;
         set_secure_file_permissions(key_path)?;
 
         Ok(derive_key_sha256(&*random_seed, VAULT_KDF_CONTEXT))
     })
+}
+
+/// Resolves the absolute path to `icacls.exe` under `%SystemRoot%\System32` so PATH hijacking
+/// cannot intercept ACL hardening on Windows.
+#[cfg(windows)]
+fn icacls_exe_path() -> PathBuf {
+    let system_root = std::env::var("SystemRoot")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| r"C:\Windows".to_string());
+    PathBuf::from(system_root)
+        .join("System32")
+        .join("icacls.exe")
 }
 
 /// Removes inherited ACEs on `path` and grants full control only to the current Windows user.
@@ -631,7 +689,7 @@ fn restrict_to_current_user(path: &Path, is_dir: bool) -> Result<()> {
     } else {
         format!("{principal}:F")
     };
-    let output = std::process::Command::new("icacls")
+    let output = std::process::Command::new(icacls_exe_path())
         .arg(path)
         .arg("/inheritance:r")
         .arg("/grant:r")
@@ -652,9 +710,8 @@ fn restrict_to_current_user(path: &Path, is_dir: bool) -> Result<()> {
 }
 
 /// Creates `dir` and sets `0700` on Unix; on Windows, inherited ACEs are removed and full control
-/// is granted to the current user only (only when newly created).
+/// is granted to the current user only.
 pub(crate) fn ensure_secure_dir(dir: &Path) -> Result<()> {
-    let existed = dir.is_dir();
     fs::create_dir_all(dir).map_err(|source| TrackerError::Io {
         path: dir.to_path_buf(),
         source,
@@ -663,14 +720,15 @@ pub(crate) fn ensure_secure_dir(dir: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = fs::Permissions::from_mode(0o700);
-        let _ = fs::set_permissions(dir, perms);
+        fs::set_permissions(dir, perms).map_err(|source| TrackerError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
     }
     #[cfg(windows)]
-    if !existed {
-        let _ = restrict_to_current_user(dir, true);
+    {
+        restrict_to_current_user(dir, true)?;
     }
-    #[cfg(not(windows))]
-    let _ = existed;
     Ok(())
 }
 
@@ -755,5 +813,62 @@ mod tests {
             !stdout.contains("(I)"),
             "expected icacls output to have no inherited ACE marker (I), got: {stdout}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_files_created_with_0600_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = SecureStorage::vault_only(dir.path()).unwrap();
+        storage.store_secret("testuser", "s3cret").unwrap();
+
+        let dir_mode = fs::metadata(dir.path()).unwrap().permissions().mode() & 0o7777;
+        let key_mode = fs::metadata(dir.path().join(VAULT_KEY_FILE_NAME))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        let enc_mode = fs::metadata(dir.path().join(VAULT_FILE_NAME))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(key_mode, 0o600);
+        assert_eq!(enc_mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_secure_dir_propagates_permission_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let loose_dir = dir.path().join("loose");
+        fs::create_dir_all(&loose_dir).unwrap();
+        fs::set_permissions(&loose_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        ensure_secure_dir(&loose_dir).unwrap();
+        let tightened = fs::metadata(&loose_dir).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(tightened, 0o700);
+
+        let blocker = dir.path().join("regular_file");
+        fs::write(&blocker, b"not a directory").unwrap();
+        assert!(ensure_secure_dir(&blocker).is_err());
+        assert!(ensure_secure_dir(&blocker.join("child")).is_err());
+    }
+
+    #[test]
+    fn try_nebulous_config_dir_rejects_missing_env_vars() {
+        let err = resolve_nebulous_config_dir_checked(None, None, None, None, "linux").unwrap_err();
+        assert!(matches!(err, TrackerError::ValidationError(_)));
+
+        let ok =
+            resolve_nebulous_config_dir_checked(Some("/tmp/custom"), None, None, None, "linux")
+                .unwrap();
+        assert_eq!(ok, PathBuf::from("/tmp/custom"));
     }
 }

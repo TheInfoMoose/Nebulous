@@ -18,7 +18,7 @@ use std::cell::Cell;
 
 use crate::models::time::{now_timestamp_string, today_date_string};
 
-pub use atomic::{atomic_write_bytes, atomic_write_str};
+pub use atomic::{atomic_write_bytes, atomic_write_bytes_with_mode, atomic_write_str};
 pub use id::parse_item_id_number;
 pub use reconcile::ReconcileReport;
 
