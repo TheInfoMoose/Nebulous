@@ -1,0 +1,20 @@
+schema_version = 2
+
+[item]
+id = "TASK-0133"
+type = "task"
+title = "Pin libgit2 PAT credentials and disable cross-host redirects (RemoteRedirect::None) to the configured HTTPS remote host (BUG-0019 / AUD-14)"
+status = "open"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-27T01:59:58Z"
+updated_at = "2026-11-27T01:59:58Z"
+source_ref = "STEP 46D"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []

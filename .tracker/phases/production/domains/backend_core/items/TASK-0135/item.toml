@@ -1,0 +1,20 @@
+schema_version = 2
+
+[item]
+id = "TASK-0135"
+type = "task"
+title = "Zeroize GitAuthMaterial::pat (Option<Zeroizing<String>>) and guard SSH passphrase stripping in KeyPairManager (TASK-0110 non-breaking slice / AUD-13)"
+status = "open"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-27T01:59:58Z"
+updated_at = "2026-11-27T01:59:58Z"
+source_ref = "STEP 46F"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []

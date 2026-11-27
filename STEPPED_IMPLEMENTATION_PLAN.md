@@ -23,7 +23,7 @@ Nebulous is a Git-backed, CLI/TUI-first and MCP-enabled project, bug, and task t
 - **Neon** never commits, never edits this file or the forbidden paths, and files bugs and scope lapses as **pending** neb items.
 - **Repeated failures** or a scope lapse defer the step. A step whose PRE_GATE then fails is deferred without running. Too many deferrals (`max(2, ceil(steps/3))`) stop the phase.
 
-**Phase goal (Phase 27):** Unblock repo-wide CI neutrality (`scripts/check-neutral.sh` excluding planning/audit/tracker prose) and eliminate `.tracker/` index corruption, 30s same-thread lock deadlocks, symlink root escapes, unsynchronized mutators, and watcher shutdown/symlink hangs, each guarded by a regression test.
+**Phase goal (Phase 28):** Fix the Phase 27 read-only registry regression (`BUG-0033`) and close high-risk secret vault, keyring, HTTPS PAT redirect, agent-prompt injection, and credential-hygiene security gaps (`BUG-0009`, `BUG-0011`, `BUG-0019`, `BUG-0018`, non-breaking `TASK-0110`), each guarded by dedicated regression tests.
 
 **Side findings, bugs and scope lapses** become **pending neb items**, reviewed once at phase end. Every Up Next row has a neb task (`source_ref` = step ID); commits start with `[<TASK-ID>](<scope>)`.
 
@@ -33,12 +33,12 @@ Nebulous is a Git-backed, CLI/TUI-first and MCP-enabled project, bug, and task t
 
 | # | Step | Command | Scope | Target Files | Waits on |
 | :---: | :--- | :---: | :--- | :--- | :--- |
-| 1 | **STEP 45A** | `/goal` | Exclude planning, audit, and tracker prose in `scripts/check-neutral.sh` while keeping source, tests, scripts, and user docs enforced (`TASK-0123`) | `scripts/check-neutral.sh` | — |
-| 2 | **STEP 45B** | `/goal` | Fix `move_item_to_phase` to remove `TASK-*` stubs via `ScopeItems::remove_id` with regression test (`BUG-0012` / `AUD-05`) | `crates/backend_core/src/workflow/lifecycle.rs`, `crates/backend_core/tests/workflow_integration.rs` | — |
-| 3 | **STEP 45C** | `/goal` | Canonicalize `HELD_WRITE_LOCKS` and `PROJECT_CACHE` keys to prevent same-thread 30s self-deadlock (`BUG-0013` / `AUD-06`) | `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/tests/storage_integration.rs` | — |
-| 4 | **STEP 45D** | `/boost` | Reject symlinked `.tracker/` roots in `discover` and `guard_tracker_path` with Unix `O_NOFOLLOW` hardening and containment tests (`BUG-0010` / `AUD-03`) | `crates/backend_core/Cargo.toml`, `Cargo.lock`, `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/tests/path_containment.rs` | `STEP 45C` |
-| 5 | **STEP 45E** | `/boost` | Lock public `TrackerStorage` mutators, `read_active_timer` quarantine, `tool_pin_stable_release`, and `projects.toml` registry (`projects.lock`) (`BUG-0020` / `AUD-17`) | `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/src/models/registry.rs`, `crates/backend_core/src/mcp/mod.rs`, `crates/backend_core/tests/storage_integration.rs` | `STEP 45C`, `STEP 45D` |
-| 6 | **STEP 45F** | `/goal` | Add `AtomicBool` shutdown signal to `TrackerWatcher::drop` (including contended lock waits) and skip symlinks in `hash_index_files` (`BUG-0023` / `AUD-20`) | `crates/backend_core/src/watcher/mod.rs`, `crates/backend_core/tests/watcher_integration.rs` | — |
+| 1 | **STEP 46A** | `/goal` | Fix read-only registry lookups (`projects.lock` shared/read-only open, per-path lock map, no prune write on read) (`BUG-0033`) | `crates/backend_core/src/models/registry.rs`, `crates/backend_core/tests/storage_integration.rs` | — |
+| 2 | **STEP 46B** | `/boost` | Add mode-aware `atomic_write_bytes_with_mode` (`0o600`), propagate `ensure_secure_dir` errors, reject implicit `temp_dir()` vault fallback, and harden Windows replace/ACL handling (`BUG-0009` / `AUD-02`) | `crates/backend_core/src/storage/atomic.rs`, `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/src/crypto/mod.rs` | — |
+| 3 | **STEP 46C** | `/boost` | Fix `SecureStorage` keyring/vault split-brain and route `git_sync` PAT functions exclusively through `SecureStorage` (`BUG-0011` / `AUD-04`) | `crates/backend_core/src/crypto/mod.rs`, `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/tests/credential_hygiene.rs` | `STEP 46B` |
+| 4 | **STEP 46D** | `/boost` | Pin `libgit2` PAT credentials and disable cross-host redirects (`RemoteRedirect::None`) to the configured HTTPS remote host (`BUG-0019` / `AUD-14`) | `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/tests/credential_hygiene.rs` | — |
+| 5 | **STEP 46E** | `/goal` | Sanitize all single-line untrusted fields and Unicode bidi format chars in `agent_context::synthesize_bounded_prompt` (`BUG-0018` / `AUD-12`) | `crates/backend_core/src/agent_context/mod.rs`, `crates/backend_core/tests/workflow_integration.rs` | — |
+| 6 | **STEP 46F** | `/goal` | Zeroize `GitAuthMaterial::pat` (`Option<Zeroizing<String>>`) and guard SSH passphrase stripping in `KeyPairManager` (`TASK-0110` non-breaking slice / `AUD-13`) | `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/src/crypto/keys.rs`, `crates/backend_core/tests/credential_hygiene.rs` | `STEP 46C`, `STEP 46D` |
 
 ### Completed
 
@@ -230,21 +230,17 @@ Rows 1–12 are recorded from git history; their `POST_GATE`s weren't re-run whe
 | **STEP 44C** | **COMPLETED** (`7c12853`) | `/goal` | Align `.orrery/skills/repo-rules.md` and `.gitignore` with phased workflow (applied host-side because Orrery masks `.orrery/`; `TASK-0115`, `TASK-0119` closed) | `.orrery/skills/repo-rules.md`, `.gitignore` |
 | **STEP 44D** | **COMPLETED** (`c20aa19`) | `/goal` | Fix `docs/USAGE.md` removed `--all` examples on `neb git commit` and `neb sync` (`BUG-0017` / `AUD-10`; `TASK-0120` closed) | `docs/USAGE.md` |
 | **STEP 44E** | **COMPLETED** (`2db073f`) | `/goal` | Replace `std::env::set_var`/`remove_var` in `storage_integration.rs` with `*_in`/`*_from`/`*_to` helpers (`TASK-0116` test-hazard slice / `AUD-33`; `TASK-0121` closed) | `crates/backend_core/tests/storage_integration.rs` |
+| **STEP 45A** | **COMPLETED** (`d23d44e`) | `/goal` | Exclude planning, audit, and tracker prose in `scripts/check-neutral.sh` while keeping source, tests, scripts, and user docs enforced (`TASK-0123`; `TASK-0124` closed) | `scripts/check-neutral.sh` |
+| **STEP 45B** | **COMPLETED** (`2bf9236`) | `/goal` | Fix `move_item_to_phase` to remove `TASK-*` stubs via `ScopeItems::remove_id` with regression test (`BUG-0012` / `AUD-05`; `TASK-0125` closed) | `crates/backend_core/src/workflow/lifecycle.rs`, `crates/backend_core/tests/workflow_integration.rs` |
+| **STEP 45C** | **COMPLETED** (`4abb0e3`) | `/goal` | Canonicalize `HELD_WRITE_LOCKS` and `PROJECT_CACHE` keys to prevent same-thread 30s self-deadlock (`BUG-0013` / `AUD-06`; `TASK-0126` closed) | `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/tests/storage_integration.rs` |
+| **STEP 45D** | **COMPLETED** (`f94325e`) | `/boost` | Reject symlinked `.tracker/` roots in `discover` and `guard_tracker_path` with Unix `O_NOFOLLOW` hardening and containment tests (`BUG-0010` / `AUD-03`; `TASK-0127` closed) | `crates/backend_core/Cargo.toml`, `Cargo.lock`, `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/tests/path_containment.rs` |
+| **STEP 45E** | **COMPLETED** (`1002a15`) | `/boost` | Lock public `TrackerStorage` mutators, `read_active_timer` quarantine, `tool_pin_stable_release`, and `projects.toml` registry (`projects.lock`) (`BUG-0020` / `AUD-17`; `TASK-0128` closed) | `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/src/models/registry.rs`, `crates/backend_core/src/mcp/mod.rs`, `crates/backend_core/tests/storage_integration.rs` |
+| **STEP 45F** | **COMPLETED** (`17474a8`) | `/goal` | Add `AtomicBool` shutdown signal to `TrackerWatcher::drop` (including contended lock waits) and skip symlinks in `hash_index_files` (`BUG-0023` / `AUD-20`; `TASK-0129` closed) | `crates/backend_core/src/watcher/mod.rs`, `crates/backend_core/tests/watcher_integration.rs` |
 
 
 ### Future phases
 
 Outlines only (goal, done criteria, and step titles). `/phase-plan` writes the contract step blocks just before each phase starts.
-
-- **Phase 28 — Secret Vault, Keyring & Security Hardening (High-Risk Security)**
-  - **Goal:** Close vault file creation permission windows, keyring/vault credential split-brain, cross-host HTTPS PAT leakage, prompt-injection gaps, and un-zeroized PAT residency without breaking existing user vaults.
-  - **Done when:** `vault.key`/`vault.enc` are created with `0o600` atomically, directory/ACL hardening errors propagate, `/tmp/nebulous` vault fallback is rejected, and Windows replacement avoids destructive remove-then-rename; `store_secret` prevents stale keyring reads and `git_sync` respects `vault_only`/`NEBULOUS_DISABLE_KEYRING`; `libgit2` blocks cross-host HTTPS PAT redirects; `agent_context` sanitizes all single-line untrusted fields; `git_sync` PAT buffers are zeroized and SSH passphrase stripping warns/refuses safely.
-  - **Steps:**
-    - Add mode-aware `atomic_write_bytes_with_mode` (`0o600`), propagate `ensure_secure_dir` errors, disallow `temp_dir()` vault fallback, and harden Windows replace/ACL handling (`BUG-0009` / `AUD-02`)
-    - Fix `SecureStorage` keyring/vault split-brain and route `git_sync` PAT functions exclusively through `SecureStorage` (`BUG-0011` / `AUD-04`)
-    - Pin `libgit2` PAT credentials and redirect policy to the configured remote host (`BUG-0019` / `AUD-14`)
-    - Sanitize all single-line untrusted fields in `agent_context::synthesize_bounded_prompt` (`BUG-0018` / `AUD-12`)
-    - Zeroize `FALLBACK_PAT_STORE` and `GitAuthMaterial::pat`, and guard SSH passphrase stripping (`TASK-0110` non-breaking slice / `AUD-13`)
 
 - **Phase 29 — Git Sync & Documented Commit Atomicity (High-Risk Git)**
   - **Goal:** Make `git_sync`, `git_commit_documented`, and `neb done -c` transactional, lock-safe, and regression-tested against merge-reconcile errors, duplicate-ID pushes, and post-close commit failures.
@@ -270,7 +266,7 @@ Outlines only (goal, done criteria, and step titles). `/phase-plan` writes the c
   - **Steps:**
     - Fix `read_next_jsonrpc_message` EOF/terminator handling so truncated stdio frames never crash `serve_io` (`BUG-0021` / `AUD-18`)
     - Enforce `deny_unknown_fields`, strict enum checks, and `resolve_phase_alias` across all MCP tools (`BUG-0021` / `AUD-18`)
-    - Atomize/lock multi-write MCP handlers, return workspace-relative paths, align `git_fetch` `dry_run` contract, and isolate `switch_project` (`BUG-0021` / `AUD-18`)
+    - Atomize/lock multi-write MCP handlers (including `BUG-0034` sibling component RMW locks), return workspace-relative paths, align `git_fetch` `dry_run` contract, and isolate `switch_project` (`BUG-0021` / `AUD-18`, `BUG-0034`)
 
 - **Phase 32 — CLI & TUI Bug Fixes & Stability (Routine-to-Medium UI/CLI)**
   - **Goal:** Fix clipboard X11 hangs, CLI output/error-swallowing bugs, user-reported TUI input bugs, and TUI performance, layout, and panic-hook defects with headless regression tests.
@@ -313,9 +309,12 @@ Outlines only (goal, done criteria, and step titles). `/phase-plan` writes the c
 - **Refactor boundary:** Bug fixes, security/stability hardening, and regression tests run first; pure structural refactors (`AUD-28` `commands/mod.rs` split, `AUD-15` `ssh-key` RC, `AUD-33` `lib.rs` wildcard re-exports) stay parked.
 - **Scope lapse (`AUD-11`):** Deferred to isolated Phase 34 so bug-fix phases remain strictly non-breaking and regression-averse.
 
+**Recorded decisions (2026-11-26, user):**
+- **Phase 28 scope:** Fold `BUG-0033` (Phase 27 read-only registry regression) into Phase 28 alongside the 5 Security Hardening steps (6 steps total); defer `BUG-0034` (sibling component RMW write locks) to Phase 30/31.
+- **`AUD-13` / `TASK-0110` KDF migration:** Keep `NEBULOUS_VAULT_MASTER_KEY` KDF migration parked; Phase 28 executes only the non-breaking zeroize + SSH passphrase guard slice.
+
 **Open before future phases:**
-1. **Before Phase 28 (`AUD-13` / `TASK-0110` KDF migration):** Should `NEBULOUS_VAULT_MASTER_KEY` move from single-round SHA-256 to Argon2id/scrypt via a versioned vault envelope (backward-compatible read of v1 vaults, upgrade on write), or stay parked?
-2. **Before Phase 34 (`AUD-11` / `TASK-0109` Suite-3 MCP tools):** Should the 4 Suite-3 release-pin MCP tools (`record_rolling_update`, `record_verification_run`, `pin_stable_release`, `rollback_to_pinned_release`) be neutralized in place (non-breaking) or feature-gated/removed?
+1. **Before Phase 34 (`AUD-11` / `TASK-0109` Suite-3 MCP tools):** Should the 4 Suite-3 release-pin MCP tools (`record_rolling_update`, `record_verification_run`, `pin_stable_release`, `rollback_to_pinned_release`) be neutralized in place (non-breaking) or feature-gated/removed?
 
 ### Parked
 
@@ -864,6 +863,328 @@ Tests:
 
 [POST_GATE]
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'AtomicBool' crates/backend_core/src/watcher/mod.rs && grep -q 'fn drop_stops_promptly_under_contended_write_lock' crates/backend_core/tests/watcher_integration.rs && grep -q 'fn hash_index_files_skips_directory_symlink_cycles' crates/backend_core/src/watcher/mod.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+## Phase 28 Step Contracts
+
+### STEP 46A: Fix read-only registry lookups, per-path lock map, and read-only prune handling (`BUG-0033`)
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 46A: Make read-only registry lookups avoid write-opening projects.lock, isolate per-path in-process locks, and never fail reads on prune persistence
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/models/registry.rs
+  - crates/backend_core/tests/storage_integration.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/models/registry.rs:20-96,446-637
+  - crates/backend_core/tests/storage_integration.rs:3145-3188 (registry_writes_serialize_on_projects_lock)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change GlobalProjectRegistry TOML schema or public function signatures.
+
+[PRE_GATE]
+true
+
+[MUTATION_SPEC]
+Goal: Read-only global registry lookups (`load_global_registry_from`, `credential_accounts_for_root_in`) succeed on read-only config directories without creating `projects.lock` or writing to disk, and lock contention on one registry directory never blocks unrelated registry directories in the same process.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/models/registry.rs`:
+     - Replace the single process-global `REGISTRY_LOCK: OnceLock<Mutex<()>>` held across `fd_lock` polling with a per-registry-path lock table (keyed by normalized/canonicalized lock path, e.g. `Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>`) so acquiring a lock on `dir_a/projects.lock` never blocks operations on `dir_b/projects.lock` in the same process.
+     - Split read vs. write locking:
+       - Write callers (`save_global_registry_to`, `register_project_in`, `remove_project_in`, `set_active_project_in`, `bind_credential_account_in`) continue creating parent directories, opening `projects.lock` for write, and taking an exclusive `fd_lock::RwLock::try_write()` lock with `DEFAULT_LOCK_TIMEOUT`.
+       - Read-only callers (`load_global_registry_from`, `credential_accounts_for_root_in`) must NOT create parent directories and must NOT create or write-open `projects.lock`. If `projects.toml` does not exist (`!path.is_file()`), return the empty default immediately without touching `projects.lock`. If `projects.lock` exists, open it read-only (`OpenOptions::new().read(true)`) and take a shared `fd_lock::RwLock::try_read()` lock (with `DEFAULT_LOCK_TIMEOUT` poll loop); if `projects.lock` is absent (`ErrorKind::NotFound`), proceed directly to reading `projects.toml`.
+     - Update `load_registry_unlocked` to take a `persist_prune: bool` flag (or separate read/write helper): write callers pass `true` (persisting pruned unsafe entries under the exclusive lock), while read-only callers pass `false` (returning the pruned in-memory `GlobalProjectRegistry` without writing to disk).
+
+Must still work:
+  - `registry_writes_serialize_on_projects_lock` in `storage_integration.rs`.
+  - All existing `load_global_registry*`, `save_global_registry*`, `register_project*`, `remove_project*`, `set_active_project*`, `credential_accounts_for_root_in`, and `bind_credential_account_in` behavior.
+
+Drops: Read-only `load_global_registry_from` no longer rewrites `projects.toml` on disk when pruning unsafe broad-directory entries (pruning still applies in memory on every read and persists on the next write).
+
+Tests:
+  - `read_only_registry_lookup_succeeds_without_creating_lock_file` in `crates/backend_core/tests/storage_integration.rs`: call `load_global_registry_from` on an empty writable dir -> returns empty default and `projects.lock` does not exist; on Unix, populate a dir with `projects.toml` containing one valid project and one unsafe broad-directory entry (`/`), chmod the dir `0o555` (and restore `0o755` before cleanup) -> both `load_global_registry_from` and `credential_accounts_for_root_in` succeed, return only the valid project (unsafe entry pruned in memory), and do not create `projects.lock`.
+  - `registry_lock_contention_does_not_block_unrelated_registry_dir` in `crates/backend_core/tests/storage_integration.rs`: hold an exclusive `fd_lock` on `dir_a/projects.lock` while a background thread blocks inside `register_project_in(&dir_a, ...)` for ~300ms -> calling `register_project_in(&dir_b, ...)` on a separate directory completes in `< 150ms` while `dir_a` is still contended.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'try_read' crates/backend_core/src/models/registry.rs && grep -q 'fn read_only_registry_lookup_succeeds_without_creating_lock_file' crates/backend_core/tests/storage_integration.rs && grep -q 'fn registry_lock_contention_does_not_block_unrelated_registry_dir' crates/backend_core/tests/storage_integration.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 46B: Add mode-aware `atomic_write_bytes_with_mode`, propagate `ensure_secure_dir` errors, reject implicit `temp_dir()` vault fallback, and harden Windows replace/ACL handling (`BUG-0009` / `AUD-02`)
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 46B: Create vault.key and vault.enc with atomic 0600 permissions, propagate dir/ACL hardening errors, reject implicit temp_dir() vault fallback, and harden Windows replace/icacls
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/storage/atomic.rs
+  - crates/backend_core/src/storage/mod.rs
+  - crates/backend_core/src/crypto/mod.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/lib.rs:722-785 (test_cross_platform_config_dir_resolution_and_path_normalization)
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not break `nebulous_config_dir()` or `resolve_nebulous_config_dir_from(...)` signatures or behavior for non-vault callers.
+
+[PRE_GATE]
+true
+
+[MUTATION_SPEC]
+Goal: `vault.key` and `vault.enc` are never created on disk with wider-than-`0o600` permissions, `ensure_secure_dir` surfaces permission/ACL failures instead of ignoring them, `SecureStorage::new()` refuses to fall back to shared `temp_dir()/nebulous`, and Windows atomic replacement never falls back to destructive `remove_file` + `rename` or PATH-resolved `icacls`.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/storage/atomic.rs` and `crates/backend_core/src/storage/mod.rs`:
+     - Add `pub fn atomic_write_bytes_with_mode(target_path: &Path, contents: &[u8], unix_mode: Option<u32>) -> Result<()>` and re-export it from `crates/backend_core/src/storage/mod.rs`.
+     - Implement `atomic_write_bytes` as `atomic_write_bytes_with_mode(target_path, contents, None)`.
+     - On Unix, when `unix_mode` is `Some(mode)`, create the unique temp file with `OpenOptionsExt::mode(mode)` at open time AND apply `temp_file.set_permissions(fs::Permissions::from_mode(mode))` before `sync_all()` so process umask cannot widen or alter the final mode and no pre-`0o600` window exists. When `unix_mode` is `None`, preserve the existing file's permissions verbatim as before.
+     - On Windows (`#[cfg(windows)]` `replace_target`), remove the `fs::remove_file(target_path)` + `fs::rename(...)` fallback; keep clearing `FILE_ATTRIBUTE_READONLY` and retrying `fs::rename`, returning the error and leaving the existing target intact if all retries fail.
+  2. `crates/backend_core/src/crypto/mod.rs`:
+     - Add `pub fn resolve_nebulous_config_dir_checked(nebulous_override: Option<&str>, xdg_config_home: Option<&str>, appdata: Option<&str>, home: Option<&str>, target_os: &str) -> Result<PathBuf>` and `pub fn try_nebulous_config_dir() -> Result<PathBuf>`: follow the same precedence as `resolve_nebulous_config_dir_from`, but return `Err(TrackerError::ValidationError(...))` instead of `std::env::temp_dir().join("nebulous")` when all config/home variables are unset or empty.
+     - Update `SecureStorage::new()` to call `try_nebulous_config_dir()?` so credential vaults never silently fall back to `/tmp/nebulous` unless the user explicitly sets `NEBULOUS_CONFIG_DIR`. Keep `resolve_nebulous_config_dir_from` and `nebulous_config_dir()` unchanged for existing callers.
+     - Update `save_vault_unlocked` and `load_or_create_vault_master_key` to write `vault.enc` and `vault.key` via `atomic_write_bytes_with_mode(..., Some(0o600))` (retaining `set_secure_file_permissions` so Windows ACLs are still applied).
+     - Update `ensure_secure_dir` to propagate `fs::set_permissions` errors on Unix (`TrackerError::Io`) and on Windows call `restrict_to_current_user(dir, true)?` unconditionally (even if `dir` already existed), propagating errors.
+     - On Windows (`#[cfg(windows)]` `restrict_to_current_user`), resolve `icacls.exe` from `%SystemRoot%\System32\icacls.exe` (falling back to `C:\Windows\System32\icacls.exe` when `SystemRoot` is unset/empty) instead of unqualified `"icacls"`.
+
+Must still work:
+  - `preserves_original_mode_across_atomic_write` and `failed_rename_leaves_target_untouched_and_no_temp_files` in `atomic.rs`.
+  - `test_cross_platform_config_dir_resolution_and_path_normalization` in `lib.rs`.
+  - `SecureStorage::vault_only(temp_dir.path())` and `SecureStorage::with_config_dir(...)` with explicit paths in tests.
+  - `windows_vault_file_acl_is_user_only` on Windows.
+
+Drops: On Windows, `atomic_write_bytes` no longer falls back to non-atomic `remove_file` + `rename` when `MoveFileEx` fails after retries (leaves the existing target intact and returns the I/O error instead).
+
+Tests:
+  - `atomic_write_bytes_with_mode_creates_file_with_0600` in `crates/backend_core/src/storage/atomic.rs` (`#[cfg(all(test, unix))]`): write a brand-new file with `atomic_write_bytes_with_mode(&target, b"secret", Some(0o600))` -> file exists with contents `b"secret"` and mode `0o600`.
+  - `vault_files_created_with_0600_mode` in `crates/backend_core/src/crypto/mod.rs` (`#[cfg(unix)]`): initialize `SecureStorage::vault_only(&dir)` and call `store_secret("testuser", "s3cret")` -> `dir` mode is `0o700` and both `vault.key` and `vault.enc` have mode `0o600`.
+  - `ensure_secure_dir_propagates_permission_error` in `crates/backend_core/src/crypto/mod.rs` (`#[cfg(unix)]`): verify `ensure_secure_dir` tightens an existing `0o755` dir to `0o700`, and returns `Err` when given a path blocked by a regular file or unwritable parent.
+  - `try_nebulous_config_dir_rejects_missing_env_vars` in `crates/backend_core/src/crypto/mod.rs`: `resolve_nebulous_config_dir_checked(None, None, None, None, "linux")` returns `Err(TrackerError::ValidationError(_))`, while `resolve_nebulous_config_dir_checked(Some("/tmp/custom"), None, None, None, "linux")` returns `Ok(PathBuf::from("/tmp/custom"))`.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'pub fn atomic_write_bytes_with_mode' crates/backend_core/src/storage/atomic.rs && grep -q 'pub fn try_nebulous_config_dir' crates/backend_core/src/crypto/mod.rs && grep -q 'fn atomic_write_bytes_with_mode_creates_file_with_0600' crates/backend_core/src/storage/atomic.rs && grep -q 'fn vault_files_created_with_0600_mode' crates/backend_core/src/crypto/mod.rs && grep -q 'fn try_nebulous_config_dir_rejects_missing_env_vars' crates/backend_core/src/crypto/mod.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 46C: Fix `SecureStorage` keyring/vault split-brain and route `git_sync` PAT functions exclusively through `SecureStorage` (`BUG-0011` / `AUD-04`)
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 46C: Prevent stale OS keyring reads on SecureStorage::store_secret failure and route git_sync PAT operations exclusively through SecureStorage
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/crypto/mod.rs
+  - crates/backend_core/src/git_sync/mod.rs
+  - crates/backend_core/tests/credential_hygiene.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/crypto/mod.rs:380-469
+  - crates/backend_core/src/git_sync/mod.rs:20-35,270-365,1474-1542,1956-1990
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change `store_pat_in_keyring`, `get_pat_from_keyring`, `delete_pat_from_keyring`, or `SecureStorage::store_secret` public signatures.
+
+[PRE_GATE]
+grep -q 'atomic_write_bytes_with_mode' crates/backend_core/src/crypto/mod.rs
+
+[MUTATION_SPEC]
+Goal: Updating a secret in `SecureStorage` can never silently leave a stale OS keyring entry that shadows the newly written `vault.enc` value, and `git_sync` PAT helpers/resolution never bypass `SecureStorage`, `KeyPairManager::vault_only`, or `NEBULOUS_DISABLE_KEYRING`.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/crypto/mod.rs`:
+     - Extract a testable helper (e.g. `fn sync_keyring_on_store(set_res: std::result::Result<(), keyring::Error>, delete_fn: impl FnOnce() -> std::result::Result<(), keyring::Error>) -> Result<()>`) called from `SecureStorage::store_secret` when `self.use_keyring` is `true` after `self.write_vault_entry(...)`:
+       - On `Ok(())`: succeed.
+       - On `Err(keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_))`: attempt `delete_fn()` best-effort; if `delete_fn()` returns `Ok(())`, `Err(NoEntry)`, `Err(NoStorageAccess(_))`, or `Err(PlatformFailure(_))`, return `Ok(())` (headless/unavailable keyring, vault is authoritative). Otherwise return `Err(TrackerError::KeyringError(...))`.
+       - On any other `set_password` error (e.g. `TooLong`, `BadEncoding`, `Invalid`, `Ambiguous`): call `delete_fn()` to clear any stale keyring entry; if `delete_fn()` returns `Ok(())` or `Err(NoEntry)`, return `Ok(())` (stale entry removed so `get_secret` reads the updated vault); if `delete_fn()` fails, return `Err(TrackerError::KeyringError(...))` so `get_secret` never silently serves a stale keyring secret.
+  2. `crates/backend_core/src/git_sync/mod.rs`:
+     - Remove direct `keyring::Entry::new` calls and the static plaintext `FALLBACK_PAT_STORE` / `combine_pat_store_results` cache from `git_sync/mod.rs`.
+     - Route `store_pat_in_keyring`, `get_pat_from_keyring`, and `delete_pat_from_keyring` exclusively through `SecureStorage::new()` (`store_secret`, `get_secret_string`, `delete_secret`), preserving token trimming, empty-token `ValidationError`, and never echoing the token in error messages.
+     - In `TrackerStorage::resolve_git_auth_with_manager`: when `manager` is `Some(mgr)`, resolve the PAT exclusively from `mgr` (do NOT fall back to `get_pat_from_keyring(account)` when `mgr` does not have it, so `KeyPairManager::vault_only` never touches the OS keyring or global config dir). Only call `get_pat_from_keyring(account)` when `manager` is `None`.
+     - Replace the obsolete `combine_pat_store_results` unit tests at the bottom of `git_sync/mod.rs` with unit tests verifying `store_pat_in_keyring` rejects empty/whitespace tokens without echoing secrets.
+
+Must still work:
+  - `SecureStorage::vault_only` and `KeyPairManager::vault_only` round-trips in `lib.rs` and `workflow_integration.rs`.
+  - `TrackerStorage::store_pat`, `get_pat`, `delete_pat`, and `resolve_git_auth`.
+
+Drops: `store_pat_in_keyring` no longer writes to a process-local `FALLBACK_PAT_STORE` or succeeds via OS keyring alone when `SecureStorage` vault initialization/write fails; `SecureStorage` (`vault.enc` + optional OS keyring) is the single PAT store.
+
+Tests:
+  - `store_secret_keyring_failure_clears_stale_or_errors` in `crates/backend_core/src/crypto/mod.rs`: exercises `sync_keyring_on_store` across (a) `set_password` `NoStorageAccess` + `delete` `NoStorageAccess` -> `Ok(())`, (b) `set_password` `TooLong` + `delete` `Ok(())` -> `Ok(())`, (c) `set_password` `TooLong` + `delete` `Err(Invalid(...))` -> `Err(TrackerError::KeyringError(_))`.
+  - `vault_only_manager_does_not_fall_back_to_global_keyring_store` in `crates/backend_core/tests/credential_hygiene.rs`: bind an account to a temp project in an isolated `vault_only` `KeyPairManager` without storing a PAT in that vault, call `storage.resolve_git_auth_with_manager(Some(&manager), &GitAuthRequest::default())` -> `resolved.pat` is `None` and no OS keyring lookup occurs.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'fn sync_keyring_on_store' crates/backend_core/src/crypto/mod.rs && grep -q 'fn store_secret_keyring_failure_clears_stale_or_errors' crates/backend_core/src/crypto/mod.rs && grep -q 'fn vault_only_manager_does_not_fall_back_to_global_keyring_store' crates/backend_core/tests/credential_hygiene.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 46D: Pin `libgit2` PAT credentials and disable cross-host redirects to the configured HTTPS remote host (`BUG-0019` / `AUD-14`)
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 46D: Pin HTTPS PAT delivery to the configured remote host and port and set RemoteRedirect::None on libgit2 fetch and push options
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/git_sync/mod.rs
+  - crates/backend_core/tests/credential_hygiene.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/git_sync/mod.rs:585-610,955-1170
+  - crates/backend_core/tests/credential_hygiene.rs:120-215
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not break `git_credential`, `build_auth_callbacks`, or `build_pat_callbacks` existing signatures.
+
+[PRE_GATE]
+true
+
+[MUTATION_SPEC]
+Goal: `libgit2` fetch, pull, and push operations never follow off-site HTTP/HTTPS redirects (`RemoteRedirect::None`) and never send a PAT to any host or port other than the configured `https://` remote URL.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/git_sync/mod.rs`:
+     - Add an `https_host_port(url: &str) -> Option<(String, u16)>` helper that parses `https://` URLs (case-insensitive scheme), strips any `userinfo@` in the authority, handles bracketed IPv6 literals (`[::1]:8443`), lowercases the host, defaults the port to `443` when omitted, and returns `None` for non-`https://` or malformed/empty-host URLs.
+     - Add `pub fn git_credential_for_remote(auth: &GitAuthMaterial, configured_remote_url: Option<&str>, url: &str, username_from_url: Option<&str>, allowed_types: CredentialType) -> std::result::Result<Cred, git2::Error>` and `pub fn build_auth_callbacks_for_remote<'a>(auth: GitAuthMaterial, configured_remote_url: Option<String>) -> RemoteCallbacks<'a>`:
+       - Keep `pub fn git_credential` and `pub fn build_auth_callbacks` delegating with `None` for backward compatibility.
+       - When `configured_remote_url` is `Some(remote_url)`, offer `auth.pat` ONLY if `https_host_port(remote_url)` and `https_host_port(url)` are both `Some` and equal (exact normalized host + port match). If they do not match and `USER_PASS_PLAINTEXT` was requested with a PAT configured, refuse with a `git2::Error` naming host mismatch / configured remote.
+     - In `fetch_repo_with_auth` (both initial `fetch_opts` and `retry_opts`), `push_repo_with_auth` (`push_opts`), and `pull_repo_with_auth` (`fetch_opts`):
+       - Call `.follow_redirects(git2::RemoteRedirect::None)` on every `FetchOptions` and `PushOptions`.
+       - Pass `remote.url().map(str::to_string)` into `build_auth_callbacks_for_remote(auth, remote_url)`.
+
+Must still work:
+  - `pat_is_offered_only_to_https_urls`, `http_remote_never_receives_pat`, and `vault_ssh_key_is_used_from_memory_and_ssh_cache_is_never_created` in `credential_hygiene.rs`.
+  - `build_pat_callbacks` and `build_auth_callbacks` callers in `workflow_integration.rs`.
+
+Drops: Off-site HTTP/HTTPS redirects during `git fetch`, `git pull`, and `git push` are no longer followed automatically (`git2::RemoteRedirect::None`).
+
+Tests:
+  - `pat_is_pinned_to_configured_https_remote_host_and_port` in `crates/backend_core/tests/credential_hygiene.rs`: calls `git_credential_for_remote` with configured remote `https://git.example.com/org/repo.git` -> accepts `https://GIT.EXAMPLE.COM/org/repo.git` and `https://git.example.com:443/org/repo.git`, and rejects `https://evil.example.com/org/repo.git`, `https://sub.git.example.com/org/repo.git`, `https://git.example.com:8443/org/repo.git`, and `http://git.example.com/org/repo.git`.
+  - `fetch_disables_cross_host_redirects` in `crates/backend_core/tests/credential_hygiene.rs`: spawns two local TCP listeners (`origin` returning `302 Found` with `Location: http://127.0.0.1:<target_port>/org/repo.git`, and `target` recording any connections), runs `fetch_repo_with_auth` against `origin` -> `origin` is contacted, `fetch_repo_with_auth` returns `Err`, and `target` receives zero requests.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'pub fn git_credential_for_remote' crates/backend_core/src/git_sync/mod.rs && grep -q 'pub fn build_auth_callbacks_for_remote' crates/backend_core/src/git_sync/mod.rs && grep -q 'RemoteRedirect::None' crates/backend_core/src/git_sync/mod.rs && grep -q 'fn pat_is_pinned_to_configured_https_remote_host_and_port' crates/backend_core/tests/credential_hygiene.rs && grep -q 'fn fetch_disables_cross_host_redirects' crates/backend_core/tests/credential_hygiene.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 46E: Sanitize all single-line untrusted fields and Unicode bidi format chars in `agent_context::synthesize_bounded_prompt` (`BUG-0018` / `AUD-12`)
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 46E: Sanitize all single-line untrusted fields and strip Unicode bidi format characters in agent_context::synthesize_bounded_prompt
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/agent_context/mod.rs
+  - crates/backend_core/tests/workflow_integration.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/agent_context/mod.rs:1-246
+  - crates/backend_core/tests/workflow_integration.rs:2487-2555
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change `AgentContextBundle` fields, `MAX_DESC_BYTES`, `MAX_SHORT_TEXT_BYTES`, or the `synthesize_bounded_prompt` signature.
+
+[PRE_GATE]
+true
+
+[MUTATION_SPEC]
+Goal: Untrusted single-line metadata fields (`item.title`, `phase_id`, `scope.id`, `scope.target`, `tech_stack`, `fix.date`, `fix.commit`, `fix.summary`, paths, `item.id`) cannot inject newlines, Markdown headings/code-span breakouts, control characters, or Unicode bidi overrides into synthesized agent prompts.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/agent_context/mod.rs`:
+     - Add a Unicode bidi format character check covering `U+061C`, `U+200E`, `U+200F`, `U+202A..=U+202E`, and `U+2066..=U+2069`, and strip those characters inside `strip_control` (used by fenced `desc.md` and `scope.scope.description`) as well as in `single_line_safe`.
+     - Add `fn single_line_safe(s: &str) -> String`:
+       - Maps `\r`, `\n`, and `\t` to `' '`.
+       - Strips all `c.is_control()` characters and all Unicode bidi format characters listed above.
+       - Strips backticks (`` ` ``) so untrusted strings cannot break out of inline Markdown code spans.
+     - Apply `single_line_safe` to every single-line interpolated field in `synthesize_bounded_prompt`: `item.id`, `item.title`, `phase_id`, `scope.scope.id`, `scope.scope.target` (both `- **Target Path:**` and `- **Boundary Constraint:**`), every entry of `scope.scope.tech_stack`, `fix.date`, `fix.commit`, `fix.summary` (capping `fix.summary` to `MAX_SHORT_TEXT_BYTES` and collapsing any truncation newline to a space so the blockquote item stays single-line), `scope_rel_path`, `item_rel_path`, and `desc_rel_path`.
+     - Keep `desc.md` and `scope.scope.description` wrapped in adaptive `fenced(...)` as before.
+
+Must still work:
+  - `test_agent_context_exporter_refs_and_bounded_prompt`, `bounded_prompt_caps_desc_md`, `bounded_prompt_strips_control_chars`, and `bounded_prompt_fence_outlasts_backticks` in `workflow_integration.rs`.
+
+Drops: none
+
+Tests:
+  - `bounded_prompt_sanitizes_single_line_fields_and_bidi_chars` in `crates/backend_core/tests/workflow_integration.rs`: constructs a `ScopeManifest` and `ItemDetail` containing `\n## INJECTED`, `\r`, `\t`, backticks, `\x1b[31m`, and bidi override `\u{202E}` across `item.title`, `scope.id`, `scope.target`, `tech_stack`, `fix.date`, `fix.commit`, `fix.summary`, and `desc.md`; calls `synthesize_bounded_prompt(...)` -> output contains no `\x1b`, no `\u{202E}`, no line starting with `## INJECTED`, and every single-line heading/bullet/blockquote line stays on a single line without backtick code-span breakout.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'fn single_line_safe' crates/backend_core/src/agent_context/mod.rs && grep -q 'fn bounded_prompt_sanitizes_single_line_fields_and_bidi_chars' crates/backend_core/tests/workflow_integration.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 46F: Zeroize `GitAuthMaterial::pat` and guard SSH passphrase stripping (`TASK-0110` non-breaking slice / `AUD-13`)
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 46F: Wrap GitAuthMaterial::pat in Zeroizing<String> and add an explicit passphrase-stripping policy guard on SSH key import
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/git_sync/mod.rs
+  - crates/backend_core/src/crypto/keys.rs
+  - crates/backend_core/tests/credential_hygiene.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/git_sync/mod.rs:238-270,590-608,957-1010,1486-1526
+  - crates/backend_core/src/crypto/keys.rs:19-64,124-205,249-335
+  - crates/backend_core/src/lib.rs:652-693
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change vault.enc format, vault.key KDF (parked), or break existing `KeyPairManager::import_ssh_keypair` callers.
+
+[PRE_GATE]
+grep -q 'build_auth_callbacks_for_remote' crates/backend_core/src/git_sync/mod.rs && grep -q 'fn sync_keyring_on_store' crates/backend_core/src/crypto/mod.rs
+
+[MUTATION_SPEC]
+Goal: HTTPS PATs remain inside `Zeroizing<String>` throughout `GitAuthMaterial` and auth resolution, and callers importing passphrase-protected OpenSSH keys can refuse passphrase stripping or observe `passphrase_stripped: true` on the returned record.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/git_sync/mod.rs`:
+     - Change `GitAuthMaterial.pat` from `Option<String>` to `Option<Zeroizing<String>>` (using `crate::crypto::Zeroizing`).
+     - Update `GitAuthMaterial::has_pat`, `pat_for_url`, `build_pat_callbacks`, and `TrackerStorage::resolve_git_auth_with_manager` to keep PATs in `Zeroizing<String>` (using `mgr.get_pat(account)` instead of `mgr.get_pat_string(account)` and wrapping `request.pat` / fallback `get_pat_from_keyring` results in `Zeroizing::new`).
+     - Keep `Debug` redaction (`"<REDACTED>"`) intact on `GitAuthMaterial`.
+  2. `crates/backend_core/src/crypto/keys.rs`:
+     - Add `pub passphrase_stripped: bool` to `SshKeyPairRecord` (set `true` only when an encrypted OpenSSH private key was decrypted and persisted unencrypted inside `SecureStorage`; `false` for generated keys, unencrypted imports, and `get_ssh_keypair` reads).
+     - Add `pub fn import_ssh_keypair_with_policy(&self, account: &str, private_key_openssh: &str, passphrase: Option<&str>, allow_strip_passphrase: bool) -> Result<SshKeyPairRecord>`:
+       - When `outer.is_encrypted()` and `!allow_strip_passphrase`, return `Err(TrackerError::ValidationError(...))` refusing to strip the passphrase without decrypting or storing the key.
+       - When `outer.is_encrypted()` and `allow_strip_passphrase`, decrypt with `passphrase`, persist into `SecureStorage`, and return `SshKeyPairRecord` with `passphrase_stripped: true`.
+       - When `!outer.is_encrypted()`, import normally with `passphrase_stripped: false`.
+     - Keep `KeyPairManager::import_ssh_keypair` delegating to `import_ssh_keypair_with_policy(..., true)` for backward compatibility.
+  3. `crates/backend_core/tests/credential_hygiene.rs`:
+     - Update the two existing `GitAuthMaterial { pat: Some(...) }` test literals to `Some(Zeroizing::new(SECRET_PAT.to_string()))`.
+
+Must still work:
+  - All existing tests in `lib.rs` (including passphrase-encrypted key import via `import_ssh_keypair`), `credential_hygiene.rs`, and `workflow_integration.rs`.
+
+Drops: none
+
+Tests:
+  - `import_ssh_keypair_with_policy_guards_passphrase_stripping` in `crates/backend_core/tests/credential_hygiene.rs`: builds/uses an encrypted OpenSSH Ed25519 test key (comment `testuser@example.com`), calls `import_ssh_keypair_with_policy("testuser/strict", &enc_pem, Some("test-passphrase"), false)` -> returns `Err(TrackerError::ValidationError(_))` and does not store the key; calling with `allow_strip_passphrase = true` -> returns `Ok(record)` with `record.passphrase_stripped == true`; importing an unencrypted key with `allow_strip_passphrase = false` -> returns `Ok(record)` with `record.passphrase_stripped == false`.
+  - `git_auth_material_keeps_pat_zeroizing_and_redacts_debug` in `crates/backend_core/tests/credential_hygiene.rs`: constructs `GitAuthMaterial` with `Some(Zeroizing::new(...))`, verifies `has_pat()` is `true` and `format!("{auth:?}")` contains `"<REDACTED>"` and does not contain the secret token.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'pub pat: Option<Zeroizing<String>>' crates/backend_core/src/git_sync/mod.rs && grep -q 'pub fn import_ssh_keypair_with_policy' crates/backend_core/src/crypto/keys.rs && grep -q 'pub passphrase_stripped: bool' crates/backend_core/src/crypto/keys.rs && grep -q 'fn import_ssh_keypair_with_policy_guards_passphrase_stripping' crates/backend_core/tests/credential_hygiene.rs && grep -q 'fn git_auth_material_keeps_pat_zeroizing_and_redacts_debug' crates/backend_core/tests/credential_hygiene.rs
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.

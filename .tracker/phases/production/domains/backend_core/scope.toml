@@ -794,3 +794,45 @@ title = "Add AtomicBool shutdown signal to TrackerWatcher::drop (including conte
 status = "closed"
 severity = "medium"
 created_at = "2026-11-26T14:47:37Z"
+
+[[items.tasks]]
+id = "TASK-0130"
+title = "Fix read-only registry lookups (projects.lock shared/read-only open, per-path lock map, no prune write on read) (BUG-0033)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-27T01:59:57Z"
+
+[[items.tasks]]
+id = "TASK-0131"
+title = "Add mode-aware atomic_write_bytes_with_mode (0o600), propagate ensure_secure_dir errors, reject implicit temp_dir() vault fallback, and harden Windows replace/ACL handling (BUG-0009 / AUD-02)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-27T01:59:57Z"
+
+[[items.tasks]]
+id = "TASK-0132"
+title = "Fix SecureStorage keyring/vault split-brain and route git_sync PAT functions exclusively through SecureStorage (BUG-0011 / AUD-04)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-27T01:59:57Z"
+
+[[items.tasks]]
+id = "TASK-0133"
+title = "Pin libgit2 PAT credentials and disable cross-host redirects (RemoteRedirect::None) to the configured HTTPS remote host (BUG-0019 / AUD-14)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-27T01:59:58Z"
+
+[[items.tasks]]
+id = "TASK-0134"
+title = "Sanitize all single-line untrusted fields and Unicode bidi format chars in agent_context::synthesize_bounded_prompt (BUG-0018 / AUD-12)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-27T01:59:58Z"
+
+[[items.tasks]]
+id = "TASK-0135"
+title = "Zeroize GitAuthMaterial::pat (Option<Zeroizing<String>>) and guard SSH passphrase stripping in KeyPairManager (TASK-0110 non-breaking slice / AUD-13)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-27T01:59:58Z"
