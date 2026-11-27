@@ -2,11 +2,11 @@
 id = "BUG-0011"
 type = "bug"
 title = "[AUD-04] SecureStorage keyring-first read + silent keyring write failure causes credential split-brain"
-status = "open"
+status = "closed"
 severity = "high"
 scope_ref = "backend_core"
 created_at = "2026-11-25T03:28:23Z"
-updated_at = "2026-11-25T03:28:23Z"
+updated_at = "2026-11-27T03:19:02Z"
 
 [effort]
 logged_time_minutes = 0
@@ -14,4 +14,8 @@ iteration_count = 1
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-27"
+commit = "635e541"
+summary = "Fixed in Phase 28 STEP 46C: sync_keyring_on_store clears stale keyring entries and git_sync PAT helpers route exclusively through SecureStorage (test gap tracked in BUG-0037)"

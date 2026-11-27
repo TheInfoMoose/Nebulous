@@ -77,7 +77,7 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.bugs]]
 id = "BUG-0009"
 title = "[AUD-02] Pre-0600 creation window, ignored dir/ACL hardening errors, and /tmp/nebulous fallback for vault files"
-status = "open"
+status = "closed"
 severity = "high"
 created_at = "2026-11-25T03:28:23Z"
 
@@ -91,7 +91,7 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.bugs]]
 id = "BUG-0011"
 title = "[AUD-04] SecureStorage keyring-first read + silent keyring write failure causes credential split-brain"
-status = "open"
+status = "closed"
 severity = "high"
 created_at = "2026-11-25T03:28:23Z"
 
@@ -119,7 +119,7 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.bugs]]
 id = "BUG-0018"
 title = "[AUD-12] agent_context::synthesize_bounded_prompt fails to sanitize/fence untrusted single-line fields"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-25T03:28:23Z"
 
@@ -189,7 +189,7 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.bugs]]
 id = "BUG-0033"
 title = "Read-only registry lookups open projects.lock for write and fail on read-only config dirs"
-status = "pending"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-26T16:39:35Z"
 
@@ -199,6 +199,34 @@ title = "Sibling component read-modify-write paths lack outer with_write_lock (C
 status = "pending"
 severity = "medium"
 created_at = "2026-11-26T16:39:35Z"
+
+[[items.bugs]]
+id = "BUG-0035"
+title = "git_credential_for_remote blocks SSH fallback on non-HTTPS remotes when PAT is present"
+status = "pending"
+severity = "high"
+created_at = "2026-11-27T03:13:44Z"
+
+[[items.bugs]]
+id = "BUG-0036"
+title = "push_repo_with_auth pins PAT to remote.url() instead of remote.pushurl()"
+status = "pending"
+severity = "medium"
+created_at = "2026-11-27T03:13:45Z"
+
+[[items.bugs]]
+id = "BUG-0037"
+title = "vault_only_manager_does_not_fall_back_to_global_keyring_store never seeds global store"
+status = "pending"
+severity = "low"
+created_at = "2026-11-27T03:13:46Z"
+
+[[items.bugs]]
+id = "BUG-0038"
+title = "ensure_secure_dir_propagates_permission_error does not test set_permissions failure"
+status = "pending"
+severity = "low"
+created_at = "2026-11-27T03:13:46Z"
 
 [[items.features]]
 id = "FEAT-0001"

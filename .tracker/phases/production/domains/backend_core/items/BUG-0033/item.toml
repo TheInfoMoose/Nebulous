@@ -2,11 +2,11 @@
 id = "BUG-0033"
 type = "bug"
 title = "Read-only registry lookups open projects.lock for write and fail on read-only config dirs"
-status = "pending"
+status = "closed"
 severity = "medium"
 scope_ref = "backend_core"
 created_at = "2026-11-26T16:39:35Z"
-updated_at = "2026-11-26T16:39:58Z"
+updated_at = "2026-11-27T03:19:02Z"
 
 [effort]
 logged_time_minutes = 0
@@ -14,4 +14,8 @@ iteration_count = 1
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-27"
+commit = "68bbb7c"
+summary = "Fixed in Phase 28 STEP 46A: read-only registry lookups use shared lock without creating projects.lock, per-path lock table, in-memory prune on read"
