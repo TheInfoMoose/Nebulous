@@ -437,19 +437,7 @@ impl SecureStorage {
 
         if self.use_keyring {
             if let Ok(entry) = keyring::Entry::new(&self.service_name, &normalized_key) {
-                match entry.set_password(secret) {
-                    Ok(()) => {}
-                    Err(
-                        keyring::Error::PlatformFailure(_)
-                        | keyring::Error::NoStorageAccess(_)
-                        | keyring::Error::NoEntry,
-                    ) => {
-                        // Gracefully fall back to the AES-256-GCM encrypted vault.
-                    }
-                    Err(_) => {
-                        // Vault write already succeeded; do not fail if keyring backend rejects.
-                    }
-                }
+                sync_keyring_on_store(entry.set_password(secret), || entry.delete_credential())?;
             }
         }
 
@@ -755,6 +743,36 @@ pub(crate) fn set_secure_file_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Synchronizes the OS keyring after `vault.enc` has been updated so a failed keyring write can
+/// never silently leave behind a stale OS keyring entry that shadows the newly stored vault value.
+fn sync_keyring_on_store(
+    set_res: std::result::Result<(), keyring::Error>,
+    delete_fn: impl FnOnce() -> std::result::Result<(), keyring::Error>,
+) -> Result<()> {
+    match set_res {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_)) => {
+            match delete_fn() {
+                Ok(())
+                | Err(
+                    keyring::Error::NoEntry
+                    | keyring::Error::NoStorageAccess(_)
+                    | keyring::Error::PlatformFailure(_),
+                ) => Ok(()),
+                Err(del_err) => Err(TrackerError::KeyringError(format!(
+                    "OS keyring unavailable on store and failed to clear potentially stale entry: {del_err}"
+                ))),
+            }
+        }
+        Err(set_err) => match delete_fn() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(del_err) => Err(TrackerError::KeyringError(format!(
+                "Failed to update OS keyring ({set_err}) and failed to clear stale keyring entry ({del_err})"
+            ))),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -870,5 +888,55 @@ mod tests {
             resolve_nebulous_config_dir_checked(Some("/tmp/custom"), None, None, None, "linux")
                 .unwrap();
         assert_eq!(ok, PathBuf::from("/tmp/custom"));
+    }
+
+    #[test]
+    fn store_secret_keyring_failure_clears_stale_or_errors() {
+        let mut called = false;
+        let res = sync_keyring_on_store(
+            Err(keyring::Error::NoStorageAccess(Box::new(
+                std::io::Error::other("keyring locked"),
+            ))),
+            || {
+                called = true;
+                Err(keyring::Error::NoStorageAccess(Box::new(
+                    std::io::Error::other("keyring locked"),
+                )))
+            },
+        );
+        assert!(called);
+        assert!(res.is_ok(), "unavailable keyring should fall back: {res:?}");
+
+        let mut called = false;
+        let res = sync_keyring_on_store(
+            Err(keyring::Error::TooLong("password".to_string(), 1024)),
+            || {
+                called = true;
+                Ok(())
+            },
+        );
+        assert!(called);
+        assert!(
+            res.is_ok(),
+            "cleared stale keyring entry should succeed: {res:?}"
+        );
+
+        let mut called = false;
+        let err = sync_keyring_on_store(
+            Err(keyring::Error::TooLong("password".to_string(), 1024)),
+            || {
+                called = true;
+                Err(keyring::Error::Invalid(
+                    "entry".to_string(),
+                    "corrupt".to_string(),
+                ))
+            },
+        )
+        .expect_err("failed stale-entry cleanup must return KeyringError");
+        assert!(called);
+        assert!(
+            matches!(err, TrackerError::KeyringError(_)),
+            "expected KeyringError, got {err:?}"
+        );
     }
 }

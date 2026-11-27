@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use backend_core::{
     fetch_repo_with_auth, git_credential, nebulous_config_dir, purge_legacy_ssh_cache,
-    redact_url_userinfo, GitAuthMaterial, KeyPairManager, McpServer, SecureStorage, TrackerStorage,
-    LEGACY_SSH_CACHE_DIR_NAME,
+    redact_url_userinfo, GitAuthMaterial, GitAuthRequest, KeyPairManager, McpServer, SecureStorage,
+    TrackerStorage, LEGACY_SSH_CACHE_DIR_NAME,
 };
 use git2::{CredentialType, Repository};
 use serde_json::json;
@@ -275,4 +275,31 @@ fn legacy_ssh_cache_is_purged_when_the_vault_opens() {
 
     // Idempotent when absent.
     assert!(!purge_legacy_ssh_cache(&cfg).unwrap());
+}
+
+#[test]
+fn vault_only_manager_does_not_fall_back_to_global_keyring_store() {
+    let dir = TempDir::new().unwrap();
+    let repo_dir = dir.path().join("repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    let storage = init_tracker_repo(&repo_dir, "https://example.com/org/repo.git");
+
+    let vault_dir = dir.path().join("vault");
+    let manager = KeyPairManager::vault_only(&vault_dir).expect("vault_only manager");
+    assert!(
+        !manager.storage().uses_keyring(),
+        "vault_only manager must not enable OS keyring"
+    );
+
+    storage
+        .bind_credential_account_in(manager.storage().config_dir(), "testuser/isolated")
+        .expect("bind credential account in isolated vault dir");
+
+    let resolved = storage
+        .resolve_git_auth_with_manager(Some(&manager), &GitAuthRequest::default())
+        .expect("resolve_git_auth_with_manager");
+    assert!(
+        resolved.pat.is_none(),
+        "vault_only manager without a stored PAT must not fall back to global keyring store"
+    );
 }

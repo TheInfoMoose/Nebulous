@@ -1,6 +1,4 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 
 use crate::models::time::today_date_string;
 use git2::{
@@ -21,12 +19,6 @@ use crate::workflow::lifecycle::now_rfc3339;
 
 /// OS keyring service identifier for Nebulous Personal Access Tokens (PATs).
 pub const KEYRING_SERVICE: &str = "nebulous-tracker";
-
-static FALLBACK_PAT_STORE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-
-fn fallback_store() -> &'static Mutex<HashMap<String, String>> {
-    FALLBACK_PAT_STORE.get_or_init(|| Mutex::new(HashMap::new()))
-}
 
 /// Summary of the Git repository state relevant to the workspace and `.tracker/`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,80 +270,19 @@ pub fn store_pat_in_keyring(project_name: &str, token: &str) -> Result<()> {
         ));
     }
 
-    let vault_result =
-        SecureStorage::new().and_then(|sec| sec.store_secret(&account, trimmed_token));
-    let keyring_result = keyring::Entry::new(KEYRING_SERVICE, &account)
-        .and_then(|entry| entry.set_password(trimmed_token))
-        .map_err(|err| TrackerError::KeyringError(err.to_string()));
-    combine_pat_store_results(&account, trimmed_token, keyring_result, vault_result)
+    SecureStorage::new()?.store_secret(&account, trimmed_token)
 }
 
-/// Succeeds when at least one durable store (OS keyring or encrypted vault) accepted the PAT.
-/// The process-local fallback cache is only populated after a durable write succeeded.
-fn combine_pat_store_results(
-    account: &str,
-    token: &str,
-    keyring_result: Result<()>,
-    vault_result: Result<()>,
-) -> Result<()> {
-    match (keyring_result, vault_result) {
-        (Err(keyring_err), Err(vault_err)) => Err(TrackerError::KeyringError(format!(
-            "Failed to store Personal Access Token (PAT) for '{account}': OS keyring: {keyring_err}; encrypted vault: {vault_err}"
-        ))),
-        _ => {
-            if let Ok(mut guard) = fallback_store().lock() {
-                guard.insert(account.to_string(), token.to_string());
-            }
-            Ok(())
-        }
-    }
-}
-
-/// Retrieves a Personal Access Token (PAT) for `project_name` from the OS keyring or encrypted vault.
+/// Retrieves a Personal Access Token (PAT) for `project_name` from [`SecureStorage`].
 pub fn get_pat_from_keyring(project_name: &str) -> Result<String> {
     let account = normalize_keyring_account(project_name)?;
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &account)?;
-    if let Ok(password) = entry.get_password() {
-        return Ok(password);
-    }
-
-    if let Ok(sec) = SecureStorage::new() {
-        if let Ok(secret) = sec.get_secret_string(&account) {
-            return Ok(secret);
-        }
-    }
-
-    if let Ok(guard) = fallback_store().lock() {
-        if let Some(cached) = guard.get(&account) {
-            return Ok(cached.clone());
-        }
-    }
-
-    Err(TrackerError::KeyringError(format!(
-        "Personal Access Token (PAT) for '{account}' not found in OS keyring or encrypted vault"
-    )))
+    SecureStorage::new()?.get_secret_string(&account)
 }
 
-/// Deletes a stored Personal Access Token (PAT) for `project_name` from the OS keyring and encrypted vault.
+/// Deletes a stored Personal Access Token (PAT) for `project_name` from [`SecureStorage`].
 pub fn delete_pat_from_keyring(project_name: &str) -> Result<()> {
     let account = normalize_keyring_account(project_name)?;
-    let had_fallback = fallback_store()
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.remove(&account))
-        .is_some();
-
-    let had_vault = SecureStorage::new()
-        .ok()
-        .map(|sec| sec.delete_secret(&account).is_ok())
-        .unwrap_or(false);
-
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &account)?;
-    match entry.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(_) if had_fallback || had_vault => Ok(()),
-        Err(err) => Err(TrackerError::KeyringError(err.to_string())),
-    }
+    SecureStorage::new()?.delete_secret(&account)
 }
 
 fn normalize_keyring_account(project_name: &str) -> Result<String> {
@@ -1503,9 +1434,10 @@ impl TrackerStorage {
 
         if let Some(ref account) = account {
             if pat.is_none() {
-                pat = manager
-                    .and_then(|mgr| mgr.get_pat_string(account).ok())
-                    .or_else(|| get_pat_from_keyring(account).ok());
+                pat = match manager {
+                    Some(mgr) => mgr.get_pat_string(account).ok(),
+                    None => get_pat_from_keyring(account).ok(),
+                };
             }
             if let Some(mgr) = manager {
                 ssh_keypair = mgr.get_ssh_keypair(account).ok();
@@ -1957,34 +1889,33 @@ impl TrackerStorage {
 mod tests {
     use super::*;
 
-    fn keyring_err() -> Result<()> {
-        Err(TrackerError::KeyringError("no secret service".to_string()))
-    }
-
-    fn vault_err() -> Result<()> {
-        Err(TrackerError::ValidationError(
-            "vault unwritable".to_string(),
-        ))
+    #[test]
+    fn store_pat_in_keyring_rejects_empty_and_whitespace_tokens() {
+        for bad_token in ["", "   ", "\t\n"] {
+            let err = store_pat_in_keyring("testuser/repo", bad_token)
+                .expect_err("empty/whitespace PAT must be rejected");
+            assert!(
+                matches!(err, TrackerError::ValidationError(_)),
+                "expected ValidationError, got {err:?}"
+            );
+            let msg = err.to_string();
+            assert!(msg.contains("must not be empty"), "{msg}");
+            assert!(!msg.contains("testuser/repo"), "{msg}");
+        }
     }
 
     #[test]
-    fn store_pat_errors_when_keyring_and_vault_both_fail() {
-        let account = "step11/both-fail";
-        let err = combine_pat_store_results(account, "tok", keyring_err(), vault_err())
-            .expect_err("both stores failing must be an error");
+    fn store_pat_in_keyring_rejects_empty_account_without_echoing_secret() {
+        let secret = "ghp_secret_never_echo_me";
+        let err = store_pat_in_keyring("   ", secret).expect_err("empty account must be rejected");
+        assert!(
+            matches!(err, TrackerError::ValidationError(_)),
+            "expected ValidationError, got {err:?}"
+        );
         let msg = err.to_string();
         assert!(
-            msg.contains("OS keyring") && msg.contains("encrypted vault"),
-            "{msg}"
+            !msg.contains(secret),
+            "error message must not echo secret: {msg}"
         );
-        assert!(!msg.contains("tok"), "error must not echo the token");
-        // Nothing was cached in-process for a failed store.
-        assert!(fallback_store().lock().unwrap().get(account).is_none());
-    }
-
-    #[test]
-    fn store_pat_succeeds_when_either_durable_store_succeeds() {
-        assert!(combine_pat_store_results("step11/kr-ok", "t", Ok(()), vault_err()).is_ok());
-        assert!(combine_pat_store_results("step11/vault-ok", "t", keyring_err(), Ok(())).is_ok());
     }
 }
