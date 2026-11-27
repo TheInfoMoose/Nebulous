@@ -812,7 +812,7 @@ created_at = "2026-11-27T01:59:57Z"
 [[items.tasks]]
 id = "TASK-0132"
 title = "Fix SecureStorage keyring/vault split-brain and route git_sync PAT functions exclusively through SecureStorage (BUG-0011 / AUD-04)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-27T01:59:57Z"
 
