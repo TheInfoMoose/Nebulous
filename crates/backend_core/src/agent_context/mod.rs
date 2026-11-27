@@ -13,9 +13,27 @@ pub const MAX_DESC_BYTES: usize = 16 * 1024;
 /// in a synthesized agent prompt (OQ14-5: 1 KiB).
 pub const MAX_SHORT_TEXT_BYTES: usize = 1024;
 
+fn is_bidi_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
 fn strip_control(s: &str) -> String {
     s.chars()
-        .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
+        .filter(|&c| (!c.is_control() || c == '\n' || c == '\t') && !is_bidi_format(c))
+        .collect()
+}
+
+fn single_line_safe(s: &str) -> String {
+    s.chars()
+        .filter_map(|c| match c {
+            '\r' | '\n' | '\t' => Some(' '),
+            '`' => None,
+            c if c.is_control() || is_bidi_format(c) => None,
+            c => Some(c),
+        })
         .collect()
 }
 
@@ -142,30 +160,40 @@ pub fn synthesize_bounded_prompt(
     let effort = &detail.manifest.effort;
     let history = &detail.manifest.history;
 
+    let item_id = single_line_safe(&item.id);
+    let item_title = single_line_safe(&item.title);
+    let phase_id_safe = single_line_safe(phase_id);
+    let scope_id_safe = single_line_safe(&scope.scope.id);
+    let scope_target_safe = single_line_safe(&scope.scope.target);
+    let scope_rel_safe = single_line_safe(scope_rel_path);
+    let item_rel_safe = single_line_safe(item_rel_path);
+    let desc_rel_safe = single_line_safe(desc_rel_path);
+
     let tech_stack_str = if scope.scope.tech_stack.is_empty() {
         "none specified".to_string()
     } else {
-        scope.scope.tech_stack.join(", ")
+        scope
+            .scope
+            .tech_stack
+            .iter()
+            .map(|entry| single_line_safe(entry))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     let mut out = String::with_capacity(1024);
 
-    let _ = writeln!(
-        out,
-        "# Bounded Agent Task: {} — {}",
-        item.id,
-        strip_control(&item.title)
-    );
+    let _ = writeln!(out, "# Bounded Agent Task: {item_id} — {item_title}");
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "**Context Files:** `@{scope_rel_path}` `@{item_rel_path}` `@{desc_rel_path}`"
+        "**Context Files:** `@{scope_rel_safe}` `@{item_rel_safe}` `@{desc_rel_safe}`"
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "## 1. Strict Domain Scope & Crate Boundary");
-    let _ = writeln!(out, "- **Phase:** `{phase_id}`");
-    let _ = writeln!(out, "- **Scope ID:** `{}`", scope.scope.id);
-    let _ = writeln!(out, "- **Target Path:** `{}`", scope.scope.target);
+    let _ = writeln!(out, "- **Phase:** `{phase_id_safe}`");
+    let _ = writeln!(out, "- **Scope ID:** `{scope_id_safe}`");
+    let _ = writeln!(out, "- **Target Path:** `{scope_target_safe}`");
     let _ = writeln!(out, "- **Tech Stack:** {tech_stack_str}");
     if let Some(desc) = scope
         .scope
@@ -178,13 +206,12 @@ pub fn synthesize_bounded_prompt(
     }
     let _ = writeln!(
         out,
-        "- **Boundary Constraint:** Restrict all code modifications strictly to `{}`. Do NOT modify unrelated crates or UI/CLI layers outside this scope.",
-        scope.scope.target
+        "- **Boundary Constraint:** Restrict all code modifications strictly to `{scope_target_safe}`. Do NOT modify unrelated crates or UI/CLI layers outside this scope."
     );
     let _ = writeln!(out);
 
     let _ = writeln!(out, "## 2. Item Metadata & Historical Fix Ledger");
-    let _ = writeln!(out, "- **Item ID:** `{}`", item.id);
+    let _ = writeln!(out, "- **Item ID:** `{item_id}`");
     let _ = writeln!(out, "- **Type:** `{}`", item.item_type);
     let _ = writeln!(out, "- **Status:** `{}`", item.status);
     let _ = writeln!(out, "- **Severity:** `{}`", item.severity);
@@ -207,14 +234,16 @@ pub fn synthesize_bounded_prompt(
             "> This item has previous fix attempts recorded in `previous_fixes`. Review them carefully and DO NOT repeat failed or incomplete patches:"
         );
         for (idx, fix) in history.previous_fixes.iter().enumerate() {
+            let date = single_line_safe(&fix.date);
+            let commit = single_line_safe(&fix.commit);
             let summary =
-                cap_bytes(&strip_control(&fix.summary), MAX_SHORT_TEXT_BYTES).replace('\n', " ");
+                cap_bytes(&single_line_safe(&fix.summary), MAX_SHORT_TEXT_BYTES).replace('\n', " ");
             let _ = writeln!(
                 out,
                 "> {}. **[{}]** (commit `{}`): {}",
                 idx + 1,
-                fix.date,
-                fix.commit,
+                date,
+                commit,
                 summary
             );
         }
