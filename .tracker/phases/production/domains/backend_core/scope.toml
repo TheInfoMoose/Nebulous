@@ -805,7 +805,7 @@ created_at = "2026-11-27T01:59:57Z"
 [[items.tasks]]
 id = "TASK-0131"
 title = "Add mode-aware atomic_write_bytes_with_mode (0o600), propagate ensure_secure_dir errors, reject implicit temp_dir() vault fallback, and harden Windows replace/ACL handling (BUG-0009 / AUD-02)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-27T01:59:57Z"
 
