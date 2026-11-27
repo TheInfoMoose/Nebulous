@@ -518,24 +518,71 @@ pub fn redact_url_userinfo(url: &str) -> String {
     }
 }
 
-/// Returns `true` only for `https://` URLs; PATs are never offered over other transports.
-fn url_allows_pat(url: &str) -> bool {
-    url.trim_start()
-        .get(..8)
-        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
-}
-
-/// Returns the PAT to offer for `url`, or `None` when the transport did not ask for
-/// user/password credentials or the URL is not `https://`.
-fn pat_for_url<'a>(
-    auth: &'a GitAuthMaterial,
-    url: &str,
-    allowed_types: CredentialType,
-) -> Option<&'a str> {
-    if !allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) || !url_allows_pat(url) {
+/// Parses an `https://` URL (case-insensitive scheme) into its normalized `(host, port)`.
+///
+/// Strips any `userinfo@` in the authority, handles bracketed IPv6 literals (`[::1]:8443`),
+/// lowercases the host, and defaults the port to `443` when omitted. Returns `None` for
+/// non-`https://` or malformed/empty-host URLs.
+fn https_host_port(url: &str) -> Option<(String, u16)> {
+    let trimmed = url.trim();
+    let scheme = trimmed.get(..8)?;
+    if !scheme.eq_ignore_ascii_case("https://") {
         return None;
     }
-    auth.pat.as_deref().filter(|t| !t.trim().is_empty())
+    let rest = &trimmed[8..];
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty()
+        || authority
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+    {
+        return None;
+    }
+    let host_port = match authority.rfind('@') {
+        Some(at) => &authority[at + 1..],
+        None => authority,
+    };
+    if host_port.is_empty() {
+        return None;
+    }
+
+    if host_port.starts_with('[') {
+        let close = host_port.find(']')?;
+        let inner = &host_port[1..close];
+        if inner.is_empty() || inner.contains(['[', ']']) {
+            return None;
+        }
+        let host = host_port[..=close].to_ascii_lowercase();
+        let after = &host_port[close + 1..];
+        if after.is_empty() {
+            Some((host, 443))
+        } else if let Some(port_str) = after.strip_prefix(':') {
+            if port_str.is_empty() || !port_str.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let port = port_str.parse::<u16>().ok()?;
+            (port != 0).then_some((host, port))
+        } else {
+            None
+        }
+    } else {
+        if host_port.contains(['[', ']']) {
+            return None;
+        }
+        if let Some((host, port_str)) = host_port.split_once(':') {
+            if host.is_empty()
+                || port_str.is_empty()
+                || !port_str.bytes().all(|b| b.is_ascii_digit())
+            {
+                return None;
+            }
+            let port = port_str.parse::<u16>().ok()?;
+            (port != 0).then_some((host.to_ascii_lowercase(), port))
+        } else {
+            Some((host_port.to_ascii_lowercase(), 443))
+        }
+    }
 }
 
 fn is_tracker_relative_path(path: &str) -> bool {
@@ -902,9 +949,13 @@ pub fn build_pat_callbacks<'a>(pat: Option<&'a str>) -> RemoteCallbacks<'a> {
     build_auth_callbacks(auth)
 }
 
-/// Builds `git2::RemoteCallbacks` capable of authenticating via HTTPS PAT or SSH credentials
+/// Builds `git2::RemoteCallbacks` capable of authenticating via HTTPS PAT (pinned to
+/// `configured_remote_url`'s HTTPS host and port when provided) or SSH credentials
 /// (`SecureStorage` / `KeyPairManager` OpenSSH keypair, `~/.ssh/id_ed25519`, or `SSH_AUTH_SOCK`).
-pub fn build_auth_callbacks<'a>(auth: GitAuthMaterial) -> RemoteCallbacks<'a> {
+pub fn build_auth_callbacks_for_remote<'a>(
+    auth: GitAuthMaterial,
+    configured_remote_url: Option<String>,
+) -> RemoteCallbacks<'a> {
     let mut callbacks = RemoteCallbacks::new();
     let mut attempts: u8 = 0;
 
@@ -915,10 +966,22 @@ pub fn build_auth_callbacks<'a>(auth: GitAuthMaterial) -> RemoteCallbacks<'a> {
                 "Maximum Git authentication attempts exceeded",
             ));
         }
-        git_credential(&auth, url, username_from_url, allowed_types)
+        git_credential_for_remote(
+            &auth,
+            configured_remote_url.as_deref(),
+            url,
+            username_from_url,
+            allowed_types,
+        )
     });
 
     callbacks
+}
+
+/// Builds `git2::RemoteCallbacks` capable of authenticating via HTTPS PAT or SSH credentials
+/// (`SecureStorage` / `KeyPairManager` OpenSSH keypair, `~/.ssh/id_ed25519`, or `SSH_AUTH_SOCK`).
+pub fn build_auth_callbacks<'a>(auth: GitAuthMaterial) -> RemoteCallbacks<'a> {
+    build_auth_callbacks_for_remote(auth, None)
 }
 
 /// Produces one credential for a `libgit2` credential request.
@@ -931,9 +994,44 @@ pub fn git_credential(
     username_from_url: Option<&str>,
     allowed_types: CredentialType,
 ) -> std::result::Result<Cred, git2::Error> {
-    if let Some(token) = pat_for_url(auth, url, allowed_types) {
-        let user = username_from_url.unwrap_or("x-access-token");
-        return Cred::userpass_plaintext(user, token);
+    git_credential_for_remote(auth, None, url, username_from_url, allowed_types)
+}
+
+/// Produces one credential for a `libgit2` credential request, optionally pinning HTTPS PAT
+/// delivery to the exact normalized host and port of `configured_remote_url`.
+///
+/// - When `configured_remote_url` is `Some(remote_url)`, `auth.pat` is offered only if both
+///   `remote_url` and `url` are valid `https://` URLs with identical normalized `(host, port)`.
+/// - Vault SSH keys are handed to `libgit2` from memory only; no key material is written to disk.
+pub fn git_credential_for_remote(
+    auth: &GitAuthMaterial,
+    configured_remote_url: Option<&str>,
+    url: &str,
+    username_from_url: Option<&str>,
+    allowed_types: CredentialType,
+) -> std::result::Result<Cred, git2::Error> {
+    if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) {
+        if let Some(token) = auth.pat.as_deref().filter(|t| !t.trim().is_empty()) {
+            match configured_remote_url {
+                Some(remote_url) => {
+                    let configured_hp = https_host_port(remote_url);
+                    let target_hp = https_host_port(url);
+                    if configured_hp.is_some() && configured_hp == target_hp {
+                        let user = username_from_url.unwrap_or("x-access-token");
+                        return Cred::userpass_plaintext(user, token);
+                    }
+                    return Err(git2::Error::from_str(
+                        "Refusing to send Personal Access Token: host mismatch with configured https:// remote",
+                    ));
+                }
+                None => {
+                    if https_host_port(url).is_some() {
+                        let user = username_from_url.unwrap_or("x-access-token");
+                        return Cred::userpass_plaintext(user, token);
+                    }
+                }
+            }
+        }
     }
 
     if allowed_types.intersects(
@@ -995,8 +1093,14 @@ pub fn fetch_repo_with_auth(
     let repo = Repository::discover(path)?;
     let effective_branch = resolve_effective_branch(&repo, branch);
     let mut remote = repo.find_remote(remote_name)?;
+    let remote_url = remote.url().ok().map(str::to_string);
     let mut fetch_opts = FetchOptions::new();
-    fetch_opts.remote_callbacks(build_auth_callbacks(auth.clone()));
+    fetch_opts
+        .follow_redirects(git2::RemoteRedirect::None)
+        .remote_callbacks(build_auth_callbacks_for_remote(
+            auth.clone(),
+            remote_url.clone(),
+        ));
 
     let tracking_refspec =
         format!("+refs/heads/{effective_branch}:refs/remotes/{remote_name}/{effective_branch}");
@@ -1005,7 +1109,9 @@ pub fn fetch_repo_with_auth(
         .is_err()
     {
         let mut retry_opts = FetchOptions::new();
-        retry_opts.remote_callbacks(build_auth_callbacks(auth));
+        retry_opts
+            .follow_redirects(git2::RemoteRedirect::None)
+            .remote_callbacks(build_auth_callbacks_for_remote(auth, remote_url));
         remote.fetch(&[&effective_branch], Some(&mut retry_opts), None)?;
     }
 
@@ -1045,8 +1151,11 @@ pub fn push_repo_with_auth(
     let repo = Repository::discover(repo_path.as_ref())?;
     let head_branch = checked_head_branch(&repo, branch)?;
     let mut remote = repo.find_remote(remote_name)?;
+    let remote_url = remote.url().ok().map(str::to_string);
     let mut push_opts = PushOptions::new();
-    push_opts.remote_callbacks(build_auth_callbacks(auth));
+    push_opts
+        .follow_redirects(git2::RemoteRedirect::None)
+        .remote_callbacks(build_auth_callbacks_for_remote(auth, remote_url));
 
     let refspec = format!("refs/heads/{head_branch}:refs/heads/{head_branch}");
     remote.push(&[&refspec], Some(&mut push_opts))?;
@@ -1083,8 +1192,11 @@ pub fn pull_repo_with_auth(
     let head_branch = checked_head_branch(&repo, branch)?;
     let prefix = project_prefix(&repo, repo_path.as_ref())?;
     let mut remote = repo.find_remote(remote_name)?;
+    let remote_url = remote.url().ok().map(str::to_string);
     let mut fetch_opts = FetchOptions::new();
-    fetch_opts.remote_callbacks(build_auth_callbacks(auth));
+    fetch_opts
+        .follow_redirects(git2::RemoteRedirect::None)
+        .remote_callbacks(build_auth_callbacks_for_remote(auth, remote_url));
 
     remote.fetch(&[&head_branch], Some(&mut fetch_opts), None)?;
 

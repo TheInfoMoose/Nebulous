@@ -10,9 +10,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use backend_core::{
-    fetch_repo_with_auth, git_credential, nebulous_config_dir, purge_legacy_ssh_cache,
-    redact_url_userinfo, GitAuthMaterial, GitAuthRequest, KeyPairManager, McpServer, SecureStorage,
-    TrackerStorage, LEGACY_SSH_CACHE_DIR_NAME,
+    fetch_repo_with_auth, git_credential, git_credential_for_remote, nebulous_config_dir,
+    purge_legacy_ssh_cache, redact_url_userinfo, GitAuthMaterial, GitAuthRequest, KeyPairManager,
+    McpServer, SecureStorage, TrackerStorage, LEGACY_SSH_CACHE_DIR_NAME,
 };
 use git2::{CredentialType, Repository};
 use serde_json::json;
@@ -301,5 +301,142 @@ fn vault_only_manager_does_not_fall_back_to_global_keyring_store() {
     assert!(
         resolved.pat.is_none(),
         "vault_only manager without a stored PAT must not fall back to global keyring store"
+    );
+}
+
+#[test]
+fn pat_is_pinned_to_configured_https_remote_host_and_port() {
+    let auth = GitAuthMaterial {
+        pat: Some(SECRET_PAT.to_string()),
+        ..GitAuthMaterial::default()
+    };
+    let user_pass = CredentialType::USER_PASS_PLAINTEXT;
+    let configured = Some("https://git.example.com/org/repo.git");
+
+    for accepted in [
+        "https://GIT.EXAMPLE.COM/org/repo.git",
+        "https://git.example.com:443/org/repo.git",
+        "https://testuser@git.example.com/org/other.git",
+    ] {
+        assert!(
+            git_credential_for_remote(&auth, configured, accepted, None, user_pass).is_ok(),
+            "PAT should be accepted for matching host/port {accepted}"
+        );
+    }
+
+    for rejected in [
+        "https://evil.example.com/org/repo.git",
+        "https://sub.git.example.com/org/repo.git",
+        "https://git.example.com:8443/org/repo.git",
+        "http://git.example.com/org/repo.git",
+    ] {
+        let err = git_credential_for_remote(&auth, configured, rejected, None, user_pass)
+            .err()
+            .unwrap_or_else(|| panic!("PAT must be rejected for mismatched target {rejected}"));
+        let msg = err.message().to_ascii_lowercase();
+        assert!(
+            msg.contains("host mismatch") || msg.contains("configured"),
+            "{rejected}: unexpected error message: {err}"
+        );
+    }
+
+    // Bracketed IPv6 literal with explicit port.
+    let ipv6_configured = Some("https://[::1]:8443/org/repo.git");
+    assert!(git_credential_for_remote(
+        &auth,
+        ipv6_configured,
+        "HTTPS://[::1]:8443/org/repo.git",
+        None,
+        user_pass
+    )
+    .is_ok());
+    assert!(git_credential_for_remote(
+        &auth,
+        ipv6_configured,
+        "https://[::1]:443/org/repo.git",
+        None,
+        user_pass
+    )
+    .is_err());
+}
+
+fn spawn_static_http_server(
+    response: String,
+) -> (String, u16, Arc<Mutex<Vec<String>>>, Arc<AtomicBool>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (req_t, stop_t) = (Arc::clone(&requests), Arc::clone(&stop));
+
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !stop_t.load(Ordering::SeqCst) && Instant::now() < deadline {
+            let Ok((mut stream, _)) = listener.accept() else {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut head = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => head.extend_from_slice(&buf[..n]),
+                }
+            }
+            req_t
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&head).into_owned());
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+
+    (
+        format!("http://127.0.0.1:{port}/org/repo.git"),
+        port,
+        requests,
+        stop,
+    )
+}
+
+#[test]
+fn fetch_disables_cross_host_redirects() {
+    let (_target_url, target_port, target_requests, target_stop) = spawn_static_http_server(
+        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+    );
+    let redirect_response = format!(
+        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/org/repo.git\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    let (_origin_ip_url, origin_port, origin_requests, origin_stop) =
+        spawn_static_http_server(redirect_response);
+    // Use `localhost` for origin so the `127.0.0.1` Location header is a cross-host redirect
+    // (`libgit2`'s `RemoteRedirect::None` compares hostnames case-insensitively).
+    let origin_url = format!("http://localhost:{origin_port}/org/repo.git");
+
+    let dir = TempDir::new().unwrap();
+    let repo = Repository::init(dir.path()).unwrap();
+    repo.remote("origin", &origin_url).unwrap();
+
+    let result = fetch_repo_with_auth(dir.path(), "origin", "main", GitAuthMaterial::default());
+    origin_stop.store(true, Ordering::SeqCst);
+    target_stop.store(true, Ordering::SeqCst);
+
+    assert!(
+        result.is_err(),
+        "fetch against a 302 redirect must fail when redirects are disabled"
+    );
+    assert!(
+        !origin_requests.lock().unwrap().is_empty(),
+        "origin server must have been contacted"
+    );
+    assert!(
+        target_requests.lock().unwrap().is_empty(),
+        "redirect target must receive zero requests"
     );
 }
