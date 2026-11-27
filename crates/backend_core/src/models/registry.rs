@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -21,10 +22,43 @@ pub const GLOBAL_PROJECTS_FILE_NAME: &str = "projects.toml";
 /// Advisory lock filename sibling to [`GLOBAL_PROJECTS_FILE_NAME`] inside [`nebulous_config_dir()`].
 pub const GLOBAL_PROJECTS_LOCK_FILE_NAME: &str = "projects.lock";
 
-static REGISTRY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static REGISTRY_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
 
-fn registry_lock() -> &'static Mutex<()> {
-    REGISTRY_LOCK.get_or_init(|| Mutex::new(()))
+fn registry_lock_table() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
+    REGISTRY_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn normalized_lock_key(lock_path: &Path) -> PathBuf {
+    if let Ok(canon) = fs::canonicalize(lock_path) {
+        return canon;
+    }
+    if let Some(file_name) = lock_path.file_name() {
+        if let Some(parent) = lock_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            if let Ok(canon_parent) = fs::canonicalize(parent) {
+                return canon_parent.join(file_name);
+            }
+        } else if let Ok(cwd) = std::env::current_dir() {
+            let base = fs::canonicalize(&cwd).unwrap_or(cwd);
+            return base.join(file_name);
+        }
+    }
+    if lock_path.is_absolute() {
+        lock_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(lock_path))
+            .unwrap_or_else(|_| lock_path.to_path_buf())
+    }
+}
+
+fn registry_lock_for_path(lock_path: &Path) -> Result<Arc<Mutex<()>>> {
+    let key = normalized_lock_key(lock_path);
+    let mut table = registry_lock_table()
+        .lock()
+        .map_err(|e| TrackerError::ValidationError(e.to_string()))?;
+    Ok(Arc::clone(
+        table.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))),
+    ))
 }
 
 fn registry_lock_path(registry_path: &Path) -> PathBuf {
@@ -36,26 +70,68 @@ fn registry_lock_path(registry_path: &Path) -> PathBuf {
     }
 }
 
-fn with_registry_lock<T>(
-    registry_path: &Path,
-    create_parent: bool,
-    f: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    let _in_proc_guard = registry_lock()
+fn with_registry_read_lock<T>(registry_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    if !registry_path.is_file() {
+        return f();
+    }
+
+    let lock_path = registry_lock_path(registry_path);
+    let path_lock = registry_lock_for_path(&lock_path)?;
+    let _in_proc_guard = path_lock
         .lock()
         .map_err(|e| TrackerError::ValidationError(e.to_string()))?;
 
+    let file = match fs::OpenOptions::new().read(true).open(&lock_path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return f(),
+        Err(source) => {
+            return Err(TrackerError::Io {
+                path: lock_path,
+                source,
+            });
+        }
+    };
+
+    let rw_lock = fd_lock::RwLock::new(file);
+    let start = Instant::now();
+    let _fd_guard = loop {
+        match rw_lock.try_read() {
+            Ok(guard) => break guard,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                let elapsed = start.elapsed();
+                if elapsed >= DEFAULT_LOCK_TIMEOUT {
+                    return Err(TrackerError::LockTimeout {
+                        path: lock_path,
+                        waited_ms: elapsed.as_millis() as u64,
+                    });
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(source) => {
+                return Err(TrackerError::Io {
+                    path: lock_path,
+                    source,
+                });
+            }
+        }
+    };
+
+    f()
+}
+
+fn with_registry_write_lock<T>(registry_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let lock_path = registry_lock_path(registry_path);
     if let Some(parent) = lock_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        if create_parent {
-            fs::create_dir_all(parent).map_err(|source| TrackerError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        } else if !parent.exists() {
-            return f();
-        }
+        fs::create_dir_all(parent).map_err(|source| TrackerError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     }
+
+    let path_lock = registry_lock_for_path(&lock_path)?;
+    let _in_proc_guard = path_lock
+        .lock()
+        .map_err(|e| TrackerError::ValidationError(e.to_string()))?;
 
     let file = fs::OpenOptions::new()
         .create(true)
@@ -453,7 +529,7 @@ pub fn load_global_registry() -> Result<GlobalProjectRegistry> {
 /// Loads a [`GlobalProjectRegistry`] from an explicit `projects.toml` path or config directory.
 pub fn load_global_registry_from(path_or_dir: impl AsRef<Path>) -> Result<GlobalProjectRegistry> {
     let path = resolve_registry_file_path(path_or_dir);
-    with_registry_lock(&path, false, || load_registry_unlocked(&path))
+    with_registry_read_lock(&path, || load_registry_unlocked(&path, false))
 }
 
 /// Atomically saves `registry` to `<nebulous_config_dir>/projects.toml`.
@@ -467,7 +543,7 @@ pub fn save_global_registry_to(
     registry: &GlobalProjectRegistry,
 ) -> Result<()> {
     let path = resolve_registry_file_path(path_or_dir);
-    with_registry_lock(&path, true, || save_registry_unlocked(&path, registry))
+    with_registry_write_lock(&path, || save_registry_unlocked(&path, registry))
 }
 
 /// Registers a project in `<nebulous_config_dir>/projects.toml` and persists the updated registry.
@@ -495,8 +571,8 @@ pub fn register_project_in(
     set_active: bool,
 ) -> Result<RegisteredProject> {
     let path = resolve_registry_file_path(registry_path_or_dir);
-    with_registry_lock(&path, true, || {
-        let mut registry = load_registry_unlocked(&path)?;
+    with_registry_write_lock(&path, || {
+        let mut registry = load_registry_unlocked(&path, true)?;
         let entry =
             registry.register_project(root_or_tracker_path, name_override, tags, set_active)?;
         save_registry_unlocked(&path, &registry)?;
@@ -515,8 +591,8 @@ pub fn remove_project_in(
     id_or_name: &str,
 ) -> Result<RegisteredProject> {
     let path = resolve_registry_file_path(registry_path_or_dir);
-    with_registry_lock(&path, true, || {
-        let mut registry = load_registry_unlocked(&path)?;
+    with_registry_write_lock(&path, || {
+        let mut registry = load_registry_unlocked(&path, true)?;
         let removed = registry.remove_project(id_or_name)?;
         save_registry_unlocked(&path, &registry)?;
         Ok(removed)
@@ -534,8 +610,8 @@ pub fn set_active_project_in(
     id_or_name: &str,
 ) -> Result<RegisteredProject> {
     let path = resolve_registry_file_path(registry_path_or_dir);
-    with_registry_lock(&path, true, || {
-        let mut registry = load_registry_unlocked(&path)?;
+    with_registry_write_lock(&path, || {
+        let mut registry = load_registry_unlocked(&path, true)?;
         let active = registry.set_active_project(id_or_name)?;
         save_registry_unlocked(&path, &registry)?;
         Ok(active)
@@ -584,8 +660,8 @@ pub fn credential_accounts_for_root_in(
     project_root: &Path,
 ) -> Result<Vec<String>> {
     let path = resolve_registry_file_path(registry_path_or_dir);
-    with_registry_lock(&path, false, || {
-        let registry = load_registry_unlocked(&path)?;
+    with_registry_read_lock(&path, || {
+        let registry = load_registry_unlocked(&path, false)?;
         Ok(registry
             .find_project_by_root(project_root)
             .map(|p| p.credential_accounts.clone())
@@ -601,15 +677,15 @@ pub fn bind_credential_account_in(
     account: &str,
 ) -> Result<RegisteredProject> {
     let path = resolve_registry_file_path(registry_path_or_dir);
-    with_registry_lock(&path, true, || {
-        let mut registry = load_registry_unlocked(&path)?;
+    with_registry_write_lock(&path, || {
+        let mut registry = load_registry_unlocked(&path, true)?;
         let entry = registry.bind_credential_account(project_root, account)?;
         save_registry_unlocked(&path, &registry)?;
         Ok(entry)
     })
 }
 
-fn load_registry_unlocked(path: &Path) -> Result<GlobalProjectRegistry> {
+fn load_registry_unlocked(path: &Path, persist_prune: bool) -> Result<GlobalProjectRegistry> {
     if !path.is_file() {
         return Ok(GlobalProjectRegistry::default());
     }
@@ -625,7 +701,7 @@ fn load_registry_unlocked(path: &Path) -> Result<GlobalProjectRegistry> {
             path: Some(path.to_path_buf()),
             source: Box::new(source),
         })?;
-    if registry.prune_unsafe_projects() {
+    if registry.prune_unsafe_projects() && persist_prune {
         save_registry_unlocked(path, &registry)?;
     }
     Ok(registry)

@@ -2069,10 +2069,18 @@ last_opened_at = "2026-11-04T00:00:00Z"
         loaded_reg.active_project_id.as_deref(),
         Some("valid_workspace")
     );
+    let raw_after_read = fs::read_to_string(cfg_dir.join("projects.toml")).unwrap();
+    assert!(
+        raw_after_read.contains("poisoned_home"),
+        "read-only load must not rewrite projects.toml on disk"
+    );
+
+    register_project_in(&cfg_dir, &valid_proj, None, vec![], true)
+        .expect("subsequent write should persist pruned registry");
     let persisted_raw = fs::read_to_string(cfg_dir.join("projects.toml")).unwrap();
     assert!(
         !persisted_raw.contains("poisoned_home"),
-        "poisoned unsafe entry must be pruned on disk as well as in memory"
+        "poisoned unsafe entry must be pruned on disk on the next write"
     );
 
     let parsed_reg = GlobalProjectRegistry::from_toml_str(&poisoned_toml).unwrap();
@@ -3185,4 +3193,172 @@ fn registry_writes_serialize_on_projects_lock() {
     assert_eq!(registry.projects[0].id, entry.id);
     assert_eq!(registry.projects[0].name, "LockedProject");
     assert_eq!(registry.projects[0].tags, vec!["locked".to_string()]);
+}
+
+#[test]
+fn read_only_registry_lookup_succeeds_without_creating_lock_file() {
+    use backend_core::load_global_registry_from;
+    use backend_core::models::registry::{
+        credential_accounts_for_root_in, GlobalProjectRegistry, RegisteredProject,
+        GLOBAL_PROJECTS_FILE_NAME, GLOBAL_PROJECTS_LOCK_FILE_NAME,
+    };
+
+    let temp = TempTrackerDir::new("registry_read_only_lookup");
+    let empty_dir = temp.path().join("empty_cfg");
+    fs::create_dir_all(&empty_dir).unwrap();
+
+    let empty_reg = load_global_registry_from(&empty_dir)
+        .expect("read-only lookup on empty dir should succeed");
+    assert_eq!(empty_reg, GlobalProjectRegistry::default());
+    assert!(
+        !empty_dir.join(GLOBAL_PROJECTS_LOCK_FILE_NAME).exists(),
+        "read-only lookup must not create projects.lock"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct RestoreDirMode(std::path::PathBuf);
+        impl Drop for RestoreDirMode {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        let ro_dir = temp.path().join("ro_cfg");
+        let valid_proj = temp.path().join("valid_proj");
+        fs::create_dir_all(&ro_dir).unwrap();
+        TrackerStorage::init_standard(&valid_proj, "ValidProject").unwrap();
+
+        let valid_root = fs::canonicalize(&valid_proj).unwrap();
+        let valid_tracker = valid_root.join(".tracker");
+        let seeded = GlobalProjectRegistry {
+            active_project_id: Some("unsafe_root".to_string()),
+            projects: vec![
+                RegisteredProject {
+                    id: "unsafe_root".to_string(),
+                    name: "UnsafeRoot".to_string(),
+                    root_path: "/".to_string(),
+                    tracker_path: "/.tracker".to_string(),
+                    default_branch: "main".to_string(),
+                    active_phase: None,
+                    tags: Vec::new(),
+                    last_opened_at: "2026-01-01T00:00:00Z".to_string(),
+                    credential_accounts: Vec::new(),
+                },
+                RegisteredProject {
+                    id: "valid_project".to_string(),
+                    name: "ValidProject".to_string(),
+                    root_path: valid_root.to_string_lossy().to_string(),
+                    tracker_path: valid_tracker.to_string_lossy().to_string(),
+                    default_branch: "main".to_string(),
+                    active_phase: None,
+                    tags: Vec::new(),
+                    last_opened_at: "2026-01-01T00:00:00Z".to_string(),
+                    credential_accounts: vec!["testuser/origin".to_string()],
+                },
+            ],
+        };
+        let toml_path = ro_dir.join(GLOBAL_PROJECTS_FILE_NAME);
+        let original_toml = seeded.to_toml_string().unwrap();
+        fs::write(&toml_path, &original_toml).unwrap();
+        assert!(!ro_dir.join(GLOBAL_PROJECTS_LOCK_FILE_NAME).exists());
+
+        fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let _restore = RestoreDirMode(ro_dir.clone());
+
+        let loaded = load_global_registry_from(&ro_dir)
+            .expect("load_global_registry_from should succeed on 0o555 dir");
+        assert_eq!(loaded.projects.len(), 1);
+        assert_eq!(loaded.projects[0].id, "valid_project");
+        assert_eq!(loaded.active_project_id.as_deref(), Some("valid_project"));
+        assert!(
+            !ro_dir.join(GLOBAL_PROJECTS_LOCK_FILE_NAME).exists(),
+            "load_global_registry_from must not create projects.lock on 0o555 dir"
+        );
+
+        let accounts = credential_accounts_for_root_in(&ro_dir, &valid_proj)
+            .expect("credential_accounts_for_root_in should succeed on 0o555 dir");
+        assert_eq!(accounts, vec!["testuser/origin".to_string()]);
+        assert!(
+            !ro_dir.join(GLOBAL_PROJECTS_LOCK_FILE_NAME).exists(),
+            "credential_accounts_for_root_in must not create projects.lock on 0o555 dir"
+        );
+        assert_eq!(
+            fs::read_to_string(&toml_path).unwrap(),
+            original_toml,
+            "read-only lookup must not rewrite projects.toml when pruning in memory"
+        );
+    }
+}
+
+#[test]
+fn registry_lock_contention_does_not_block_unrelated_registry_dir() {
+    use backend_core::models::registry::GLOBAL_PROJECTS_LOCK_FILE_NAME;
+    use backend_core::{load_global_registry_from, register_project_in};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let temp = TempTrackerDir::new("registry_per_path_lock");
+    let dir_a = temp.path().join("cfg_a");
+    let dir_b = temp.path().join("cfg_b");
+    let proj_a = temp.path().join("proj_a");
+    let proj_b = temp.path().join("proj_b");
+    fs::create_dir_all(&dir_a).unwrap();
+    fs::create_dir_all(&dir_b).unwrap();
+    TrackerStorage::init_standard(&proj_a, "ProjectA").unwrap();
+    TrackerStorage::init_standard(&proj_b, "ProjectB").unwrap();
+
+    let lock_path_a = dir_a.join(GLOBAL_PROJECTS_LOCK_FILE_NAME);
+    let (lock_tx, lock_rx) = mpsc::channel();
+    let holder = thread::spawn(move || {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path_a)
+            .unwrap();
+        let mut rw_lock = fd_lock::RwLock::new(file);
+        let _guard = rw_lock.write().unwrap();
+        lock_tx.send(()).unwrap();
+        thread::sleep(Duration::from_millis(300));
+    });
+
+    lock_rx.recv().unwrap();
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let dir_a_bg = dir_a.clone();
+    let proj_a_bg = proj_a.clone();
+    let bg_a = thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        register_project_in(&dir_a_bg, &proj_a_bg, None, Vec::new(), true)
+    });
+
+    started_rx.recv().unwrap();
+    thread::sleep(Duration::from_millis(50));
+
+    let started_b = Instant::now();
+    let entry_b = register_project_in(&dir_b, &proj_b, None, Vec::new(), true)
+        .expect("register_project_in on unrelated dir_b should succeed immediately");
+    let elapsed_b = started_b.elapsed();
+
+    assert!(
+        elapsed_b < Duration::from_millis(150),
+        "expected unrelated dir_b registration to complete in <150ms while dir_a is contended, elapsed={elapsed_b:?}"
+    );
+    assert_eq!(entry_b.name, "ProjectB");
+
+    holder.join().unwrap();
+    let entry_a = bg_a
+        .join()
+        .unwrap()
+        .expect("register_project_in on dir_a should succeed after lock release");
+    assert_eq!(entry_a.name, "ProjectA");
+
+    let reg_a = load_global_registry_from(&dir_a).unwrap();
+    let reg_b = load_global_registry_from(&dir_b).unwrap();
+    assert_eq!(reg_a.projects.len(), 1);
+    assert_eq!(reg_b.projects.len(), 1);
 }
