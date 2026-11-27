@@ -833,6 +833,13 @@ created_at = "2026-11-27T01:59:58Z"
 [[items.tasks]]
 id = "TASK-0135"
 title = "Zeroize GitAuthMaterial::pat (Option<Zeroizing<String>>) and guard SSH passphrase stripping in KeyPairManager (TASK-0110 non-breaking slice / AUD-13)"
-status = "open"
+status = "pending"
 severity = "medium"
 created_at = "2026-11-27T01:59:58Z"
+
+[[items.tasks]]
+id = "TASK-0136"
+title = "Allow updating workflow_integration.rs PAT assertions for STEP 46F"
+status = "pending"
+severity = "high"
+created_at = "2026-11-27T02:43:40Z"
