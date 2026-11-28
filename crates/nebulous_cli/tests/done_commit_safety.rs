@@ -175,3 +175,51 @@ fn policy_rejected_done_commit_leaves_item_open_without_fix_entry() {
     assert_ne!(after_glob.manifest.item.status, ItemStatus::Closed);
     assert!(after_glob.manifest.history.previous_fixes.is_empty());
 }
+
+#[test]
+fn post_close_commit_failure_rolls_back_item_and_timer() {
+    let (dir, repo, storage) = setup();
+    let cfg = dir.path().join("cfg");
+
+    let timer_before = storage.start_timer("BUG-0001", None).unwrap();
+    let head_before = repo.head().unwrap().target().unwrap();
+    let head_ref_name = repo.head().unwrap().name().unwrap().to_string();
+    let (_, before) = storage.load_item_detail_by_id("BUG-0001").unwrap();
+
+    // Lock the HEAD ref so `validate_documented_commit` passes, but `git_commit_documented`
+    // fails when advancing HEAD after the item has been closed.
+    let ref_lock_path = dir
+        .path()
+        .join(".git")
+        .join(format!("{head_ref_name}.lock"));
+    fs::create_dir_all(ref_lock_path.parent().unwrap()).unwrap();
+    fs::write(&ref_lock_path, "locked\n").unwrap();
+
+    let out = run_neb(
+        dir.path(),
+        &cfg,
+        &[
+            "done",
+            "BUG-0001",
+            "-m",
+            "Trigger post-close commit failure",
+            "-c",
+        ],
+    );
+    assert!(
+        !out.status.success(),
+        "expected done -c to fail when HEAD ref is locked"
+    );
+
+    let (_, after) = storage.load_item_detail_by_id("BUG-0001").unwrap();
+    assert_eq!(after.manifest.item.status, before.manifest.item.status);
+    assert!(after.manifest.history.previous_fixes.is_empty());
+    assert_eq!(repo.head().unwrap().target().unwrap(), head_before);
+
+    let restored_timer = storage
+        .read_active_timer()
+        .unwrap()
+        .expect("active timer on BUG-0001 should be restored after rollback");
+    assert_eq!(restored_timer.item_id, "BUG-0001");
+    assert_eq!(restored_timer.started_at, timer_before.started_at);
+}

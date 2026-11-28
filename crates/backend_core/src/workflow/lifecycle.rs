@@ -5,6 +5,7 @@ use crate::models::time::{now_timestamp_string, today_date_string};
 
 use crate::agent_context::AgentContextBundle;
 use crate::error::{Result, TrackerError};
+use crate::git_sync::{DocumentedCommitInput, DocumentedCommitOutcome};
 use crate::models::{
     canonical_phase_title, resolve_phase_alias, ActiveTimer, ItemDetail, ItemEffort, ItemHistory,
     ItemManifest, ItemMetadata, ItemStatus, ItemType, PhaseManifest, PhaseMetadata,
@@ -552,6 +553,109 @@ impl TrackerStorage {
         })
     }
 
+    /// Validates, closes (or merges when `merged == true`), and creates a documented Git commit
+    /// for `item_id` inside a single [`Self::with_write_lock`] critical section.
+    ///
+    /// If the post-close manifest adjustment or documented commit fails, restores the pre-close
+    /// item detail, indexes, and active timer snapshot. Any rollback error is surfaced alongside
+    /// the original commit error instead of being discarded.
+    pub fn close_item_and_commit(
+        &self,
+        item_id: &str,
+        summary: impl Into<String>,
+        commit_override: Option<&str>,
+        merged: bool,
+        paths: &[String],
+    ) -> Result<(StatusChange, DocumentedCommitOutcome)> {
+        self.with_write_lock(|_| {
+            let normalized_id = item_id.trim().to_ascii_uppercase();
+            let loc = self.locate_item(&normalized_id)?;
+            let summary_str = summary.into();
+
+            let commit_input = DocumentedCommitInput {
+                item_id: Some(normalized_id.clone()),
+                scope_id: Some(loc.scope_id.clone()),
+                summary: summary_str.clone(),
+                body: None,
+                tracker_only: paths.is_empty(),
+                paths: paths.to_vec(),
+                allow_empty_ok: false,
+            };
+            self.validate_documented_commit(&commit_input)?;
+
+            let (loc, detail_snapshot) = self.load_item_detail_by_id(&normalized_id)?;
+            let timer_snapshot = self.read_active_timer()?;
+
+            let change =
+                self.close_item_reporting(&normalized_id, &summary_str, commit_override, merged)?;
+            let mut detail = change.detail;
+
+            let commit_result = (|| -> Result<DocumentedCommitOutcome> {
+                let auto_append = self.read_project()?.git.commit_policy.auto_append_to_desc;
+                if auto_append && !detail.manifest.history.previous_fixes.is_empty() {
+                    detail.manifest.history.previous_fixes.pop();
+                    self.write_item_manifest(
+                        &loc.phase_id,
+                        &loc.scope_id,
+                        &detail.manifest.item.id,
+                        &detail.manifest,
+                    )?;
+                }
+                self.git_commit_documented(commit_input)
+            })();
+
+            match commit_result {
+                Ok(commit) => {
+                    let (_, detail) = self.load_item_detail_by_id(&normalized_id)?;
+                    Ok((
+                        StatusChange {
+                            detail,
+                            stopped_timer: change.stopped_timer,
+                        },
+                        commit,
+                    ))
+                }
+                Err(commit_err) => Err(self.rollback_close_and_commit(
+                    &loc,
+                    &detail_snapshot,
+                    timer_snapshot.as_ref(),
+                    commit_err,
+                )),
+            }
+        })
+    }
+
+    fn rollback_close_and_commit(
+        &self,
+        loc: &ItemLocation,
+        detail_snapshot: &ItemDetail,
+        timer_snapshot: Option<&ActiveTimer>,
+        commit_err: TrackerError,
+    ) -> TrackerError {
+        let mut rollback_errors = Vec::new();
+
+        if let Err(err) = self.write_item_detail(&loc.phase_id, &loc.scope_id, detail_snapshot) {
+            rollback_errors.push(format!("restore item detail: {err}"));
+        }
+        if let Err(err) = self.reconcile_indexes() {
+            rollback_errors.push(format!("reconcile indexes: {err}"));
+        }
+        if let Some(timer) = timer_snapshot {
+            if let Err(err) = self.write_active_timer(timer) {
+                rollback_errors.push(format!("restore active timer: {err}"));
+            }
+        }
+
+        if rollback_errors.is_empty() {
+            commit_err
+        } else {
+            TrackerError::GitError(format!(
+                "{commit_err}; rollback also failed: {}",
+                rollback_errors.join("; ")
+            ))
+        }
+    }
+
     /// Updates an item's title and/or severity and atomically syncs parent `scope.toml` and `phase.toml`.
     pub fn update_item_metadata(
         &self,
@@ -1037,4 +1141,146 @@ impl TrackerStorage {
 
 pub(crate) fn now_rfc3339() -> String {
     now_timestamp_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use git2::{Repository, Signature};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn init_git_tracker() -> (TempDir, TrackerStorage) {
+        let dir = TempDir::new().expect("tempdir");
+        let repo = Repository::init(dir.path()).expect("init git repo");
+        {
+            let mut cfg = repo.config().expect("git config");
+            cfg.set_str("user.name", "Test User").expect("user.name");
+            cfg.set_str("user.email", "testuser@example.com")
+                .expect("user.email");
+        }
+
+        let storage = TrackerStorage::init(dir.path(), "LifecycleTest", "01_core", "Core")
+            .expect("init tracker");
+        storage
+            .create_scope(
+                Some("01_core"),
+                "backend_core",
+                "src",
+                vec!["rust".to_string()],
+                None,
+            )
+            .expect("create scope");
+        storage
+            .create_bug(
+                "Sample bug for close_item_and_commit",
+                Some("01_core"),
+                Some("backend_core"),
+                Severity::Medium,
+                None,
+            )
+            .expect("create bug");
+
+        {
+            let mut idx = repo.index().expect("repo index");
+            idx.add_all([".tracker"], git2::IndexAddOption::DEFAULT, None)
+                .expect("stage .tracker");
+            idx.write().expect("write index");
+            let tree = repo
+                .find_tree(idx.write_tree().expect("write tree"))
+                .expect("find tree");
+            let sig = Signature::now("Test User", "testuser@example.com").expect("sig");
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .expect("initial commit");
+        }
+
+        (dir, storage)
+    }
+
+    #[test]
+    fn close_item_and_commit_waits_for_write_lock() {
+        let (dir, storage) = init_git_tracker();
+        let bg_storage = TrackerStorage::new(dir.path());
+        let (tx, rx) = mpsc::channel();
+
+        let holder = thread::spawn(move || {
+            bg_storage.with_write_lock(|_| {
+                tx.send(()).expect("signal lock acquired");
+                thread::sleep(Duration::from_millis(300));
+                Ok(())
+            })
+        });
+
+        rx.recv().expect("background thread should acquire lock");
+        let start = Instant::now();
+        // Use a policy-rejected summary ("short") so even pre-mutation validation must wait
+        // on the outer `with_write_lock` before returning.
+        let err = storage
+            .close_item_and_commit("BUG-0001", "short", None, false, &[])
+            .expect_err("short summary should fail policy validation");
+        let elapsed = start.elapsed();
+
+        holder
+            .join()
+            .expect("lock holder thread should not panic")
+            .expect("lock holder should succeed");
+
+        assert!(
+            elapsed >= Duration::from_millis(250),
+            "expected close_item_and_commit to block on outer with_write_lock, elapsed={elapsed:?}"
+        );
+        assert!(matches!(err, TrackerError::ValidationError(_)));
+    }
+
+    #[test]
+    fn close_item_and_commit_surfaces_rollback_failure() {
+        let (dir, storage) = init_git_tracker();
+        let timer = storage
+            .start_timer("BUG-0001", None)
+            .expect("start timer on BUG-0001");
+        let (loc, detail_snapshot) = storage
+            .load_item_detail_by_id("BUG-0001")
+            .expect("load BUG-0001 snapshot");
+
+        // Replace `.tracker` with a regular file so restoring item detail, reconciling indexes,
+        // and restoring the active timer all fail deterministically (even under root).
+        let tracker_dir = dir.path().join(".tracker");
+        fs::remove_dir_all(&tracker_dir).expect("remove .tracker dir");
+        fs::write(&tracker_dir, "blocked\n").expect("replace .tracker with file");
+
+        let original_err = TrackerError::GitError("simulated commit failure".to_string());
+        let combined =
+            storage.rollback_close_and_commit(&loc, &detail_snapshot, Some(&timer), original_err);
+
+        match combined {
+            TrackerError::GitError(msg) => {
+                assert!(
+                    msg.contains("simulated commit failure"),
+                    "expected original commit failure in message, got: {msg}"
+                );
+                assert!(
+                    msg.contains("rollback"),
+                    "expected rollback context in message, got: {msg}"
+                );
+                assert!(
+                    msg.contains("restore item detail"),
+                    "expected item detail rollback error in message, got: {msg}"
+                );
+                assert!(
+                    msg.contains("reconcile indexes"),
+                    "expected reconcile rollback error in message, got: {msg}"
+                );
+                assert!(
+                    msg.contains("restore active timer"),
+                    "expected timer rollback error in message, got: {msg}"
+                );
+            }
+            other => panic!("expected TrackerError::GitError, got: {other:?}"),
+        }
+    }
 }

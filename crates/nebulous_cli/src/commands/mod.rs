@@ -1295,7 +1295,6 @@ fn handle_close(
     json: bool,
 ) -> Result<String> {
     let resolved_id = storage.resolve_active_or_inferred_item_id(id)?;
-    let loc = storage.locate_item(&resolved_id)?;
 
     if !commit_changes {
         let change = storage.close_item_reporting(&resolved_id, summary, commit, merged)?;
@@ -1304,59 +1303,15 @@ fn handle_close(
         return render_close(detail, None, summary, json);
     }
 
-    // `done -c`: validate the commit (paths + commit policy) before mutating anything, so a
-    // rejected commit leaves the item open with no new fix entry.
-    let commit_input = DocumentedCommitInput {
-        item_id: Some(resolved_id.clone()),
-        scope_id: Some(loc.scope_id.clone()),
-        summary: summary.to_string(),
-        body: None,
-        tracker_only: paths.is_empty(),
-        paths: paths.to_vec(),
-        allow_empty_ok: false,
-    };
-    storage.validate_documented_commit(&commit_input)?;
-
-    // Snapshot for rollback if the commit itself fails after the item was closed.
-    let (_, snapshot) = storage.load_item_detail_by_id(&resolved_id)?;
-    let timer_snapshot = storage.read_active_timer().ok().flatten();
-
-    let change = storage.close_item_reporting(&resolved_id, summary, commit, merged)?;
+    let (change, commit_outcome) =
+        storage.close_item_and_commit(&resolved_id, summary, commit, merged, paths)?;
     warn_if_capped(change.stopped_timer.as_ref());
-    let mut detail = change.detail;
-    let auto_append = storage
-        .read_project()
-        .map(|p| p.git.commit_policy.auto_append_to_desc)
-        .unwrap_or(false);
-
-    let commit_result = (|| -> Result<String> {
-        if auto_append && !detail.manifest.history.previous_fixes.is_empty() {
-            // The documented commit records the fix entry with its real SHA.
-            detail.manifest.history.previous_fixes.pop();
-            storage.write_item_manifest(
-                &loc.phase_id,
-                &loc.scope_id,
-                &detail.manifest.item.id,
-                &detail.manifest,
-            )?;
-        }
-        Ok(storage.git_commit_documented(commit_input)?.commit_sha)
-    })();
-
-    match commit_result {
-        Ok(sha) => {
-            let detail = storage.load_item_detail_by_id(&resolved_id)?.1;
-            render_close(detail, Some(sha), summary, json)
-        }
-        Err(err) => {
-            let _ = storage.write_item_detail(&loc.phase_id, &loc.scope_id, &snapshot);
-            let _ = storage.reconcile_indexes();
-            if let Some(timer) = timer_snapshot {
-                let _ = storage.write_active_timer(&timer);
-            }
-            Err(err)
-        }
-    }
+    render_close(
+        change.detail,
+        Some(commit_outcome.commit_sha),
+        summary,
+        json,
+    )
 }
 
 fn render_close(
