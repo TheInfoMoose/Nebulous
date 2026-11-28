@@ -4,17 +4,22 @@ schema_version = 2
 id = "TASK-0141"
 type = "task"
 title = "Add opt-in allow_empty_ok (default false) to DocumentedCommitInput, git_commit_documented, and MCP git_commit_documented for idempotent Orrery reruns (BUG-0004)"
-status = "open"
+status = "closed"
 severity = "medium"
 scope_ref = "backend_core"
 created_at = "2026-11-28T02:30:26Z"
-updated_at = "2026-11-28T02:30:26Z"
+updated_at = "2026-11-28T03:27:00Z"
 source_ref = "STEP 47E"
 
 [effort]
-logged_time_minutes = 0
+logged_time_minutes = 14
 iteration_count = 1
+last_timer_session = "TASK-0141@2026-11-28T03:13:00Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-28"
+commit = "0356f8e"
+summary = "STEP 47E: Add opt-in `allow_empty_ok` (default `false`) to `git_commit_documented` and MCP (`BUG-0004`) (phased check PASS)"
