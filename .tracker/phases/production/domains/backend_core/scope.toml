@@ -882,7 +882,7 @@ created_at = "2026-11-28T02:30:25Z"
 [[items.tasks]]
 id = "TASK-0138"
 title = "Zeroize GitAuthMaterial::pat (Option<Zeroizing<String>>) and guard SSH passphrase stripping in KeyPairManager (re-split of STEP 46F, TASK-0135, TASK-0136, TASK-0110)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-28T02:30:25Z"
 
