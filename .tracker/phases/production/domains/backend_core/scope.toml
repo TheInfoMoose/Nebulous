@@ -875,7 +875,7 @@ created_at = "2026-11-27T02:43:40Z"
 [[items.tasks]]
 id = "TASK-0137"
 title = "Fix git_credential_for_remote SSH fallback on non-HTTPS remotes and pin push_repo_with_auth to remote.pushurl() (BUG-0035, BUG-0036; closes BUG-0019)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-28T02:30:25Z"
 
