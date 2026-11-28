@@ -283,10 +283,53 @@ fn legacy_ssh_cache_is_purged_when_the_vault_opens() {
 
 #[test]
 fn vault_only_manager_does_not_fall_back_to_global_keyring_store() {
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     let dir = TempDir::new().unwrap();
     let repo_dir = dir.path().join("repo");
     std::fs::create_dir_all(&repo_dir).unwrap();
     let storage = init_tracker_repo(&repo_dir, "https://example.com/org/repo.git");
+
+    let global_cfg = dir.path().join("global_cfg");
+    let global_store = SecureStorage::vault_only(&global_cfg).expect("global vault_only store");
+    let seeded_pat = "ghp_global_fallback_should_not_leak";
+    global_store
+        .store_secret("testuser/isolated", seeded_pat)
+        .expect("seed global PAT");
+    let _env_guard = EnvVarGuard::set("NEBULOUS_CONFIG_DIR", &global_cfg);
+    assert_eq!(
+        nebulous_config_dir(),
+        global_cfg,
+        "NEBULOUS_CONFIG_DIR must resolve to global_cfg"
+    );
+    assert_eq!(
+        SecureStorage::vault_only(&global_cfg)
+            .expect("reopen global vault_only store")
+            .get_secret_string("testuser/isolated")
+            .expect("read seeded global PAT"),
+        seeded_pat,
+        "seeded global PAT lookup path must be live"
+    );
 
     let vault_dir = dir.path().join("vault");
     let manager = KeyPairManager::vault_only(&vault_dir).expect("vault_only manager");

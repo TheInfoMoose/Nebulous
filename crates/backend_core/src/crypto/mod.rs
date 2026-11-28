@@ -697,27 +697,37 @@ fn restrict_to_current_user(path: &Path, is_dir: bool) -> Result<()> {
     Ok(())
 }
 
-/// Creates `dir` and sets `0700` on Unix; on Windows, inherited ACEs are removed and full control
-/// is granted to the current user only.
-pub(crate) fn ensure_secure_dir(dir: &Path) -> Result<()> {
+fn ensure_secure_dir_with(dir: &Path, set_perms: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
     fs::create_dir_all(dir).map_err(|source| TrackerError::Io {
         path: dir.to_path_buf(),
         source,
     })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = fs::Permissions::from_mode(0o700);
-        fs::set_permissions(dir, perms).map_err(|source| TrackerError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-    }
-    #[cfg(windows)]
-    {
-        restrict_to_current_user(dir, true)?;
-    }
-    Ok(())
+    set_perms(dir)
+}
+
+/// Creates `dir` and sets `0700` on Unix; on Windows, inherited ACEs are removed and full control
+/// is granted to the current user only.
+pub(crate) fn ensure_secure_dir(dir: &Path) -> Result<()> {
+    ensure_secure_dir_with(dir, |path| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::Permissions::from_mode(0o700);
+            fs::set_permissions(path, perms).map_err(|source| TrackerError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        }
+        #[cfg(windows)]
+        {
+            restrict_to_current_user(path, true)?;
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = path;
+        }
+        Ok(())
+    })
 }
 
 /// On Unix, sets file permissions to `0600`. On Windows, inherited ACEs are removed and full
@@ -862,7 +872,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ensure_secure_dir_propagates_permission_error() {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
         let dir = tempfile::tempdir().unwrap();
         let loose_dir = dir.path().join("loose");
@@ -872,6 +882,34 @@ mod tests {
         ensure_secure_dir(&loose_dir).unwrap();
         let tightened = fs::metadata(&loose_dir).unwrap().permissions().mode() & 0o7777;
         assert_eq!(tightened, 0o700);
+
+        let err = ensure_secure_dir_with(&loose_dir, |p| {
+            Err(TrackerError::Io {
+                path: p.to_path_buf(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated chmod failure",
+                ),
+            })
+        })
+        .expect_err("ensure_secure_dir_with must propagate set_permissions failure");
+        assert!(
+            matches!(
+                err,
+                TrackerError::Io { ref source, .. }
+                    if source.kind() == std::io::ErrorKind::PermissionDenied
+            ),
+            "expected PermissionDenied Io error, got: {err:?}"
+        );
+
+        if fs::metadata(dir.path()).unwrap().uid() != fs::metadata("/").unwrap().uid() {
+            let root_err = ensure_secure_dir(Path::new("/"))
+                .expect_err("non-root ensure_secure_dir(\"/\") must propagate EPERM");
+            assert!(
+                matches!(root_err, TrackerError::Io { .. }),
+                "expected Io error for \"/\", got: {root_err:?}"
+            );
+        }
 
         let blocker = dir.path().join("regular_file");
         fs::write(&blocker, b"not a directory").unwrap();
