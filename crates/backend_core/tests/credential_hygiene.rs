@@ -440,3 +440,46 @@ fn fetch_disables_cross_host_redirects() {
         "redirect target must receive zero requests"
     );
 }
+
+#[test]
+fn ssh_remote_falls_back_to_ssh_when_pat_is_present() {
+    let dir = TempDir::new().unwrap();
+    let manager = KeyPairManager::vault_only(dir.path().join("vault")).unwrap();
+    let record = manager
+        .generate_ed25519_keypair("testuser/ssh", None)
+        .unwrap();
+
+    let auth = GitAuthMaterial {
+        pat: Some(SECRET_PAT.to_string()),
+        ssh_keypair: Some(record),
+        ..GitAuthMaterial::default()
+    };
+
+    let cred = git_credential_for_remote(
+        &auth,
+        Some("ssh://git@example.com/org/repo.git"),
+        "ssh://git@example.com/org/repo.git",
+        Some("git"),
+        CredentialType::USER_PASS_PLAINTEXT | CredentialType::SSH_MEMORY | CredentialType::SSH_KEY,
+    )
+    .expect("SSH remote must fall back to SSH keypair even when PAT is present");
+    let cred_type = CredentialType::from_bits_truncate(cred.credtype());
+    assert!(
+        cred_type.intersects(CredentialType::SSH_MEMORY | CredentialType::SSH_KEY),
+        "expected SSH credential, got {cred_type:?}"
+    );
+
+    let err = git_credential_for_remote(
+        &auth,
+        Some("http://example.com/org/repo.git"),
+        "http://example.com/org/repo.git",
+        None,
+        CredentialType::USER_PASS_PLAINTEXT,
+    )
+    .err()
+    .expect("PAT must not be sent over non-HTTPS http:// remote");
+    assert!(
+        err.message().contains("https://"),
+        "expected non-HTTPS PAT refusal, got: {err}"
+    );
+}

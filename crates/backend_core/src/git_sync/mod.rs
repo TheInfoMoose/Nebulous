@@ -1014,15 +1014,15 @@ pub fn git_credential_for_remote(
         if let Some(token) = auth.pat.as_deref().filter(|t| !t.trim().is_empty()) {
             match configured_remote_url {
                 Some(remote_url) => {
-                    let configured_hp = https_host_port(remote_url);
-                    let target_hp = https_host_port(url);
-                    if configured_hp.is_some() && configured_hp == target_hp {
-                        let user = username_from_url.unwrap_or("x-access-token");
-                        return Cred::userpass_plaintext(user, token);
+                    if let Some(configured_hp) = https_host_port(remote_url) {
+                        if https_host_port(url) == Some(configured_hp) {
+                            let user = username_from_url.unwrap_or("x-access-token");
+                            return Cred::userpass_plaintext(user, token);
+                        }
+                        return Err(git2::Error::from_str(
+                            "Refusing to send Personal Access Token: host mismatch with configured https:// remote",
+                        ));
                     }
-                    return Err(git2::Error::from_str(
-                        "Refusing to send Personal Access Token: host mismatch with configured https:// remote",
-                    ));
                 }
                 None => {
                     if https_host_port(url).is_some() {
@@ -1139,6 +1139,15 @@ pub fn fetch_repo_with_auth(
     repo_status_with_hints(path, Some(remote_name), Some(&effective_branch))
 }
 
+fn effective_push_remote_url(remote: &git2::Remote<'_>) -> Option<String> {
+    remote
+        .pushurl()
+        .ok()
+        .flatten()
+        .or_else(|| remote.url().ok())
+        .map(str::to_string)
+}
+
 /// Pushes HEAD's branch to `remote_name` using [`GitAuthMaterial`] (HTTPS PAT or SSH credentials).
 ///
 /// Errors (without pushing) when HEAD is detached or not on the configured `branch`.
@@ -1151,7 +1160,7 @@ pub fn push_repo_with_auth(
     let repo = Repository::discover(repo_path.as_ref())?;
     let head_branch = checked_head_branch(&repo, branch)?;
     let mut remote = repo.find_remote(remote_name)?;
-    let remote_url = remote.url().ok().map(str::to_string);
+    let remote_url = effective_push_remote_url(&remote);
     let mut push_opts = PushOptions::new();
     push_opts
         .follow_redirects(git2::RemoteRedirect::None)
@@ -2028,6 +2037,30 @@ mod tests {
         assert!(
             !msg.contains(secret),
             "error message must not echo secret: {msg}"
+        );
+    }
+
+    #[test]
+    fn push_remote_url_prefers_pushurl_over_fetch_url() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let repo = Repository::init(dir.path()).expect("init repo");
+        repo.remote("origin", "https://fetch.example.com/org/repo.git")
+            .expect("add origin");
+        repo.remote_set_pushurl("origin", Some("https://push.example.com:8443/org/repo.git"))
+            .expect("set origin pushurl");
+        repo.remote("upstream", "https://fetch.example.com/org/repo.git")
+            .expect("add upstream");
+
+        let origin = repo.find_remote("origin").expect("find origin");
+        assert_eq!(
+            effective_push_remote_url(&origin).as_deref(),
+            Some("https://push.example.com:8443/org/repo.git")
+        );
+
+        let upstream = repo.find_remote("upstream").expect("find upstream");
+        assert_eq!(
+            effective_push_remote_url(&upstream).as_deref(),
+            Some("https://fetch.example.com/org/repo.git")
         );
     }
 }
