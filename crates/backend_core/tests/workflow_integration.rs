@@ -1425,7 +1425,7 @@ fn test_git_auth_resolution_ssh_keypair_and_pat() {
         .resolve_git_auth_with_manager(Some(&manager), &GitAuthRequest::default())
         .expect("should resolve git auth from the locally bound account");
     assert_eq!(
-        resolved.pat.as_deref(),
+        resolved.pat.as_deref().map(String::as_str),
         Some("ghp_auth_resolution_pat_token_456")
     );
     assert!(resolved.has_ssh_credentials());
@@ -1447,7 +1447,10 @@ fn test_git_auth_resolution_ssh_keypair_and_pat() {
             },
         )
         .unwrap();
-    assert_eq!(explicit.pat.as_deref(), Some("ghp_explicit"));
+    assert_eq!(
+        explicit.pat.as_deref().map(String::as_str),
+        Some("ghp_explicit")
+    );
     assert!(explicit.ssh_keypair.is_some());
 
     let _callbacks = build_auth_callbacks(resolved);

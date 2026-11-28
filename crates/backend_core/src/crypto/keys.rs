@@ -25,6 +25,7 @@ pub struct SshKeyPairRecord {
     pub private_key_openssh: Zeroizing<String>,
     pub fingerprint_sha256: String,
     pub comment: Option<String>,
+    pub passphrase_stripped: bool,
 }
 
 impl std::fmt::Debug for SshKeyPairRecord {
@@ -36,6 +37,7 @@ impl std::fmt::Debug for SshKeyPairRecord {
             .field("private_key_openssh", &"<REDACTED>")
             .field("fingerprint_sha256", &self.fingerprint_sha256)
             .field("comment", &self.comment)
+            .field("passphrase_stripped", &self.passphrase_stripped)
             .finish()
     }
 }
@@ -118,16 +120,28 @@ impl KeyPairManager {
                 TrackerError::KeyringError(format!("Failed to build Ed25519 SSH private key: {e}"))
             })?;
 
-        self.persist_parsed_private_key(&normalized_account, &private_key)
+        self.persist_parsed_private_key(&normalized_account, &private_key, false)
     }
 
-    /// Imports an existing OpenSSH private key ( optionally passphrase-protected) for `account`
+    /// Imports an existing OpenSSH private key (optionally passphrase-protected) for `account`
     /// into [`SecureStorage`].
     pub fn import_ssh_keypair(
         &self,
         account: &str,
         private_key_openssh: &str,
         passphrase: Option<&str>,
+    ) -> Result<SshKeyPairRecord> {
+        self.import_ssh_keypair_with_policy(account, private_key_openssh, passphrase, true)
+    }
+
+    /// Imports an existing OpenSSH private key for `account` into [`SecureStorage`], guarding
+    /// whether an encrypted key's passphrase may be stripped before persistence.
+    pub fn import_ssh_keypair_with_policy(
+        &self,
+        account: &str,
+        private_key_openssh: &str,
+        passphrase: Option<&str>,
+        allow_strip_passphrase: bool,
     ) -> Result<SshKeyPairRecord> {
         let normalized_account = normalize_account_id(account)?;
         let trimmed = private_key_openssh.trim();
@@ -142,20 +156,27 @@ impl KeyPairManager {
         })?;
         let outer_comment = outer.comment().to_string().trim().to_string();
 
-        let mut parsed = if outer.is_encrypted() {
+        let (mut parsed, passphrase_stripped) = if outer.is_encrypted() {
+            if !allow_strip_passphrase {
+                return Err(TrackerError::ValidationError(
+                    "OpenSSH private key is passphrase-protected; refusing to strip passphrase without explicit allow_strip_passphrase"
+                        .to_string(),
+                ));
+            }
             let pass = passphrase.filter(|p| !p.is_empty()).ok_or_else(|| {
                 TrackerError::ValidationError(
                     "OpenSSH private key is encrypted; a passphrase is required to import it"
                         .to_string(),
                 )
             })?;
-            outer.decrypt(pass).map_err(|e| {
+            let decrypted = outer.decrypt(pass).map_err(|e| {
                 TrackerError::KeyringError(format!(
                     "Failed to decode or decrypt OpenSSH private key: {e}"
                 ))
-            })?
+            })?;
+            (decrypted, true)
         } else {
-            outer
+            (outer, false)
         };
 
         if parsed.is_encrypted() {
@@ -169,7 +190,7 @@ impl KeyPairManager {
             parsed.set_comment(outer_comment.as_str());
         }
 
-        self.persist_parsed_private_key(&normalized_account, &parsed)
+        self.persist_parsed_private_key(&normalized_account, &parsed, passphrase_stripped)
     }
 
     /// Reads an OpenSSH private key file from disk and imports it into [`SecureStorage`] under `account`.
@@ -199,7 +220,7 @@ impl KeyPairManager {
             ))
         })?;
 
-        build_record_from_private_key(normalized_account, &parsed, private_key_openssh)
+        build_record_from_private_key(normalized_account, &parsed, private_key_openssh, false)
     }
 
     /// Retrieves only the public key metadata ([`SshPublicKeyInfo`]) for `account`.
@@ -277,6 +298,7 @@ impl KeyPairManager {
         &self,
         normalized_account: &str,
         private_key: &PrivateKey,
+        passphrase_stripped: bool,
     ) -> Result<SshKeyPairRecord> {
         let openssh_priv = private_key.to_openssh(LineEnding::LF).map_err(|e| {
             TrackerError::KeyringError(format!("Failed to serialize OpenSSH private key: {e}"))
@@ -286,6 +308,7 @@ impl KeyPairManager {
             normalized_account.to_string(),
             private_key,
             openssh_priv,
+            passphrase_stripped,
         )?;
 
         let priv_key_slot = format!("{SSH_PRIVATE_KEY_PREFIX}{normalized_account}");
@@ -306,6 +329,7 @@ fn build_record_from_private_key(
     account: String,
     private_key: &PrivateKey,
     private_key_openssh: Zeroizing<String>,
+    passphrase_stripped: bool,
 ) -> Result<SshKeyPairRecord> {
     let pub_key = private_key.public_key();
     let public_key_openssh = pub_key.to_openssh().map_err(|e| {
@@ -328,6 +352,7 @@ fn build_record_from_private_key(
         private_key_openssh,
         fingerprint_sha256,
         comment,
+        passphrase_stripped,
     })
 }
 

@@ -12,10 +12,14 @@ use std::time::{Duration, Instant};
 use backend_core::{
     fetch_repo_with_auth, git_credential, git_credential_for_remote, nebulous_config_dir,
     purge_legacy_ssh_cache, redact_url_userinfo, GitAuthMaterial, GitAuthRequest, KeyPairManager,
-    McpServer, SecureStorage, TrackerStorage, LEGACY_SSH_CACHE_DIR_NAME,
+    McpServer, SecureStorage, TrackerError, TrackerStorage, Zeroizing, LEGACY_SSH_CACHE_DIR_NAME,
 };
 use git2::{CredentialType, Repository};
 use serde_json::json;
+use ssh_key::{
+    private::{Ed25519Keypair, KeypairData},
+    LineEnding, PrivateKey,
+};
 use tempfile::TempDir;
 
 const SECRET_PAT: &str = "ghp_step11_never_send_me";
@@ -121,7 +125,7 @@ fn mcp_git_tools_refuse_raw_pats_and_unbound_accounts() {
 #[test]
 fn pat_is_offered_only_to_https_urls() {
     let auth = GitAuthMaterial {
-        pat: Some(SECRET_PAT.to_string()),
+        pat: Some(Zeroizing::new(SECRET_PAT.to_string())),
         ..GitAuthMaterial::default()
     };
     let user_pass = CredentialType::USER_PASS_PLAINTEXT;
@@ -194,7 +198,7 @@ fn http_remote_never_receives_pat() {
     repo.remote("origin", &url).unwrap();
 
     let auth = GitAuthMaterial {
-        pat: Some(SECRET_PAT.to_string()),
+        pat: Some(Zeroizing::new(SECRET_PAT.to_string())),
         ..GitAuthMaterial::default()
     };
     let result = fetch_repo_with_auth(dir.path(), "origin", "main", auth);
@@ -307,7 +311,7 @@ fn vault_only_manager_does_not_fall_back_to_global_keyring_store() {
 #[test]
 fn pat_is_pinned_to_configured_https_remote_host_and_port() {
     let auth = GitAuthMaterial {
-        pat: Some(SECRET_PAT.to_string()),
+        pat: Some(Zeroizing::new(SECRET_PAT.to_string())),
         ..GitAuthMaterial::default()
     };
     let user_pass = CredentialType::USER_PASS_PLAINTEXT;
@@ -450,7 +454,7 @@ fn ssh_remote_falls_back_to_ssh_when_pat_is_present() {
         .unwrap();
 
     let auth = GitAuthMaterial {
-        pat: Some(SECRET_PAT.to_string()),
+        pat: Some(Zeroizing::new(SECRET_PAT.to_string())),
         ssh_keypair: Some(record),
         ..GitAuthMaterial::default()
     };
@@ -481,5 +485,102 @@ fn ssh_remote_falls_back_to_ssh_when_pat_is_present() {
     assert!(
         err.message().contains("https://"),
         "expected non-HTTPS PAT refusal, got: {err}"
+    );
+}
+
+#[test]
+fn import_ssh_keypair_with_policy_guards_passphrase_stripping() {
+    let dir = TempDir::new().unwrap();
+    let manager = KeyPairManager::vault_only(dir.path().join("vault")).unwrap();
+
+    let unencrypted_key = PrivateKey::new(
+        KeypairData::Ed25519(Ed25519Keypair::from_seed(&[0x42u8; 32])),
+        "testuser@example.com",
+    )
+    .expect("build test ed25519 key");
+    let unenc_pem = unencrypted_key
+        .to_openssh(LineEnding::LF)
+        .expect("serialize unencrypted test key");
+    struct TestCryptoRng;
+
+    impl ssh_key::rand_core::TryRng for TestCryptoRng {
+        type Error = std::convert::Infallible;
+
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            Ok(rand::RngCore::next_u32(&mut rand::rngs::OsRng))
+        }
+
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            Ok(rand::RngCore::next_u64(&mut rand::rngs::OsRng))
+        }
+
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, dst);
+            Ok(())
+        }
+    }
+
+    impl ssh_key::rand_core::TryCryptoRng for TestCryptoRng {}
+
+    let enc_pem = unencrypted_key
+        .encrypt(&mut TestCryptoRng, "test-passphrase")
+        .expect("encrypt test key")
+        .to_openssh(LineEnding::LF)
+        .expect("serialize encrypted test key");
+
+    let err = manager
+        .import_ssh_keypair_with_policy("testuser/strict", &enc_pem, Some("test-passphrase"), false)
+        .expect_err("encrypted key must be refused when allow_strip_passphrase is false");
+    assert!(
+        matches!(err, TrackerError::ValidationError(_)),
+        "expected ValidationError, got: {err:?}"
+    );
+    assert!(
+        !manager.has_ssh_keypair("testuser/strict"),
+        "refused key import must not persist key material"
+    );
+
+    let stripped = manager
+        .import_ssh_keypair_with_policy("testuser/strict", &enc_pem, Some("test-passphrase"), true)
+        .expect("encrypted key should import when allow_strip_passphrase is true");
+    assert!(
+        stripped.passphrase_stripped,
+        "record from encrypted import must report passphrase_stripped == true"
+    );
+    assert_eq!(stripped.comment.as_deref(), Some("testuser@example.com"));
+    assert!(manager.has_ssh_keypair("testuser/strict"));
+    assert!(
+        !manager
+            .get_ssh_keypair("testuser/strict")
+            .expect("get stored key")
+            .passphrase_stripped,
+        "get_ssh_keypair reads must report passphrase_stripped == false"
+    );
+
+    let plain = manager
+        .import_ssh_keypair_with_policy("testuser/plain", &unenc_pem, None, false)
+        .expect("unencrypted key should import when allow_strip_passphrase is false");
+    assert!(
+        !plain.passphrase_stripped,
+        "unencrypted key import must report passphrase_stripped == false"
+    );
+    assert_eq!(plain.comment.as_deref(), Some("testuser@example.com"));
+}
+
+#[test]
+fn git_auth_material_keeps_pat_zeroizing_and_redacts_debug() {
+    let auth = GitAuthMaterial {
+        pat: Some(Zeroizing::new(SECRET_PAT.to_string())),
+        ..GitAuthMaterial::default()
+    };
+    assert!(auth.has_pat());
+    let debug_output = format!("{auth:?}");
+    assert!(
+        debug_output.contains("<REDACTED>"),
+        "Debug output must redact pat: {debug_output}"
+    );
+    assert!(
+        !debug_output.contains(SECRET_PAT),
+        "Debug output must never expose secret PAT: {debug_output}"
     );
 }

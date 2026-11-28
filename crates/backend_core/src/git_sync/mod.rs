@@ -7,9 +7,10 @@ use git2::{
     StatusOptions, Tree,
 };
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
 
-use crate::crypto::{nebulous_config_dir, KeyPairManager, SecureStorage, SshKeyPairRecord};
+use crate::crypto::{
+    nebulous_config_dir, KeyPairManager, SecureStorage, SshKeyPairRecord, Zeroizing,
+};
 use crate::error::{Result, TrackerError};
 pub use crate::models::project::CommitPolicyConfig;
 use crate::models::registry::{credential_accounts_for_root_in, validate_credential_account_name};
@@ -231,7 +232,7 @@ impl std::fmt::Debug for GitAuthRequest {
 /// (`SecureStorage` / `KeyPairManager`, `~/.ssh/id_ed25519`, or `SSH_AUTH_SOCK`).
 #[derive(Clone, Default)]
 pub struct GitAuthMaterial {
-    pub pat: Option<String>,
+    pub pat: Option<Zeroizing<String>>,
     pub ssh_keypair: Option<SshKeyPairRecord>,
     pub ssh_key_file: Option<(PathBuf, Option<PathBuf>)>,
     pub ssh_auth_sock: Option<String>,
@@ -939,7 +940,7 @@ pub fn build_pat_callbacks<'a>(pat: Option<&'a str>) -> RemoteCallbacks<'a> {
         pat: pat
             .map(str::trim)
             .filter(|t| !t.is_empty())
-            .map(str::to_string),
+            .map(|t| Zeroizing::new(t.to_string())),
         ssh_keypair: None,
         ssh_key_file: discover_local_ssh_key_files(),
         ssh_auth_sock: std::env::var("SSH_AUTH_SOCK")
@@ -1550,14 +1551,14 @@ impl TrackerStorage {
             .as_ref()
             .map(|t| t.trim())
             .filter(|t| !t.is_empty())
-            .map(str::to_string);
+            .map(|t| Zeroizing::new(t.to_string()));
         let mut ssh_keypair = None;
 
         if let Some(ref account) = account {
             if pat.is_none() {
                 pat = match manager {
-                    Some(mgr) => mgr.get_pat_string(account).ok(),
-                    None => get_pat_from_keyring(account).ok(),
+                    Some(mgr) => mgr.get_pat(account).ok(),
+                    None => get_pat_from_keyring(account).ok().map(Zeroizing::new),
                 };
             }
             if let Some(mgr) = manager {
