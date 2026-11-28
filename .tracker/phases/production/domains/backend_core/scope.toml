@@ -63,7 +63,7 @@ created_at = "2026-11-19T01:57:28Z"
 [[items.bugs]]
 id = "BUG-0004"
 title = "Treat an empty documented commit as success when the caller allows it"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-20T22:21:29Z"
 
@@ -112,7 +112,7 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.bugs]]
 id = "BUG-0014"
 title = "[AUD-07] git_sync merge-reconcile error suppression, unchecked duplicate_ids push, and git_commit_documented pre-amend failure window"
-status = "open"
+status = "closed"
 severity = "high"
 created_at = "2026-11-25T03:28:23Z"
 
@@ -126,7 +126,7 @@ created_at = "2026-11-25T03:28:23Z"
 [[items.bugs]]
 id = "BUG-0019"
 title = "[AUD-14] Cross-host HTTPS redirect PAT leakage via libgit2 default redirects"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-25T03:28:23Z"
 
@@ -203,30 +203,65 @@ created_at = "2026-11-26T16:39:35Z"
 [[items.bugs]]
 id = "BUG-0035"
 title = "git_credential_for_remote blocks SSH fallback on non-HTTPS remotes when PAT is present"
-status = "pending"
+status = "closed"
 severity = "high"
 created_at = "2026-11-27T03:13:44Z"
 
 [[items.bugs]]
 id = "BUG-0036"
 title = "push_repo_with_auth pins PAT to remote.url() instead of remote.pushurl()"
-status = "pending"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-27T03:13:45Z"
 
 [[items.bugs]]
 id = "BUG-0037"
 title = "vault_only_manager_does_not_fall_back_to_global_keyring_store never seeds global store"
-status = "pending"
+status = "closed"
 severity = "low"
 created_at = "2026-11-27T03:13:46Z"
 
 [[items.bugs]]
 id = "BUG-0038"
 title = "ensure_secure_dir_propagates_permission_error does not test set_permissions failure"
-status = "pending"
+status = "closed"
 severity = "low"
 created_at = "2026-11-27T03:13:46Z"
+
+[[items.bugs]]
+id = "BUG-0039"
+title = "pull_repo_with_auth leaves dirty working tree when reconcile_indexes fails after checkout_tree"
+status = "pending"
+severity = "medium"
+created_at = "2026-11-28T03:42:01Z"
+
+[[items.bugs]]
+id = "BUG-0040"
+title = "Unsynchronized NEBULOUS_CONFIG_DIR env::set_var race in credential_hygiene.rs"
+status = "pending"
+severity = "low"
+created_at = "2026-11-28T03:42:02Z"
+
+[[items.bugs]]
+id = "BUG-0041"
+title = "git_commit_documented force-updates branch ref without HEAD CAS check and discards doc rollback errors"
+status = "pending"
+severity = "low"
+created_at = "2026-11-28T03:42:02Z"
+
+[[items.bugs]]
+id = "BUG-0042"
+title = "import_ssh_key_file and free import_ssh_keypair lack allow_strip_passphrase policy variant"
+status = "pending"
+severity = "low"
+created_at = "2026-11-28T03:42:02Z"
+
+[[items.bugs]]
+id = "BUG-0043"
+title = "close_item_and_commit rolls back .tracker on disk if sync_user_index_paths fails after HEAD advances"
+status = "pending"
+severity = "low"
+created_at = "2026-11-28T03:42:03Z"
 
 [[items.features]]
 id = "FEAT-0001"
@@ -861,14 +896,14 @@ created_at = "2026-11-27T01:59:58Z"
 [[items.tasks]]
 id = "TASK-0135"
 title = "Zeroize GitAuthMaterial::pat (Option<Zeroizing<String>>) and guard SSH passphrase stripping in KeyPairManager (TASK-0110 non-breaking slice / AUD-13)"
-status = "pending"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-27T01:59:58Z"
 
 [[items.tasks]]
 id = "TASK-0136"
 title = "Allow updating workflow_integration.rs PAT assertions for STEP 46F"
-status = "pending"
+status = "closed"
 severity = "high"
 created_at = "2026-11-27T02:43:40Z"
 

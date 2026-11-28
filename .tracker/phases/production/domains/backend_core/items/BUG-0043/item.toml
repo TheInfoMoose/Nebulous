@@ -1,0 +1,17 @@
+[item]
+id = "BUG-0043"
+type = "bug"
+title = "close_item_and_commit rolls back .tracker on disk if sync_user_index_paths fails after HEAD advances"
+status = "pending"
+severity = "low"
+scope_ref = "backend_core"
+created_at = "2026-11-28T03:42:03Z"
+updated_at = "2026-11-28T03:42:03Z"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []

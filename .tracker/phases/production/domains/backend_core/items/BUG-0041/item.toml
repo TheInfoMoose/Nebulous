@@ -1,0 +1,17 @@
+[item]
+id = "BUG-0041"
+type = "bug"
+title = "git_commit_documented force-updates branch ref without HEAD CAS check and discards doc rollback errors"
+status = "pending"
+severity = "low"
+scope_ref = "backend_core"
+created_at = "2026-11-28T03:42:02Z"
+updated_at = "2026-11-28T03:42:02Z"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []

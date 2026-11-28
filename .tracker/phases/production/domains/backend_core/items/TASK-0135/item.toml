@@ -4,11 +4,11 @@ schema_version = 2
 id = "TASK-0135"
 type = "task"
 title = "Zeroize GitAuthMaterial::pat (Option<Zeroizing<String>>) and guard SSH passphrase stripping in KeyPairManager (TASK-0110 non-breaking slice / AUD-13)"
-status = "pending"
+status = "closed"
 severity = "medium"
 scope_ref = "backend_core"
 created_at = "2026-11-27T01:59:58Z"
-updated_at = "2026-11-28T02:32:23Z"
+updated_at = "2026-11-28T03:43:34Z"
 source_ref = "STEP 46F"
 
 [effort]
@@ -18,4 +18,8 @@ last_timer_session = "TASK-0135@2026-11-27T02:41:28Z"
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-28"
+commit = "e2c5081"
+summary = "Completed in Phase 29 STEP 47B (f84d167)"

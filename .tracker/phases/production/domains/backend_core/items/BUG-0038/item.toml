@@ -2,11 +2,11 @@
 id = "BUG-0038"
 type = "bug"
 title = "ensure_secure_dir_propagates_permission_error does not test set_permissions failure"
-status = "pending"
+status = "closed"
 severity = "low"
 scope_ref = "backend_core"
 created_at = "2026-11-27T03:13:46Z"
-updated_at = "2026-11-27T03:13:46Z"
+updated_at = "2026-11-28T03:43:35Z"
 
 [effort]
 logged_time_minutes = 0
@@ -14,4 +14,8 @@ iteration_count = 1
 
 [history]
 recurrence_count = 0
-previous_fixes = []
+
+[[history.previous_fixes]]
+date = "2026-11-28"
+commit = "e2c5081"
+summary = "Fixed in Phase 29 STEP 47C (4104180)"
