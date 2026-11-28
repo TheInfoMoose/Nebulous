@@ -1313,6 +1313,7 @@ fn handle_close(
         body: None,
         tracker_only: paths.is_empty(),
         paths: paths.to_vec(),
+        allow_empty_ok: false,
     };
     storage.validate_documented_commit(&commit_input)?;
 
@@ -1830,6 +1831,7 @@ fn handle_sync(
             body: None,
             tracker_only: paths.is_empty(),
             paths: paths.to_vec(),
+            allow_empty_ok: false,
         })?;
         if !commit_only {
             duplicate_ids = storage.git_sync_with_report(message, auth)?.duplicate_ids;
@@ -2986,6 +2988,7 @@ fn handle_git(storage: &TrackerStorage, action: &GitCommand, json: bool) -> Resu
                 body: body.clone(),
                 tracker_only: *tracker_only || paths.is_empty(),
                 paths: paths.clone(),
+                allow_empty_ok: false,
             })?;
 
             if json {

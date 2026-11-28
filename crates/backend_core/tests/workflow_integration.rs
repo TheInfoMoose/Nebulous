@@ -3098,3 +3098,92 @@ fn move_task_between_phases_removes_source_stub_and_updates_summary() {
     assert_eq!(loaded_loc.phase_id, "production");
     assert_eq!(loaded_detail.manifest.item.id, task_id);
 }
+
+#[test]
+fn git_commit_documented_allow_empty_ok_is_opt_in_via_api_and_mcp() {
+    use backend_core::McpServer;
+    use serde_json::json;
+
+    let dir = TempDir::new().expect("should create tempdir");
+    let storage = TrackerStorage::init_standard(dir.path(), "AllowEmptyOkTest")
+        .expect("should init_standard");
+    let repo = Repository::init(dir.path()).expect("should init git repo");
+    {
+        let mut cfg = repo.config().expect("should open git config");
+        cfg.set_str("user.name", "testuser")
+            .expect("should set user.name");
+        cfg.set_str("user.email", "testuser@example.com")
+            .expect("should set user.email");
+    }
+    let initial_sha = storage
+        .git_commit_tracker(Some("chore: init tracker"))
+        .expect("should commit initial tracker")
+        .expect("initial tracker commit should return short sha");
+    let head_before = repo
+        .head()
+        .expect("should resolve HEAD")
+        .peel_to_commit()
+        .expect("should peel HEAD to commit")
+        .id();
+
+    // 1. Default allow_empty_ok (false) preserves strict ValidationError on a clean tree.
+    let strict_err = storage
+        .git_commit_documented(DocumentedCommitInput::tracker_only("orrery step pass"))
+        .expect_err("default allow_empty_ok=false must reject empty commit");
+    assert!(
+        matches!(strict_err, TrackerError::ValidationError(ref msg) if msg.contains("No changes to commit")),
+        "expected ValidationError for empty commit, got {strict_err:?}"
+    );
+
+    // 2. Opt-in allow_empty_ok=true via Rust API succeeds without creating a commit.
+    let api_outcome = storage
+        .git_commit_documented(
+            DocumentedCommitInput::tracker_only("orrery step pass").with_allow_empty_ok(true),
+        )
+        .expect("allow_empty_ok=true must succeed on clean tree");
+    assert!(api_outcome.nothing_to_commit);
+    assert!(api_outcome.changed_files.is_empty());
+    assert!(!api_outcome.documentation_updated);
+    assert_eq!(api_outcome.commit_sha, initial_sha);
+    assert_eq!(api_outcome.recorded_fix_sha, initial_sha);
+    assert_eq!(
+        repo.head().unwrap().peel_to_commit().unwrap().id(),
+        head_before,
+        "HEAD must remain unchanged after allow_empty_ok API call"
+    );
+
+    // 3. Opt-in allow_empty_ok=true via MCP succeeds without creating a commit,
+    // while omitting allow_empty_ok stays strict.
+    let mut server = McpServer::new(Some(storage));
+    let mcp_strict_err = server
+        .call_tool(
+            "git_commit_documented",
+            json!({ "summary": "orrery step pass", "dry_run": false }),
+        )
+        .expect_err("MCP git_commit_documented without allow_empty_ok must stay strict");
+    assert!(
+        matches!(mcp_strict_err, TrackerError::ValidationError(ref msg) if msg.contains("No changes to commit")),
+        "expected ValidationError from strict MCP call, got {mcp_strict_err:?}"
+    );
+
+    let mcp_ok = server
+        .call_tool(
+            "git_commit_documented",
+            json!({
+                "summary": "orrery step pass",
+                "dry_run": false,
+                "allow_empty_ok": true
+            }),
+        )
+        .expect("MCP git_commit_documented with allow_empty_ok=true must succeed");
+    assert_eq!(mcp_ok["dry_run"], json!(false));
+    assert_eq!(mcp_ok["nothing_to_commit"], json!(true));
+    assert_eq!(mcp_ok["changed_files"], json!([]));
+    assert_eq!(mcp_ok["documentation_updated"], json!(false));
+    assert_eq!(mcp_ok["commit_sha"], json!(initial_sha));
+    assert_eq!(
+        repo.head().unwrap().peel_to_commit().unwrap().id(),
+        head_before,
+        "HEAD must remain unchanged after allow_empty_ok MCP call"
+    );
+}

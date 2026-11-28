@@ -864,6 +864,7 @@ impl McpServer {
                         "body": { "type": "string", "description": "Optional extended commit notes." },
                         "tracker_only": { "type": "boolean", "default": true, "description": "When true (default), stages only .tracker/ files. Set false together with `paths` to commit workspace files." },
                         "paths": { "type": "array", "items": { "type": "string" }, "description": "Explicit project-relative files or directories to stage (required when tracker_only is false). Glob metacharacters, absolute paths, and '..' are rejected; untracked files are staged only when listed by exact path." },
+                        "allow_empty_ok": { "type": "boolean", "default": false, "description": "When true, succeeds with nothing_to_commit: true when there are no changes to commit instead of returning a validation error." },
                         "dry_run": { "type": "boolean", "default": true, "description": "When true (default), returns git status and what would be committed without committing. Pass false to commit." }
                     },
                     "required": ["summary"]
@@ -2276,6 +2277,8 @@ impl McpServer {
             tracker_only: bool,
             #[serde(default)]
             paths: Vec<String>,
+            #[serde(default)]
+            allow_empty_ok: bool,
             #[serde(default = "default_true")]
             dry_run: bool,
         }
@@ -2312,6 +2315,7 @@ impl McpServer {
             body: non_empty(parsed.body.as_deref()).map(str::to_string),
             tracker_only: parsed.tracker_only,
             paths: parsed.paths,
+            allow_empty_ok: parsed.allow_empty_ok,
         })?;
         let mut value = serde_json::to_value(outcome)
             .map_err(|e| TrackerError::ValidationError(e.to_string()))?;

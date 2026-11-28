@@ -64,6 +64,11 @@ pub struct DocumentedCommitInput {
     /// Directories stage only changes to already-tracked files.
     #[serde(default)]
     pub paths: Vec<String>,
+    /// When `true`, an empty commit (no staged changes relative to `HEAD`) returns
+    /// `Ok(DocumentedCommitOutcome { nothing_to_commit: true, .. })` without creating a commit
+    /// or mutating `.tracker/` / `.git/index`. Defaults to `false` (strict `ValidationError`).
+    #[serde(default)]
+    pub allow_empty_ok: bool,
 }
 
 fn default_tracker_only() -> bool {
@@ -79,6 +84,7 @@ impl Default for DocumentedCommitInput {
             body: None,
             tracker_only: true,
             paths: Vec::new(),
+            allow_empty_ok: false,
         }
     }
 }
@@ -140,6 +146,11 @@ impl DocumentedCommitInput {
         }
         self
     }
+
+    pub fn with_allow_empty_ok(mut self, allow_empty_ok: bool) -> Self {
+        self.allow_empty_ok = allow_empty_ok;
+        self
+    }
 }
 
 /// Outcome returned by [`TrackerStorage::git_pull_with_report`].
@@ -179,6 +190,9 @@ pub struct DocumentedCommitOutcome {
     pub changed_files: Vec<String>,
     /// `true` if `item.toml` and `desc.md` were automatically updated and staged into the commit.
     pub documentation_updated: bool,
+    /// `true` when `allow_empty_ok` short-circuited an empty commit without modifying Git or `.tracker/`.
+    #[serde(default)]
+    pub nothing_to_commit: bool,
 }
 
 impl DocumentedCommitOutcome {
@@ -1936,19 +1950,34 @@ impl TrackerStorage {
         let tree_id = index.write_tree_to(&repo)?;
         let tree = repo.find_tree(tree_id)?;
 
-        if let Some(ref parent) = parent_commit {
-            if parent.tree_id() == tree_id {
+        let no_changes = parent_commit
+            .as_ref()
+            .is_some_and(|parent| parent.tree_id() == tree_id);
+        let changed_files = if no_changes {
+            Vec::new()
+        } else {
+            changed_files_between(&repo, parent_tree.as_ref(), &tree)?
+        };
+        if no_changes || changed_files.is_empty() {
+            if !input.allow_empty_ok {
                 return Err(TrackerError::ValidationError(
                     "No changes to commit in workspace or .tracker/".to_string(),
                 ));
             }
-        }
-
-        let changed_files = changed_files_between(&repo, parent_tree.as_ref(), &tree)?;
-        if changed_files.is_empty() {
-            return Err(TrackerError::ValidationError(
-                "No changes to commit in workspace or .tracker/".to_string(),
-            ));
+            let head_sha = parent_commit
+                .as_ref()
+                .map(|parent| short_sha_for_oid(&repo, parent.id()))
+                .unwrap_or_default();
+            return Ok(DocumentedCommitOutcome {
+                commit_sha: head_sha.clone(),
+                recorded_fix_sha: head_sha,
+                message: prepared.commit_message,
+                item_id: prepared.item_id,
+                scope_id: prepared.resolved_scope,
+                changed_files: Vec::new(),
+                documentation_updated: false,
+                nothing_to_commit: true,
+            });
         }
 
         let sig = resolve_signature(&repo)?;
@@ -2068,6 +2097,7 @@ impl TrackerStorage {
             scope_id: resolved_scope,
             changed_files,
             documentation_updated,
+            nothing_to_commit: false,
         })
     }
 
