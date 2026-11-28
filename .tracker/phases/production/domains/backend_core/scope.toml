@@ -871,3 +871,38 @@ title = "Allow updating workflow_integration.rs PAT assertions for STEP 46F"
 status = "pending"
 severity = "high"
 created_at = "2026-11-27T02:43:40Z"
+
+[[items.tasks]]
+id = "TASK-0137"
+title = "Fix git_credential_for_remote SSH fallback on non-HTTPS remotes and pin push_repo_with_auth to remote.pushurl() (BUG-0035, BUG-0036; closes BUG-0019)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-28T02:30:25Z"
+
+[[items.tasks]]
+id = "TASK-0138"
+title = "Zeroize GitAuthMaterial::pat (Option<Zeroizing<String>>) and guard SSH passphrase stripping in KeyPairManager (re-split of STEP 46F, TASK-0135, TASK-0136, TASK-0110)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-28T02:30:25Z"
+
+[[items.tasks]]
+id = "TASK-0139"
+title = "Fix Phase 28 test defects: seed global vault PAT in vault_only_manager_does_not_fall_back_to_global_keyring_store and test set_permissions failure in ensure_secure_dir_propagates_permission_error (BUG-0037, BUG-0038)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-28T02:30:25Z"
+
+[[items.tasks]]
+id = "TASK-0140"
+title = "Propagate merge-reconcile errors, block git_push on duplicate_ids, and fix git_commit_documented pre-amend window, reachable fix SHA, and .git/index stat metadata (BUG-0014 / AUD-07)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-28T02:30:25Z"
+
+[[items.tasks]]
+id = "TASK-0141"
+title = "Add opt-in allow_empty_ok (default false) to DocumentedCommitInput, git_commit_documented, and MCP git_commit_documented for idempotent Orrery reruns (BUG-0004)"
+status = "open"
+severity = "medium"
+created_at = "2026-11-28T02:30:26Z"

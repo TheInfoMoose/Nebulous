@@ -23,7 +23,7 @@ Nebulous is a Git-backed, CLI/TUI-first and MCP-enabled project, bug, and task t
 - **Neon** never commits, never edits this file or the forbidden paths, and files bugs and scope lapses as **pending** neb items.
 - **Repeated failures** or a scope lapse defer the step. A step whose PRE_GATE then fails is deferred without running. Too many deferrals (`max(2, ceil(steps/3))`) stop the phase.
 
-**Phase goal (Phase 28):** Fix the Phase 27 read-only registry regression (`BUG-0033`) and close high-risk secret vault, keyring, HTTPS PAT redirect, agent-prompt injection, and credential-hygiene security gaps (`BUG-0009`, `BUG-0011`, `BUG-0019`, `BUG-0018`, non-breaking `TASK-0110`), each guarded by dedicated regression tests.
+**Phase goal (Phase 29):** Resolve Phase 28 security fallout (SSH fallback `BUG-0035`, `pushurl` pinning `BUG-0036`, re-staged `TASK-0110` zeroize/passphrase-guard, test defects `BUG-0037`/`BUG-0038`) and make `git_sync`, `git_commit_documented`, and `neb done -c` transactional, lock-safe, and idempotent (`BUG-0014`, `BUG-0004`, `BUG-0015`).
 
 **Side findings, bugs and scope lapses** become **pending neb items**, reviewed once at phase end. Every Up Next row has a neb task (`source_ref` = step ID); commits start with `[<TASK-ID>](<scope>)`.
 
@@ -33,12 +33,12 @@ Nebulous is a Git-backed, CLI/TUI-first and MCP-enabled project, bug, and task t
 
 | # | Step | Command | Scope | Target Files | Waits on |
 | :---: | :--- | :---: | :--- | :--- | :--- |
-| 1 | **STEP 46A** | `/goal` | Fix read-only registry lookups (`projects.lock` shared/read-only open, per-path lock map, no prune write on read) (`BUG-0033`) | `crates/backend_core/src/models/registry.rs`, `crates/backend_core/tests/storage_integration.rs` | — |
-| 2 | **STEP 46B** | `/boost` | Add mode-aware `atomic_write_bytes_with_mode` (`0o600`), propagate `ensure_secure_dir` errors, reject implicit `temp_dir()` vault fallback, and harden Windows replace/ACL handling (`BUG-0009` / `AUD-02`) | `crates/backend_core/src/storage/atomic.rs`, `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/src/crypto/mod.rs` | — |
-| 3 | **STEP 46C** | `/boost` | Fix `SecureStorage` keyring/vault split-brain and route `git_sync` PAT functions exclusively through `SecureStorage` (`BUG-0011` / `AUD-04`) | `crates/backend_core/src/crypto/mod.rs`, `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/tests/credential_hygiene.rs` | `STEP 46B` |
-| 4 | **STEP 46D** | `/boost` | Pin `libgit2` PAT credentials and disable cross-host redirects (`RemoteRedirect::None`) to the configured HTTPS remote host (`BUG-0019` / `AUD-14`) | `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/tests/credential_hygiene.rs` | — |
-| 5 | **STEP 46E** | `/goal` | Sanitize all single-line untrusted fields and Unicode bidi format chars in `agent_context::synthesize_bounded_prompt` (`BUG-0018` / `AUD-12`) | `crates/backend_core/src/agent_context/mod.rs`, `crates/backend_core/tests/workflow_integration.rs` | — |
-| 6 | **STEP 46F** | `/goal` | Zeroize `GitAuthMaterial::pat` (`Option<Zeroizing<String>>`) and guard SSH passphrase stripping in `KeyPairManager` (`TASK-0110` non-breaking slice / `AUD-13`) | `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/src/crypto/keys.rs`, `crates/backend_core/tests/credential_hygiene.rs` | `STEP 46C`, `STEP 46D` |
+| 1 | **STEP 47A** | `/goal` | Fix `git_credential_for_remote` SSH fallback on non-HTTPS remotes and pin `push_repo_with_auth` to `remote.pushurl()` (`BUG-0035`, `BUG-0036`; closes `BUG-0019`) | `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/tests/credential_hygiene.rs` | — |
+| 2 | **STEP 47B** | `/goal` | Zeroize `GitAuthMaterial::pat` (`Option<Zeroizing<String>>`) and guard SSH passphrase stripping in `KeyPairManager` (re-split of `STEP 46F`, `TASK-0135`, `TASK-0136`, `TASK-0110`) | `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/src/crypto/keys.rs`, `crates/backend_core/tests/credential_hygiene.rs`, `crates/backend_core/tests/workflow_integration.rs` | `STEP 47A` |
+| 3 | **STEP 47C** | `/goal` | Fix Phase 28 test defects: seed global vault PAT in `vault_only_manager_does_not_fall_back_to_global_keyring_store` and test `set_permissions` failure in `ensure_secure_dir_propagates_permission_error` (`BUG-0037`, `BUG-0038`) | `crates/backend_core/tests/credential_hygiene.rs`, `crates/backend_core/src/crypto/mod.rs` | — |
+| 4 | **STEP 47D** | `/boost` | Propagate merge-reconcile errors, block `git_push` on `duplicate_ids`, and fix `git_commit_documented` pre-amend window, reachable fix SHA, and `.git/index` stat metadata (`BUG-0014` / `AUD-07`) | `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/tests/git_safety.rs`, `crates/backend_core/tests/workflow_integration.rs`, `crates/nebulous_cli/tests/done_commit_safety.rs`, `crates/nebulous_cli/tests/cli_integration.rs` | `STEP 47B` |
+| 5 | **STEP 47E** | `/goal` | Add opt-in `allow_empty_ok` (default `false`) to `DocumentedCommitInput`, `git_commit_documented`, and MCP `git_commit_documented` for idempotent Orrery reruns (`BUG-0004`) | `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/src/mcp/mod.rs`, `crates/nebulous_cli/src/commands/mod.rs`, `crates/backend_core/tests/workflow_integration.rs` | `STEP 47D` |
+| 6 | **STEP 47F** | `/boost` | Move `neb done -c` close+commit+rollback into `backend_core` under one `with_write_lock` and surface rollback failures with a post-close commit-failure regression test (`BUG-0015` / `AUD-08`) | `crates/backend_core/src/workflow/lifecycle.rs`, `crates/nebulous_cli/src/commands/mod.rs`, `crates/nebulous_cli/tests/done_commit_safety.rs` | `STEP 47E` |
 
 ### Completed
 
@@ -236,19 +236,16 @@ Rows 1–12 are recorded from git history; their `POST_GATE`s weren't re-run whe
 | **STEP 45D** | **COMPLETED** (`f94325e`) | `/boost` | Reject symlinked `.tracker/` roots in `discover` and `guard_tracker_path` with Unix `O_NOFOLLOW` hardening and containment tests (`BUG-0010` / `AUD-03`; `TASK-0127` closed) | `crates/backend_core/Cargo.toml`, `Cargo.lock`, `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/tests/path_containment.rs` |
 | **STEP 45E** | **COMPLETED** (`1002a15`) | `/boost` | Lock public `TrackerStorage` mutators, `read_active_timer` quarantine, `tool_pin_stable_release`, and `projects.toml` registry (`projects.lock`) (`BUG-0020` / `AUD-17`; `TASK-0128` closed) | `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/src/models/registry.rs`, `crates/backend_core/src/mcp/mod.rs`, `crates/backend_core/tests/storage_integration.rs` |
 | **STEP 45F** | **COMPLETED** (`17474a8`) | `/goal` | Add `AtomicBool` shutdown signal to `TrackerWatcher::drop` (including contended lock waits) and skip symlinks in `hash_index_files` (`BUG-0023` / `AUD-20`; `TASK-0129` closed) | `crates/backend_core/src/watcher/mod.rs`, `crates/backend_core/tests/watcher_integration.rs` |
+| **STEP 46A** | **COMPLETED** (`68bbb7c`) | `/goal` | Fix read-only registry lookups (`projects.lock` shared/read-only open, per-path lock map, no prune write on read) (`BUG-0033`, `TASK-0130` closed) | `crates/backend_core/src/models/registry.rs`, `crates/backend_core/tests/storage_integration.rs` |
+| **STEP 46B** | **COMPLETED** (`da89c2f`) | `/boost` | Add mode-aware `atomic_write_bytes_with_mode` (`0o600`), propagate `ensure_secure_dir` errors, reject implicit `temp_dir()` vault fallback, and harden Windows replace/ACL handling (`BUG-0009` / `AUD-02`, `TASK-0131` closed) | `crates/backend_core/src/storage/atomic.rs`, `crates/backend_core/src/storage/mod.rs`, `crates/backend_core/src/crypto/mod.rs` |
+| **STEP 46C** | **COMPLETED** (`635e541`) | `/boost` | Fix `SecureStorage` keyring/vault split-brain and route `git_sync` PAT functions exclusively through `SecureStorage` (`BUG-0011` / `AUD-04`, `TASK-0132` closed) | `crates/backend_core/src/crypto/mod.rs`, `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/tests/credential_hygiene.rs` |
+| **STEP 46D** | **COMPLETED** (`c1be53e`) | `/boost` | Pin `libgit2` PAT credentials and disable cross-host redirects (`RemoteRedirect::None`) to the configured HTTPS remote host (`BUG-0019` / `AUD-14`; `TASK-0133` closed; follow-up `BUG-0035`/`BUG-0036` in `STEP 47A`) | `crates/backend_core/src/git_sync/mod.rs`, `crates/backend_core/tests/credential_hygiene.rs` |
+| **STEP 46E** | **COMPLETED** (`5c9a9b0`) | `/goal` | Sanitize all single-line untrusted fields and Unicode bidi format chars in `agent_context::synthesize_bounded_prompt` (`BUG-0018` / `AUD-12`, `TASK-0134` closed) | `crates/backend_core/src/agent_context/mod.rs`, `crates/backend_core/tests/workflow_integration.rs` |
 
 
 ### Future phases
 
 Outlines only (goal, done criteria, and step titles). `/phase-plan` writes the contract step blocks just before each phase starts.
-
-- **Phase 29 — Git Sync & Documented Commit Atomicity (High-Risk Git)**
-  - **Goal:** Make `git_sync`, `git_commit_documented`, and `neb done -c` transactional, lock-safe, and regression-tested against merge-reconcile errors, duplicate-ID pushes, and post-close commit failures.
-  - **Done when:** Merge-reconcile errors propagate; `git_sync` aborts before `git_push` on `duplicate_ids`; `git_commit_documented` records reachable commit SHAs, keeps `.git/index` stat-clean, rolls back cleanly on failure, and supports opt-in `allow_empty_ok`; `neb done -c` executes close+commit+rollback inside a single `with_write_lock` in `backend_core` and surfaces rollback errors.
-  - **Steps:**
-    - Propagate merge-reconcile errors, block `git_push` on `duplicate_ids`, and fix `git_commit_documented` pre-amend window, fix SHA, and index metadata (`BUG-0014` / `AUD-07`)
-    - Add opt-in `allow_empty_ok` (default `false`) to `git_commit_documented` for idempotent Orrery reruns (`BUG-0004`)
-    - Move `neb done -c` close+commit+rollback into `backend_core` under one `with_write_lock` and surface rollback failures with a commit-failure regression test (`BUG-0015` / `AUD-08`)
 
 - **Phase 30 — Backend Resilience, Schema Compat, Planning & Assist Fixes (Medium-Risk Core)**
   - **Goal:** Ensure single corrupt/future-schema files, multi-phase plans, and edge-case timers/paths never crash or corrupt core backend operations.
@@ -312,6 +309,9 @@ Outlines only (goal, done criteria, and step titles). `/phase-plan` writes the c
 **Recorded decisions (2026-11-26, user):**
 - **Phase 28 scope:** Fold `BUG-0033` (Phase 27 read-only registry regression) into Phase 28 alongside the 5 Security Hardening steps (6 steps total); defer `BUG-0034` (sibling component RMW write locks) to Phase 30/31.
 - **`AUD-13` / `TASK-0110` KDF migration:** Keep `NEBULOUS_VAULT_MASTER_KEY` KDF migration parked; Phase 28 executes only the non-breaking zeroize + SSH passphrase guard slice.
+
+**Recorded decisions (2026-11-27, user):**
+- **Phase 29 scope:** Combined 6-step Phase 29 folding Phase 28 fallout (`BUG-0035`/`BUG-0036`, re-split `STEP 46F` as `STEP 47B`, and test defects `BUG-0037`/`BUG-0038`) ahead of Git Sync & Documented Commit Atomicity (`BUG-0014`, `BUG-0004`, `BUG-0015`).
 
 **Open before future phases:**
 1. **Before Phase 34 (`AUD-11` / `TASK-0109` Suite-3 MCP tools):** Should the 4 Suite-3 release-pin MCP tools (`record_rolling_update`, `record_verification_run`, `pin_stable_release`, `rollback_to_pinned_release`) be neutralized in place (non-breaking) or feature-gated/removed?
@@ -1185,6 +1185,355 @@ Tests:
 
 [POST_GATE]
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'pub pat: Option<Zeroizing<String>>' crates/backend_core/src/git_sync/mod.rs && grep -q 'pub fn import_ssh_keypair_with_policy' crates/backend_core/src/crypto/keys.rs && grep -q 'pub passphrase_stripped: bool' crates/backend_core/src/crypto/keys.rs && grep -q 'fn import_ssh_keypair_with_policy_guards_passphrase_stripping' crates/backend_core/tests/credential_hygiene.rs && grep -q 'fn git_auth_material_keeps_pat_zeroizing_and_redacts_debug' crates/backend_core/tests/credential_hygiene.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+---
+
+## Phase 29 Step Contracts
+
+### STEP 47A: Fix `git_credential_for_remote` SSH fallback and `push_repo_with_auth` `pushurl` pinning (`BUG-0035`, `BUG-0036`; closes `BUG-0019`)
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 47A: Allow SSH fallback on non-HTTPS remotes when a PAT is present and pin push_repo_with_auth to remote.pushurl() with fallback to remote.url()
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/git_sync/mod.rs
+  - crates/backend_core/tests/credential_hygiene.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/git_sync/mod.rs:1000-1178
+  - crates/backend_core/tests/credential_hygiene.rs:307-360
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not relax HTTPS PAT host/port pinning for configured https:// remotes or change RemoteRedirect::None.
+
+[PRE_GATE]
+grep -q 'pub fn git_credential_for_remote' crates/backend_core/src/git_sync/mod.rs
+
+[MUTATION_SPEC]
+Goal: Non-HTTPS remotes (such as SSH remotes advertising both password and publickey auth) fall through to SSH credentials even when a PAT is stored alongside an SSH keypair, and `push_repo_with_auth` pins PAT delivery to `remote.pushurl()` when configured (falling back to `remote.url()`).
+
+Contract & Behavior:
+  1. `crates/backend_core/src/git_sync/mod.rs` (`git_credential_for_remote`):
+     - When `allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT)`, `auth.pat` is non-empty, and `configured_remote_url` is `Some(remote_url)`:
+       - If `https_host_port(remote_url)` is `Some(configured_hp)`:
+         - Return `Cred::userpass_plaintext(user, token)` when `https_host_port(url) == Some(configured_hp)`.
+         - Otherwise return `Err(git2::Error::from_str("Refusing to send Personal Access Token: host mismatch with configured https:// remote"))`.
+       - If `https_host_port(remote_url)` is `None` (the configured remote is non-HTTPS, e.g. `ssh://`, `git@...`, `http://`):
+         - Do NOT send the PAT and do NOT return a host-mismatch error early; fall through to the SSH (`SSH_KEY | SSH_MEMORY | SSH_CUSTOM`), `USERNAME`, and `DEFAULT` branches.
+         - If no subsequent branch satisfies `allowed_types`, keep the existing final error (`"No usable Git credentials: a Personal Access Token is only sent to https:// remotes"` when `USER_PASS_PLAINTEXT` was requested and `auth.has_pat()`, else `"No usable Git credentials for this remote"`).
+  2. `crates/backend_core/src/git_sync/mod.rs` (`push_repo_with_auth` + helper `effective_push_remote_url`):
+     - Extract a helper `fn effective_push_remote_url(remote: &git2::Remote<'_>) -> Option<String>` that returns `remote.pushurl()` when configured, otherwise `remote.url()`.
+     - Call `effective_push_remote_url(&remote)` in `push_repo_with_auth` and pass the result to `build_auth_callbacks_for_remote`.
+
+Must still work:
+  - `pat_is_pinned_to_configured_https_remote_host_and_port` and `pat_callbacks_refuse_cross_host_redirects` in `credential_hygiene.rs` (configured `https://` remotes still reject cross-host, wrong-port, `http://`, and `ssh://` URLs with the host-mismatch error).
+
+Drops: none
+
+Tests:
+  - `ssh_remote_falls_back_to_ssh_when_pat_is_present` in `crates/backend_core/tests/credential_hygiene.rs`: constructs `GitAuthMaterial` with both a non-empty `pat` and an in-memory Ed25519 `ssh_keypair` (generated via `KeyPairManager::vault_only` with `testuser/ssh`), calls `git_credential_for_remote(&auth, Some("ssh://git@example.com/org/repo.git"), "ssh://git@example.com/org/repo.git", Some("git"), CredentialType::USER_PASS_PLAINTEXT | CredentialType::SSH_MEMORY | CredentialType::SSH_KEY)` -> returns `Ok(cred)` (SSH credential, not host-mismatch error); also verifies `git_credential_for_remote(&auth, Some("http://example.com/org/repo.git"), "http://example.com/org/repo.git", None, CredentialType::USER_PASS_PLAINTEXT)` -> returns `Err` refusing to send PAT over non-HTTPS.
+  - `push_remote_url_prefers_pushurl_over_fetch_url` in `crates/backend_core/src/git_sync/mod.rs`: creates a temp Git repo with remote `origin` (`url = https://fetch.example.com/org/repo.git`, `pushurl = https://push.example.com:8443/org/repo.git`) and remote `upstream` (`url = https://fetch.example.com/org/repo.git`, no `pushurl`) -> `effective_push_remote_url` returns `Some("https://push.example.com:8443/org/repo.git")` for `origin` and `Some("https://fetch.example.com/org/repo.git")` for `upstream`.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'fn effective_push_remote_url' crates/backend_core/src/git_sync/mod.rs && grep -q 'fn push_remote_url_prefers_pushurl_over_fetch_url' crates/backend_core/src/git_sync/mod.rs && grep -q 'fn ssh_remote_falls_back_to_ssh_when_pat_is_present' crates/backend_core/tests/credential_hygiene.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 47B: Zeroize `GitAuthMaterial::pat` and guard SSH passphrase stripping (re-split of `STEP 46F`, `TASK-0135`, `TASK-0136`, `TASK-0110`)
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 47B: Wrap GitAuthMaterial::pat in Zeroizing<String>, update all PAT callers/tests, and add an explicit passphrase-stripping policy guard on SSH key import
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/git_sync/mod.rs
+  - crates/backend_core/src/crypto/keys.rs
+  - crates/backend_core/tests/credential_hygiene.rs
+  - crates/backend_core/tests/workflow_integration.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/git_sync/mod.rs:230-262,935-951,1005-1036,1529-1570
+  - crates/backend_core/src/crypto/keys.rs:19-64,124-205,249-335
+  - crates/backend_core/tests/workflow_integration.rs:1418-1455
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change vault.enc format, vault.key KDF (parked), or break existing `KeyPairManager::import_ssh_keypair` callers.
+
+[PRE_GATE]
+grep -q 'fn ssh_remote_falls_back_to_ssh_when_pat_is_present' crates/backend_core/tests/credential_hygiene.rs
+
+[MUTATION_SPEC]
+Goal: HTTPS PATs remain inside `Zeroizing<String>` throughout `GitAuthMaterial` and auth resolution, and callers importing passphrase-protected OpenSSH keys can refuse passphrase stripping or observe `passphrase_stripped: true` on the returned record.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/git_sync/mod.rs`:
+     - Change `GitAuthMaterial.pat` from `Option<String>` to `Option<Zeroizing<String>>` (using `crate::crypto::Zeroizing`).
+     - Update `GitAuthMaterial::has_pat`, `git_credential_for_remote`, `build_pat_callbacks`, and `TrackerStorage::resolve_git_auth_with_manager` to keep PATs in `Zeroizing<String>` (using `mgr.get_pat(account)` instead of `mgr.get_pat_string(account)` and wrapping `request.pat` / `get_pat_from_keyring` results in `Zeroizing::new`).
+     - Keep `Debug` redaction (`"<REDACTED>"`) intact on `GitAuthMaterial`.
+  2. `crates/backend_core/src/crypto/keys.rs`:
+     - Add `pub passphrase_stripped: bool` to `SshKeyPairRecord` (set `true` only when an encrypted OpenSSH private key was decrypted and persisted unencrypted inside `SecureStorage`; `false` for generated keys, unencrypted imports, and `get_ssh_keypair` reads).
+     - Add `pub fn import_ssh_keypair_with_policy(&self, account: &str, private_key_openssh: &str, passphrase: Option<&str>, allow_strip_passphrase: bool) -> Result<SshKeyPairRecord>`:
+       - When `outer.is_encrypted()` and `!allow_strip_passphrase`, return `Err(TrackerError::ValidationError(...))` refusing to strip the passphrase without decrypting or storing the key.
+       - When `outer.is_encrypted()` and `allow_strip_passphrase`, decrypt with `passphrase`, persist into `SecureStorage`, and return `SshKeyPairRecord` with `passphrase_stripped: true`.
+       - When `!outer.is_encrypted()`, import normally with `passphrase_stripped: false`.
+     - Keep `KeyPairManager::import_ssh_keypair` delegating to `import_ssh_keypair_with_policy(..., true)` for backward compatibility.
+  3. `crates/backend_core/tests/credential_hygiene.rs` & `crates/backend_core/tests/workflow_integration.rs`:
+     - Update all `GitAuthMaterial { pat: Some(...) }` test literals in `credential_hygiene.rs` to `Some(Zeroizing::new(...))`.
+     - Update the two `resolved.pat.as_deref()` / `explicit.pat.as_deref()` assertions in `workflow_integration.rs` (around lines 1428 and 1450) for `Option<Zeroizing<String>>`.
+
+Must still work:
+  - All existing tests in `lib.rs` (including passphrase-encrypted key import via `import_ssh_keypair`), `credential_hygiene.rs`, and `workflow_integration.rs`.
+
+Drops: none
+
+Tests:
+  - `import_ssh_keypair_with_policy_guards_passphrase_stripping` in `crates/backend_core/tests/credential_hygiene.rs`: builds an encrypted OpenSSH Ed25519 test key (comment `testuser@example.com`), calls `import_ssh_keypair_with_policy("testuser/strict", &enc_pem, Some("test-passphrase"), false)` -> returns `Err(TrackerError::ValidationError(_))` and does not store the key; calling with `allow_strip_passphrase = true` -> returns `Ok(record)` with `record.passphrase_stripped == true`; importing an unencrypted key with `allow_strip_passphrase = false` -> returns `Ok(record)` with `record.passphrase_stripped == false`.
+  - `git_auth_material_keeps_pat_zeroizing_and_redacts_debug` in `crates/backend_core/tests/credential_hygiene.rs`: constructs `GitAuthMaterial` with `Some(Zeroizing::new(...))`, verifies `has_pat()` is `true` and `format!("{auth:?}")` contains `"<REDACTED>"` and does not contain the secret token.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'pub pat: Option<Zeroizing<String>>' crates/backend_core/src/git_sync/mod.rs && grep -q 'pub fn import_ssh_keypair_with_policy' crates/backend_core/src/crypto/keys.rs && grep -q 'pub passphrase_stripped: bool' crates/backend_core/src/crypto/keys.rs && grep -q 'fn import_ssh_keypair_with_policy_guards_passphrase_stripping' crates/backend_core/tests/credential_hygiene.rs && grep -q 'fn git_auth_material_keeps_pat_zeroizing_and_redacts_debug' crates/backend_core/tests/credential_hygiene.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 47C: Fix Phase 28 test defects (`BUG-0037`, `BUG-0038`)
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 47C: Seed a global-store PAT in vault_only_manager_does_not_fall_back_to_global_keyring_store and directly test set_permissions error propagation in ensure_secure_dir_propagates_permission_error
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/tests/credential_hygiene.rs
+  - crates/backend_core/src/crypto/mod.rs
+READ_ONLY_REFS:
+  - crates/backend_core/tests/credential_hygiene.rs:280-306
+  - crates/backend_core/src/crypto/mod.rs:700-722,862-881
+  - crates/backend_core/src/git_sync/mod.rs:1529-1569
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not alter production vault/keyring semantics or weaken any existing assertions.
+
+[PRE_GATE]
+true
+
+[MUTATION_SPEC]
+Goal: Both Phase 28 regression tests actually fail if their guarded regressions are re-introduced: `vault_only_manager_does_not_fall_back_to_global_keyring_store` proves isolation against a real seeded global PAT, and `ensure_secure_dir_propagates_permission_error` proves `set_permissions` failure propagation after `create_dir_all` succeeds.
+
+Contract & Behavior:
+  1. `crates/backend_core/tests/credential_hygiene.rs` (`vault_only_manager_does_not_fall_back_to_global_keyring_store`):
+     - Create a separate temporary `global_cfg` directory, seed a PAT (`"ghp_global_fallback_should_not_leak"`) under `"testuser/isolated"` into `SecureStorage::vault_only(&global_cfg)`, and point `NEBULOUS_CONFIG_DIR` to `global_cfg` for the duration of the test (restored unconditionally by a `Drop` guard).
+     - Verify the seeded global lookup path is live (e.g. `SecureStorage::vault_only(&global_cfg).get_secret_string("testuser/isolated")` returns the seeded PAT), then call `storage.resolve_git_auth_with_manager(Some(&manager), &GitAuthRequest::default())` where `manager` is `KeyPairManager::vault_only(&vault_dir)` with no PAT stored.
+     - Assert `resolved.pat.is_none()`, proving the isolated manager never falls back to `NEBULOUS_CONFIG_DIR` / `get_pat_from_keyring`.
+  2. `crates/backend_core/src/crypto/mod.rs` (`ensure_secure_dir` + `ensure_secure_dir_with` + `ensure_secure_dir_propagates_permission_error`):
+     - Refactor `ensure_secure_dir` to delegate to an internal helper `fn ensure_secure_dir_with(dir: &Path, set_perms: impl FnOnce(&Path) -> Result<()>) -> Result<()>` that runs `fs::create_dir_all(dir)` and then propagates `set_perms(dir)?`.
+     - In `ensure_secure_dir_propagates_permission_error`:
+       - Keep the existing `0o755` -> `0o700` tightening and regular-file blocker checks.
+       - Call `ensure_secure_dir_with(&loose_dir, |p| Err(TrackerError::Io { path: p.to_path_buf(), source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "simulated chmod failure") }))` on an already-existing directory where `fs::create_dir_all` succeeds -> assert `Err(TrackerError::Io { .. })` is returned.
+       - On Unix, when `fs::metadata(dir.path()).uid() != fs::metadata("/").uid()` (non-root), also call `ensure_secure_dir(Path::new("/"))` -> assert `Err(TrackerError::Io { .. })` (real `fs::set_permissions` `EPERM` after `create_dir_all` succeeds).
+
+Must still work:
+  - All tests in `credential_hygiene.rs` and `crypto::tests` pass deterministically regardless of whether `cargo test` runs as root or non-root and without polluting the host OS keyring or config directory.
+
+Drops: none
+
+Tests:
+  - `vault_only_manager_does_not_fall_back_to_global_keyring_store` in `crates/backend_core/tests/credential_hygiene.rs`: seeds `"testuser/isolated"` in `global_cfg` pointed to by `NEBULOUS_CONFIG_DIR`, resolves auth with an empty `vault_only(&vault_dir)` manager -> `resolved.pat.is_none()`.
+  - `ensure_secure_dir_propagates_permission_error` in `crates/backend_core/src/crypto/mod.rs`: verifies `ensure_secure_dir_with` propagates `PermissionDenied` on an existing dir (plus real `ensure_secure_dir(Path::new("/"))` `Err` on Unix when non-root).
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'fn ensure_secure_dir_with' crates/backend_core/src/crypto/mod.rs && grep -q 'ghp_global_fallback_should_not_leak' crates/backend_core/tests/credential_hygiene.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 47D: Propagate merge-reconcile errors, block `git_push` on `duplicate_ids`, and fix `git_commit_documented` atomicity, reachable SHA, and index stat metadata (`BUG-0014` / `AUD-07`)
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 47D: Propagate merge-reconcile failures, abort git_sync before push on duplicate_ids, make git_commit_documented record reachable fix SHAs without pre-advancing HEAD, and populate real stat metadata in sync_user_index_paths
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/git_sync/mod.rs
+  - crates/backend_core/tests/git_safety.rs
+  - crates/backend_core/tests/workflow_integration.rs
+  - crates/nebulous_cli/tests/done_commit_safety.rs
+  - crates/nebulous_cli/tests/cli_integration.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/git_sync/mod.rs:757-804,1268-1375,1846-1998
+  - crates/backend_core/tests/workflow_integration.rs:1213-1286
+  - crates/nebulous_cli/tests/done_commit_safety.rs:64-112
+  - crates/nebulous_cli/tests/cli_integration.rs:2090-2106
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change `DocumentedCommitInput` fields yet (handled in STEP 47E) or alter `git_pull` / `git_sync` return types.
+
+[PRE_GATE]
+grep -q 'pub pat: Option<Zeroizing<String>>' crates/backend_core/src/git_sync/mod.rs
+
+[MUTATION_SPEC]
+Goal: Merge-reconcile failures never silently commit stale indexes, `git_sync_with_report` never pushes duplicate item IDs to a remote, `git_commit_documented` never advances `HEAD` before tracker docs are written and always records a reachable `recorded_fix_sha` in Git history, and `.git/index` entries updated by `sync_user_index_paths` carry real file stat metadata.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/git_sync/mod.rs` (`pull_repo_with_auth`):
+     - When `resolved_derived_index_conflict` is `true`, run `TrackerStorage::discover(repo_path.as_ref())?` and `storage.reconcile_indexes()?` BEFORE creating the merge commit on `HEAD` (propagating any error via `?` instead of swallowing it with `if let Ok` / `.is_ok()`).
+     - Re-stage the reconciled derived index paths into the private index seeded from `tree`, compute the final tree, commit ONCE with parents `&[&local_commit, &remote_commit]`, and sync the user index for the reconciled paths. If `reconcile_indexes()` fails, `HEAD` remains at `local_commit`.
+  2. `crates/backend_core/src/git_sync/mod.rs` (`git_sync_with_report`):
+     - After `let pull_outcome = self.git_pull_with_report(auth)?;`, if `!pull_outcome.duplicate_ids.is_empty()`, return `Err(TrackerError::GitError(...))` mentioning `"duplicate"` and the duplicate item IDs WITHOUT calling `self.git_push(auth)`.
+  3. `crates/backend_core/src/git_sync/mod.rs` (`git_commit_documented`):
+     - When `prepared.loaded_item` is `Some((loc, detail))` and `prepared.auto_append_to_desc` is `true`:
+       - Create the primary commit object with `update_ref = None` (`repo.commit(None, &sig, &sig, &commit_message, &tree, parents)`), so `HEAD` does NOT move yet.
+       - Compute `recorded_fix_sha = short_sha_for_oid(&repo, initial_commit_oid)`.
+       - Snapshot `detail` before mutating. Update `history.previous_fixes` and `desc.md` with `recorded_fix_sha`, write via `write_item_detail` and `sync_parent_indexes_for_item`, stage `.tracker/` into the private index, write `doc_tree`, and create the follow-up doc commit with `update_ref = Some("HEAD")`, parent `&[&initial_commit]`, and message `format!("[{item_id}]({scope_label}) docs: record fix {recorded_fix_sha}")`.
+       - If any step between `write_item_detail` and advancing `HEAD` fails, roll back `.tracker/` (`write_item_detail(&loc.phase_id, &loc.scope_id, &snapshot)` and `sync_parent_indexes_for_item`) and return `Err(...)` with `HEAD` untouched.
+       - Set `outcome.commit_sha` to the `HEAD` (doc commit) short SHA, `outcome.recorded_fix_sha` to the reachable `HEAD~1` (primary commit) short SHA, and `outcome.changed_files` to `changed_files_between(&repo, parent_tree.as_ref(), &doc_tree)?`.
+     - When `loaded_item` is `None` or `!auto_append_to_desc`, create a single commit directly on `Some("HEAD")` as before.
+  4. `crates/backend_core/src/git_sync/mod.rs` (`sync_user_index_paths`):
+     - Populate `IndexEntry` stat metadata (`ctime`, `mtime`, `file_size`, and on Unix `dev`, `ino`, `uid`, `gid`) from `fs::symlink_metadata(workdir.join(path))` when the file exists on disk (falling back to `0` / `blob_size` only if metadata cannot be read) so committed files are stat-clean to external `git` CLI (`git diff-index --cached HEAD` / `git status`).
+  5. Test assertion updates for reachable 2-commit `HEAD`/`HEAD~1`:
+     - Update `workflow_integration.rs:1280-1284`, `done_commit_safety.rs:94-98`, and `cli_integration.rs:2100-2104` to assert that the `recorded_fix_sha` commit (`head_commit.parent(0)`) has `outcome.message` and `head_commit` is the doc-recording commit whose tree contains both workspace and `.tracker/` updates.
+
+Must still work:
+  - `pre_staged_hunk_survives_git_commit_documented`, `nested_project_root_commit_stages_tracker`, `dirty_tracker_edit_survives_merge_attempt`, and all CLI/MCP documented-commit tests.
+
+Drops:
+  - When `auto_append_to_desc` is enabled and an `item_id` is linked, `git_commit_documented` now creates two commits (`HEAD~1` = primary commit with `outcome.message` and reachable SHA `recorded_fix_sha`; `HEAD` = `.tracker/` doc-recording commit) instead of amending a single commit (which previously orphaned `recorded_fix_sha`).
+
+Tests:
+  - `git_sync_aborts_before_push_when_pull_reports_duplicate_ids` in `crates/backend_core/tests/git_safety.rs`: sets up two workspaces sharing a bare remote where a pull introduces a duplicate item ID in two directories, runs `git_sync_with_report` -> returns `Err(TrackerError::GitError(msg))` containing `"duplicate"` and the duplicate ID, and the remote ref is NOT updated with local commits.
+  - `git_commit_documented_records_reachable_fix_sha_and_stat_clean_index` in `crates/backend_core/tests/git_safety.rs`: runs `git_commit_documented` for `BUG-0001` with a workspace file -> verifies `repo.revparse_single(&outcome.recorded_fix_sha)` resolves to `head.parent(0)` (reachable in Git history), `head` tree contains updated `item.toml`/`desc.md` + workspace file, and the user `.git/index` entry for the committed workspace file has non-zero `mtime` matching disk metadata.
+  - `pull_propagates_merge_reconcile_error_without_advancing_head` in `crates/backend_core/tests/git_safety.rs`: sets up a divergent derived-index conflict where `reconcile_indexes` fails (e.g. corrupt `project.toml` or unreadable phase manifest), runs `pull_repo_with_auth` -> returns `Err(_)` and `HEAD` remains at the pre-pull commit.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'fn git_sync_aborts_before_push_when_pull_reports_duplicate_ids' crates/backend_core/tests/git_safety.rs && grep -q 'fn git_commit_documented_records_reachable_fix_sha_and_stat_clean_index' crates/backend_core/tests/git_safety.rs && grep -q 'fn pull_propagates_merge_reconcile_error_without_advancing_head' crates/backend_core/tests/git_safety.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 47E: Add opt-in `allow_empty_ok` (default `false`) to `git_commit_documented` and MCP (`BUG-0004`)
+
+* **Recommended Command:** `/goal`
+
+```text
+[STEP_ID]
+STEP 47E: Add opt-in allow_empty_ok (default false) to DocumentedCommitInput, git_commit_documented, and MCP git_commit_documented so idempotent reruns on a clean tree succeed
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/git_sync/mod.rs
+  - crates/backend_core/src/mcp/mod.rs
+  - crates/nebulous_cli/src/commands/mod.rs
+  - crates/backend_core/tests/workflow_integration.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/git_sync/mod.rs:42-189,1846-1970
+  - crates/backend_core/src/mcp/mod.rs:855-872,2264-2321
+  - crates/nebulous_cli/src/commands/mod.rs:1309-1318,1826-1834,2982-2990
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change default behavior when `allow_empty_ok` is omitted or `false`.
+
+[PRE_GATE]
+grep -q 'fn git_commit_documented_records_reachable_fix_sha_and_stat_clean_index' crates/backend_core/tests/git_safety.rs
+
+[MUTATION_SPEC]
+Goal: Callers (including Orrery's `on_step_pass` MCP hook `neb:git_commit_documented`) can pass `allow_empty_ok: true` to succeed cleanly when there are no changes to commit, while strict callers omitting `allow_empty_ok` or passing `false` keep the existing `ValidationError`.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/git_sync/mod.rs`:
+     - Add `#[serde(default)] pub allow_empty_ok: bool` (defaults to `false`) to `DocumentedCommitInput`, plus builder `pub fn with_allow_empty_ok(mut self, allow_empty_ok: bool) -> Self`.
+     - Add `#[serde(default)] pub nothing_to_commit: bool` to `DocumentedCommitOutcome` (`false` when a commit was created, `true` when `allow_empty_ok` short-circuited an empty commit).
+     - In `TrackerStorage::git_commit_documented`: when the staged tree matches `parent_commit.tree_id()` or `changed_files.is_empty()`:
+       - If `!input.allow_empty_ok`, keep returning `Err(TrackerError::ValidationError("No changes to commit in workspace or .tracker/".to_string()))`.
+       - If `input.allow_empty_ok`, create NO commit, do NOT mutate `item.toml`/`desc.md` or `.git/index`, and return `Ok(DocumentedCommitOutcome { commit_sha: head_sha.clone(), recorded_fix_sha: head_sha, message: prepared.commit_message, item_id: prepared.item_id, scope_id: prepared.resolved_scope, changed_files: Vec::new(), documentation_updated: false, nothing_to_commit: true })` (where `head_sha` is `short_sha_for_oid(&repo, parent.id())` when `parent_commit` is `Some`, else empty string).
+  2. `crates/backend_core/src/mcp/mod.rs`:
+     - Add `#[serde(default)] allow_empty_ok: bool` to `tool_git_commit_documented`'s `Args` struct and forward it to `DocumentedCommitInput`.
+     - Add `"allow_empty_ok"` (`"type": "boolean"`, `"default": false`) to `git_commit_documented`'s `input_schema` properties.
+  3. `crates/nebulous_cli/src/commands/mod.rs`:
+     - Supply `allow_empty_ok: false` in the three existing `DocumentedCommitInput { ... }` struct literals (`handle_close`, `handle_sync`, `GitCommand::Commit`).
+
+Must still work:
+  - Existing strict tests expecting `ValidationError("No changes to commit in workspace or .tracker/")` when `allow_empty_ok` is omitted or `false`, plus MCP `git_commit_documented` dry-run and schema tests.
+
+Drops: none
+
+Tests:
+  - `git_commit_documented_allow_empty_ok_is_opt_in_via_api_and_mcp` in `crates/backend_core/tests/workflow_integration.rs`: on a clean repo with committed `.tracker/`, calls `git_commit_documented` with default `allow_empty_ok: false` -> returns `Err(TrackerError::ValidationError(_))`; calls with `with_allow_empty_ok(true)` -> returns `Ok(outcome)` with `outcome.nothing_to_commit == true`, `outcome.changed_files.is_empty()`, `!outcome.documentation_updated`, and `HEAD` unchanged; invokes MCP `git_commit_documented` with `{"summary":"orrery step pass","dry_run":false,"allow_empty_ok":true}` -> succeeds with `nothing_to_commit == true` and `HEAD` unchanged.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'pub allow_empty_ok: bool' crates/backend_core/src/git_sync/mod.rs && grep -q 'pub nothing_to_commit: bool' crates/backend_core/src/git_sync/mod.rs && grep -q 'allow_empty_ok' crates/backend_core/src/mcp/mod.rs && grep -q 'fn git_commit_documented_allow_empty_ok_is_opt_in_via_api_and_mcp' crates/backend_core/tests/workflow_integration.rs
+
+[HALT_INVARIANT]
+Halt immediately after POST_GATE exits 0 and report verification status.
+```
+
+### STEP 47F: Move `neb done -c` close+commit+rollback into `backend_core` under one `with_write_lock` and surface rollback failures (`BUG-0015` / `AUD-08`)
+
+* **Recommended Command:** `/boost`
+
+```text
+[STEP_ID]
+STEP 47F: Execute neb done -c close+commit+rollback inside a single backend_core with_write_lock and surface any rollback errors
+
+[SCOPE_LOCK]
+ALLOWED_FILES:
+  - crates/backend_core/src/workflow/lifecycle.rs
+  - crates/nebulous_cli/src/commands/mod.rs
+  - crates/nebulous_cli/tests/done_commit_safety.rs
+READ_ONLY_REFS:
+  - crates/backend_core/src/workflow/lifecycle.rs:493-554
+  - crates/nebulous_cli/src/commands/mod.rs:1290-1360
+  - crates/nebulous_cli/tests/done_commit_safety.rs:1-166
+FORBIDDEN_SCOPE:
+  - Any file not listed in ALLOWED_FILES. Do not change `neb done` CLI flags, JSON output schema, or non-`-c` close behavior.
+
+[PRE_GATE]
+grep -q 'pub allow_empty_ok: bool' crates/backend_core/src/git_sync/mod.rs
+
+[MUTATION_SPEC]
+Goal: `neb done -c` executes validation, snapshotting, close, manifest adjustment, documented commit, and rollback inside a single `TrackerStorage::with_write_lock` in `backend_core`, never discarding rollback errors.
+
+Contract & Behavior:
+  1. `crates/backend_core/src/workflow/lifecycle.rs`:
+     - Add `pub fn close_item_and_commit(&self, item_id: &str, summary: impl Into<String>, commit_override: Option<&str>, merged: bool, paths: &[String]) -> Result<(StatusChange, DocumentedCommitOutcome)>`:
+       - Runs the entire flow inside a single `self.with_write_lock(|_| { ... })`.
+       - Resolves `normalized_id` and `loc`, builds `DocumentedCommitInput` (`item_id`, `scope_id`, `summary`, `tracker_only: paths.is_empty()`, `paths`, `allow_empty_ok: false`), and calls `self.validate_documented_commit(&commit_input)?` before any mutation.
+       - Snapshots `(loc, detail_snapshot)` and `timer_snapshot = self.read_active_timer()?`.
+       - Calls `self.close_item_reporting(&normalized_id, &summary_str, commit_override, merged)?`.
+       - If `auto_append_to_desc` is enabled and `detail.manifest.history.previous_fixes` is non-empty, pops the placeholder fix entry and writes the manifest via `self.write_item_manifest(...)`.
+       - Calls `self.git_commit_documented(commit_input)`.
+       - On `Ok(commit)`: reloads the updated `ItemDetail` via `self.load_item_detail_by_id(&normalized_id)?.1` and returns `Ok((StatusChange { detail, stopped_timer: change.stopped_timer }, commit))`.
+       - On `Err(commit_err)`: runs an explicit rollback helper (`rollback_close_and_commit`) that restores `write_item_detail(&loc.phase_id, &loc.scope_id, &detail_snapshot)`, `reconcile_indexes()`, and (when `timer_snapshot` is `Some`) `write_active_timer(&timer)`, collecting EVERY rollback error instead of ignoring them with `let _ = ...`.
+       - If all rollback steps succeed, returns `Err(commit_err)`. If any rollback step fails, returns `Err(TrackerError::GitError(format!("{commit_err}; rollback also failed: ...")))` including both the commit error and all rollback error messages.
+  2. `crates/nebulous_cli/src/commands/mod.rs` (`handle_close`):
+     - When `commit_changes` is `true`, delegate to `storage.close_item_and_commit(&resolved_id, summary, commit, merged, paths)?`, call `warn_if_capped(change.stopped_timer.as_ref())`, and pass `(change.detail, Some(commit_outcome.commit_sha), summary, json)` to `render_close`.
+     - Remove the unlocked rollback block (`let _ = ...`) from `handle_close`.
+
+Must still work:
+  - Existing tests in `done_commit_safety.rs` (`done_commit_does_not_commit_untracked_secret_env`, `policy_rejected_done_commit_leaves_item_open_without_fix_entry`) and `cli_integration.rs` `neb done -c` tests.
+
+Drops: none
+
+Tests:
+  - `post_close_commit_failure_rolls_back_item_and_timer` in `crates/nebulous_cli/tests/done_commit_safety.rs`: starts a timer on `BUG-0001`, creates a Git ref lockfile (`.git/<head_ref_name>.lock`) so `validate_documented_commit` passes but `git_commit_documented` fails when advancing `HEAD`, runs `neb done BUG-0001 -m "Trigger post-close commit failure" -c` -> exits non-zero, `BUG-0001` is rolled back to its pre-close status with zero `previous_fixes`, `HEAD` is unchanged, and the active timer on `BUG-0001` is restored.
+  - `close_item_and_commit_waits_for_write_lock` in `crates/backend_core/src/workflow/lifecycle.rs` (unit test): holds `.tracker/.lock` on a background thread for ~300ms while calling `close_item_and_commit` on another thread -> proves `close_item_and_commit` blocks on the outer `with_write_lock`.
+  - `close_item_and_commit_surfaces_rollback_failure` in `crates/backend_core/src/workflow/lifecycle.rs` (unit test): invokes the rollback helper when restoring item/timer state fails -> asserts the returned `Err(TrackerError::GitError(msg))` contains both the original commit failure and `"rollback"`.
+
+[POST_GATE]
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && grep -q 'pub fn close_item_and_commit' crates/backend_core/src/workflow/lifecycle.rs && grep -q 'close_item_and_commit' crates/nebulous_cli/src/commands/mod.rs && grep -q 'fn post_close_commit_failure_rolls_back_item_and_timer' crates/nebulous_cli/tests/done_commit_safety.rs && grep -q 'fn close_item_and_commit_waits_for_write_lock' crates/backend_core/src/workflow/lifecycle.rs && grep -q 'fn close_item_and_commit_surfaces_rollback_failure' crates/backend_core/src/workflow/lifecycle.rs
 
 [HALT_INVARIANT]
 Halt immediately after POST_GATE exits 0 and report verification status.

@@ -1,0 +1,20 @@
+schema_version = 2
+
+[item]
+id = "TASK-0140"
+type = "task"
+title = "Propagate merge-reconcile errors, block git_push on duplicate_ids, and fix git_commit_documented pre-amend window, reachable fix SHA, and .git/index stat metadata (BUG-0014 / AUD-07)"
+status = "open"
+severity = "medium"
+scope_ref = "backend_core"
+created_at = "2026-11-28T02:30:25Z"
+updated_at = "2026-11-28T02:30:25Z"
+source_ref = "STEP 47D"
+
+[effort]
+logged_time_minutes = 0
+iteration_count = 1
+
+[history]
+recurrence_count = 0
+previous_fixes = []
