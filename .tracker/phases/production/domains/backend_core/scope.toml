@@ -896,7 +896,7 @@ created_at = "2026-11-28T02:30:25Z"
 [[items.tasks]]
 id = "TASK-0140"
 title = "Propagate merge-reconcile errors, block git_push on duplicate_ids, and fix git_commit_documented pre-amend window, reachable fix SHA, and .git/index stat metadata (BUG-0014 / AUD-07)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-28T02:30:25Z"
 
