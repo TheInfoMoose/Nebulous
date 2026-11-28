@@ -889,7 +889,7 @@ created_at = "2026-11-28T02:30:25Z"
 [[items.tasks]]
 id = "TASK-0139"
 title = "Fix Phase 28 test defects: seed global vault PAT in vault_only_manager_does_not_fall_back_to_global_keyring_store and test set_permissions failure in ensure_secure_dir_propagates_permission_error (BUG-0037, BUG-0038)"
-status = "open"
+status = "closed"
 severity = "medium"
 created_at = "2026-11-28T02:30:25Z"
 
