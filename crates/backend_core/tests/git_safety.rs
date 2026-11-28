@@ -423,3 +423,224 @@ fn nested_project_root_commit_stages_tracker() {
         "{status:?}"
     );
 }
+
+#[test]
+fn git_sync_aborts_before_push_when_pull_reports_duplicate_ids() {
+    let pair = setup_remote_pair();
+
+    // Workspace 1 adds a second scope and duplicates BUG-0001 into it, then pushes to the bare remote.
+    pair.storage1
+        .create_scope(
+            Some("01_core_engine"),
+            "cli_surface",
+            "crates/cli_surface",
+            vec!["rust".to_string()],
+            None,
+        )
+        .unwrap();
+    let src_bug_dir = pair
+        .storage1
+        .project_root()
+        .join(".tracker/phases/01_core_engine/domains/backend_core/items/BUG-0001");
+    let dup_bug_dir = pair
+        .storage1
+        .project_root()
+        .join(".tracker/phases/01_core_engine/domains/cli_surface/items/BUG-0001");
+    fs::create_dir_all(&dup_bug_dir).unwrap();
+    fs::copy(src_bug_dir.join("item.toml"), dup_bug_dir.join("item.toml")).unwrap();
+    fs::copy(src_bug_dir.join("desc.md"), dup_bug_dir.join("desc.md")).unwrap();
+    pair.storage1
+        .git_commit_tracker(Some("chore: introduce duplicate BUG-0001"))
+        .unwrap()
+        .expect("remote duplicate commit");
+    pair.storage1
+        .git_push(&GitAuthRequest::default())
+        .expect("push duplicate to bare remote");
+
+    let bare_repo = Repository::open(pair._bare_dir.path()).unwrap();
+    let remote_ref_name = format!("refs/heads/{}", pair.branch);
+    let remote_oid_before = bare_repo
+        .find_reference(&remote_ref_name)
+        .unwrap()
+        .target()
+        .unwrap();
+
+    // Workspace 2 creates a local commit that must NOT be pushed once pull reports duplicate_ids.
+    fs::write(pair.ws2_dir.path().join("LOCAL.md"), "local work\n").unwrap();
+    user_commit(&pair.repo2, &["LOCAL.md"], "docs: local commit in ws2");
+
+    let err = pair
+        .storage2
+        .git_sync_with_report(None, &GitAuthRequest::default())
+        .expect_err("git_sync_with_report must abort before push when pull reports duplicate_ids");
+    assert!(
+        matches!(err, TrackerError::GitError(ref msg) if msg.to_lowercase().contains("duplicate") && msg.contains("BUG-0001")),
+        "expected GitError mentioning duplicate and BUG-0001, got {err:?}"
+    );
+
+    let remote_oid_after = bare_repo
+        .find_reference(&remote_ref_name)
+        .unwrap()
+        .target()
+        .unwrap();
+    assert_eq!(
+        remote_oid_after, remote_oid_before,
+        "remote ref must not be updated with local commits when duplicate IDs are detected"
+    );
+}
+
+#[test]
+fn git_commit_documented_records_reachable_fix_sha_and_stat_clean_index() {
+    let dir = TempDir::new().unwrap();
+    let storage = init_tracker(dir.path());
+    let repo = init_repo(dir.path());
+    storage
+        .create_bug(
+            "Reachable fix sha bug",
+            Some("01_core_engine"),
+            Some("backend_core"),
+            Severity::Medium,
+            None,
+        )
+        .unwrap();
+    storage
+        .git_commit_tracker(Some("chore: initial tracker"))
+        .unwrap()
+        .expect("initial tracker commit");
+
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    let fix_path = dir.path().join("src/fix.rs");
+    fs::write(&fix_path, "pub fn reachable_fix() -> bool { true }\n").unwrap();
+
+    let outcome = storage
+        .git_commit_documented(
+            DocumentedCommitInput::for_item("BUG-0001", "Record reachable fix sha in history")
+                .with_paths(["src/fix.rs"]),
+        )
+        .expect("documented commit should succeed");
+    assert!(outcome.documentation_updated);
+
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    let parent = head.parent(0).unwrap();
+    assert_ne!(head.id(), parent.id());
+
+    let resolved = repo
+        .revparse_single(&outcome.recorded_fix_sha)
+        .expect("recorded_fix_sha must resolve in repository")
+        .peel_to_commit()
+        .unwrap();
+    assert_eq!(
+        resolved.id(),
+        parent.id(),
+        "recorded_fix_sha must be reachable as HEAD~1"
+    );
+    assert_eq!(parent.message().unwrap().trim(), outcome.message.trim());
+
+    let head_tree = head.tree().unwrap();
+    assert!(head_tree.get_path(Path::new("src/fix.rs")).is_ok());
+    let item_entry = head_tree
+        .get_path(Path::new(
+            ".tracker/phases/01_core_engine/domains/backend_core/items/BUG-0001/item.toml",
+        ))
+        .expect("item.toml in HEAD tree");
+    let item_blob = repo.find_blob(item_entry.id()).unwrap();
+    assert!(
+        std::str::from_utf8(item_blob.content())
+            .unwrap()
+            .contains(&outcome.recorded_fix_sha),
+        "HEAD item.toml must contain recorded_fix_sha"
+    );
+    let desc_entry = head_tree
+        .get_path(Path::new(
+            ".tracker/phases/01_core_engine/domains/backend_core/items/BUG-0001/desc.md",
+        ))
+        .expect("desc.md in HEAD tree");
+    let desc_blob = repo.find_blob(desc_entry.id()).unwrap();
+    assert!(
+        std::str::from_utf8(desc_blob.content())
+            .unwrap()
+            .contains(&outcome.recorded_fix_sha),
+        "HEAD desc.md must contain recorded_fix_sha"
+    );
+
+    let mut idx = repo.index().unwrap();
+    idx.read(true).unwrap();
+    let idx_entry = idx
+        .get_path(Path::new("src/fix.rs"), 0)
+        .expect("index entry for committed workspace file");
+    let disk_meta = fs::symlink_metadata(&fix_path).unwrap();
+    assert_ne!(
+        idx_entry.mtime.seconds(),
+        0,
+        "index entry mtime must be populated from disk metadata"
+    );
+    assert_eq!(idx_entry.file_size, disk_meta.len() as u32);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(idx_entry.mtime.seconds(), disk_meta.mtime() as i32);
+        assert_eq!(idx_entry.ino, disk_meta.ino() as u32);
+    }
+}
+
+#[test]
+fn pull_propagates_merge_reconcile_error_without_advancing_head() {
+    let pair = setup_remote_pair();
+
+    // Workspace 1 creates a feature (updates derived indexes) and pushes to origin.
+    pair.storage1
+        .create_feature(
+            "Remote feature",
+            Some("01_core_engine"),
+            Some("backend_core"),
+            Severity::Low,
+            None,
+        )
+        .unwrap();
+    pair.storage1
+        .git_commit_tracker(Some("feat: remote feature"))
+        .unwrap()
+        .expect("remote feature commit");
+    pair.storage1
+        .git_push(&GitAuthRequest::default())
+        .expect("push remote feature");
+
+    // Workspace 2 creates a bug (divergent derived index change) and corrupts project.toml
+    // so merge resolves derived index conflicts using `our` and reconcile_indexes() fails.
+    pair.storage2
+        .create_bug(
+            "Local bug",
+            Some("01_core_engine"),
+            Some("backend_core"),
+            Severity::Low,
+            None,
+        )
+        .unwrap();
+    fs::write(
+        pair.ws2_dir.path().join(".tracker/project.toml"),
+        "this is = [corrupt toml",
+    )
+    .unwrap();
+    pair.storage2
+        .git_commit_tracker(Some("chore: local task with corrupt project.toml"))
+        .unwrap()
+        .expect("local divergent commit");
+
+    let head_before = pair.repo2.head().unwrap().target().unwrap();
+    let err = backend_core::git_sync::pull_repo_with_auth(
+        pair.ws2_dir.path(),
+        "origin",
+        &pair.branch,
+        backend_core::git_sync::GitAuthMaterial::default(),
+    )
+    .expect_err("pull_repo_with_auth must propagate reconcile_indexes error");
+    assert!(
+        !err.to_string().is_empty(),
+        "expected non-empty error from failed reconcile"
+    );
+    assert_eq!(
+        pair.repo2.head().unwrap().target().unwrap(),
+        head_before,
+        "HEAD must remain at pre-pull commit when reconcile_indexes fails"
+    );
+}

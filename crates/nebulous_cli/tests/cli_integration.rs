@@ -2097,11 +2097,25 @@ fn test_one_command_bootstrap_predictive_scope_and_zero_id_workflow() {
         1
     );
 
+    let recorded_fix_sha = bug_after_done["history"]["previous_fixes"][0]["commit"]
+        .as_str()
+        .unwrap();
     let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+    let fix_commit = head_commit.parent(0).unwrap();
     assert_eq!(
-        head_commit.summary().unwrap().unwrap(),
+        fix_commit.summary().unwrap().unwrap(),
         "[BUG-0001](api_gateway) Implemented feature"
     );
+    assert_eq!(
+        head_commit.summary().unwrap().unwrap(),
+        format!("[BUG-0001](api_gateway) docs: record fix {recorded_fix_sha}")
+    );
+    let head_tree = head_commit.tree().unwrap();
+    assert!(head_tree
+        .get_path(Path::new(
+            ".tracker/phases/production/domains/api_gateway/items/BUG-0001/item.toml"
+        ))
+        .is_ok());
 }
 
 #[test]

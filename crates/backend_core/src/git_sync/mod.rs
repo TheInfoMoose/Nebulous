@@ -755,6 +755,73 @@ fn changed_files_between(
     Ok(changed)
 }
 
+struct IndexStatMetadata {
+    ctime: IndexTime,
+    mtime: IndexTime,
+    dev: u32,
+    ino: u32,
+    uid: u32,
+    gid: u32,
+    file_size: u32,
+}
+
+fn index_stat_for_path(
+    workdir: Option<&Path>,
+    path: &Path,
+    fallback_size: u32,
+) -> IndexStatMetadata {
+    let Some(meta) = workdir.and_then(|w| std::fs::symlink_metadata(w.join(path)).ok()) else {
+        return IndexStatMetadata {
+            ctime: IndexTime::new(0, 0),
+            mtime: IndexTime::new(0, 0),
+            dev: 0,
+            ino: 0,
+            uid: 0,
+            gid: 0,
+            file_size: fallback_size,
+        };
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        IndexStatMetadata {
+            ctime: IndexTime::new(meta.ctime() as i32, meta.ctime_nsec() as u32),
+            mtime: IndexTime::new(meta.mtime() as i32, meta.mtime_nsec() as u32),
+            dev: meta.dev() as u32,
+            ino: meta.ino() as u32,
+            uid: meta.uid(),
+            gid: meta.gid(),
+            file_size: meta.len() as u32,
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| IndexTime::new(d.as_secs() as i32, d.subsec_nanos()))
+            .unwrap_or_else(|| IndexTime::new(0, 0));
+        let ctime = meta
+            .created()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| IndexTime::new(d.as_secs() as i32, d.subsec_nanos()))
+            .unwrap_or(mtime);
+        IndexStatMetadata {
+            ctime,
+            mtime,
+            dev: 0,
+            ino: 0,
+            uid: 0,
+            gid: 0,
+            file_size: meta.len() as u32,
+        }
+    }
+}
+
 /// After a commit built from a private index, updates only the committed `paths` in the user's
 /// on-disk index to match `tree` (`git commit --only` semantics). Every other index entry —
 /// including pre-staged hunks in unrelated files — is left byte-identical. Without this the
@@ -764,6 +831,7 @@ fn sync_user_index_paths(repo: &Repository, tree: &Tree<'_>, paths: &[String]) -
     if paths.is_empty() {
         return Ok(());
     }
+    let workdir = repo.workdir();
     let mut index = repo.index()?;
     index.read(true)?;
     for p in paths {
@@ -774,18 +842,19 @@ fn sync_user_index_paths(repo: &Repository, tree: &Tree<'_>, paths: &[String]) -
                     .find_blob(entry.id())
                     .map(|b| b.size() as u32)
                     .unwrap_or(0);
+                let stat = index_stat_for_path(workdir, path, blob_size);
                 for stage in 1..=3 {
                     let _ = index.remove(path, stage);
                 }
                 index.add(&IndexEntry {
-                    ctime: IndexTime::new(0, 0),
-                    mtime: IndexTime::new(0, 0),
-                    dev: 0,
-                    ino: 0,
+                    ctime: stat.ctime,
+                    mtime: stat.mtime,
+                    dev: stat.dev,
+                    ino: stat.ino,
                     mode: entry.filemode() as u32,
-                    uid: 0,
-                    gid: 0,
-                    file_size: blob_size,
+                    uid: stat.uid,
+                    gid: stat.gid,
+                    file_size: stat.file_size,
                     id: entry.id(),
                     flags: 0,
                     flags_extended: 0,
@@ -1330,53 +1399,46 @@ pub fn pull_repo_with_auth(
                     e.message()
                 ))
             })?;
+        let (final_tree, reconciled_paths) = if resolved_derived_index_conflict {
+            let storage = TrackerStorage::discover(repo_path.as_ref())?;
+            storage.reconcile_indexes()?;
+            // Stage only the reconciled derived indexes into a private index seeded from
+            // the merge tree; unrelated local `.tracker/` edits stay uncommitted.
+            let workdir = repo_workdir(&repo)?;
+            let tracker_spec = join_repo_path(&prefix, ".tracker");
+            let derived: Vec<String> = changed_paths_under(&repo, &tracker_spec)?
+                .into_iter()
+                .filter(|p| {
+                    strip_repo_prefix(&prefix, p).is_some_and(is_derived_tracker_index_path)
+                })
+                .collect();
+            let (_stage_repo, mut private_idx) = open_private_staging(&workdir, Some(&tree))?;
+            for p in &derived {
+                stage_explicit_path(&mut private_idx, &workdir, p)?;
+            }
+            let reconciled_tree_id = private_idx.write_tree_to(&repo)?;
+            if reconciled_tree_id != tree_id {
+                let reconciled_tree = repo.find_tree(reconciled_tree_id)?;
+                let reconciled = changed_files_between(&repo, Some(&tree), &reconciled_tree)?;
+                (reconciled_tree, reconciled)
+            } else {
+                (tree, Vec::new())
+            }
+        } else {
+            (tree, Vec::new())
+        };
+
         let sig = resolve_signature(&repo)?;
         let msg = format!("Merge remote-tracking branch '{remote_name}/{head_branch}'");
-        let merge_commit_oid = repo.commit(
+        repo.commit(
             Some("HEAD"),
             &sig,
             &sig,
             &msg,
-            &tree,
+            &final_tree,
             &[&local_commit, &remote_commit],
         )?;
-
-        if resolved_derived_index_conflict {
-            if let Ok(storage) = TrackerStorage::discover(repo_path.as_ref()) {
-                if storage.reconcile_indexes().is_ok() {
-                    // Stage only the reconciled derived indexes into a private index seeded from
-                    // the merge tree; unrelated local `.tracker/` edits stay uncommitted.
-                    let workdir = repo_workdir(&repo)?;
-                    let tracker_spec = join_repo_path(&prefix, ".tracker");
-                    let derived: Vec<String> = changed_paths_under(&repo, &tracker_spec)?
-                        .into_iter()
-                        .filter(|p| {
-                            strip_repo_prefix(&prefix, p).is_some_and(is_derived_tracker_index_path)
-                        })
-                        .collect();
-                    let (_stage_repo, mut private_idx) =
-                        open_private_staging(&workdir, Some(&tree))?;
-                    for p in &derived {
-                        stage_explicit_path(&mut private_idx, &workdir, p)?;
-                    }
-                    let reconciled_tree_id = private_idx.write_tree_to(&repo)?;
-                    if reconciled_tree_id != tree_id {
-                        let reconciled_tree = repo.find_tree(reconciled_tree_id)?;
-                        let merge_commit = repo.find_commit(merge_commit_oid)?;
-                        merge_commit.amend(
-                            Some("HEAD"),
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some(&reconciled_tree),
-                        )?;
-                        let amended = changed_files_between(&repo, Some(&tree), &reconciled_tree)?;
-                        sync_user_index_paths(&repo, &reconciled_tree, &amended)?;
-                    }
-                }
-            }
-        }
+        sync_user_index_paths(&repo, &final_tree, &reconciled_paths)?;
 
         return Ok(true);
     }
@@ -1882,7 +1944,7 @@ impl TrackerStorage {
             }
         }
 
-        let mut changed_files = changed_files_between(&repo, parent_tree.as_ref(), &tree)?;
+        let changed_files = changed_files_between(&repo, parent_tree.as_ref(), &tree)?;
         if changed_files.is_empty() {
             return Err(TrackerError::ValidationError(
                 "No changes to commit in workspace or .tracker/".to_string(),
@@ -1891,22 +1953,20 @@ impl TrackerStorage {
 
         let sig = resolve_signature(&repo)?;
         let commit_message = prepared.commit_message;
-        let initial_commit_oid = match parent_commit {
-            Some(ref parent) => {
-                repo.commit(Some("HEAD"), &sig, &sig, &commit_message, &tree, &[parent])?
-            }
-            None => repo.commit(Some("HEAD"), &sig, &sig, &commit_message, &tree, &[])?,
-        };
-
-        let recorded_fix_sha = short_sha_for_oid(&repo, initial_commit_oid);
-        let mut final_commit_sha = recorded_fix_sha.clone();
-        let mut final_tree = tree;
-        let mut documentation_updated = false;
         let effective_summary = prepared.effective_summary;
         let resolved_scope = prepared.resolved_scope;
+        let parents: Vec<&git2::Commit<'_>> = parent_commit.iter().collect();
 
-        if let Some((loc, mut detail)) = prepared.loaded_item {
-            if prepared.auto_append_to_desc {
+        let (final_commit_sha, recorded_fix_sha, final_tree, changed_files, documentation_updated) =
+            if let Some((loc, mut detail)) = prepared
+                .loaded_item
+                .filter(|_| prepared.auto_append_to_desc)
+            {
+                let initial_commit_oid =
+                    repo.commit(None, &sig, &sig, &commit_message, &tree, &parents)?;
+                let recorded_fix_sha = short_sha_for_oid(&repo, initial_commit_oid);
+                let snapshot = detail.clone();
+
                 let today = today_date_string();
                 let workspace_or_changed: Vec<String> = changed_files
                     .iter()
@@ -1939,30 +1999,63 @@ impl TrackerStorage {
                     &files_for_log,
                 );
 
-                self.write_item_detail(&loc.phase_id, &loc.scope_id, &detail)?;
-                self.sync_parent_indexes_for_item(&loc.phase_id, &loc.scope_id, &detail.manifest)?;
+                let doc_result: Result<(String, Tree<'_>, Vec<String>)> = (|| {
+                    self.write_item_detail(&loc.phase_id, &loc.scope_id, &detail)?;
+                    self.sync_parent_indexes_for_item(
+                        &loc.phase_id,
+                        &loc.scope_id,
+                        &detail.manifest,
+                    )?;
+                    stage_tracker_dir(&mut index, prefix)?;
+                    let doc_tree_id = index.write_tree_to(&repo)?;
+                    let doc_tree = repo.find_tree(doc_tree_id)?;
+                    let doc_changed =
+                        changed_files_between(&repo, parent_tree.as_ref(), &doc_tree)?;
+                    let initial_commit = repo.find_commit(initial_commit_oid)?;
+                    let item_id = prepared
+                        .item_id
+                        .as_deref()
+                        .unwrap_or(snapshot.manifest.item.id.as_str());
+                    let doc_message =
+                        format!("[{item_id}]({scope_label}) docs: record fix {recorded_fix_sha}");
+                    let doc_commit_oid = repo.commit(
+                        None,
+                        &sig,
+                        &sig,
+                        &doc_message,
+                        &doc_tree,
+                        &[&initial_commit],
+                    )?;
+                    let head_ref = repo.find_reference("HEAD")?;
+                    if let Some(symbolic) = head_ref.symbolic_target()? {
+                        repo.reference(symbolic, doc_commit_oid, true, &doc_message)?;
+                    } else {
+                        repo.reference("HEAD", doc_commit_oid, true, &doc_message)?;
+                    }
+                    let final_sha = short_sha_for_oid(&repo, doc_commit_oid);
+                    Ok((final_sha, doc_tree, doc_changed))
+                })();
 
-                // Re-stage `.tracker/` into the private index and amend so documentation and
-                // code changes remain atomic in a single commit.
-                stage_tracker_dir(&mut index, prefix)?;
-                let amended_tree_id = index.write_tree_to(&repo)?;
-                let amended_tree = repo.find_tree(amended_tree_id)?;
-                let initial_commit = repo.find_commit(initial_commit_oid)?;
-                let amended_oid = initial_commit.amend(
-                    Some("HEAD"),
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(&amended_tree),
-                )?;
-                final_commit_sha = short_sha_for_oid(&repo, amended_oid);
-                documentation_updated = true;
+                let (doc_sha, doc_tree, doc_changed) = match doc_result {
+                    Ok(res) => res,
+                    Err(err) => {
+                        let _ = self.write_item_detail(&loc.phase_id, &loc.scope_id, &snapshot);
+                        let _ = self.sync_parent_indexes_for_item(
+                            &loc.phase_id,
+                            &loc.scope_id,
+                            &snapshot.manifest,
+                        );
+                        return Err(err);
+                    }
+                };
 
-                changed_files = changed_files_between(&repo, parent_tree.as_ref(), &amended_tree)?;
-                final_tree = amended_tree;
-            }
-        }
+                (doc_sha, recorded_fix_sha, doc_tree, doc_changed, true)
+            } else {
+                let commit_oid =
+                    repo.commit(Some("HEAD"), &sig, &sig, &commit_message, &tree, &parents)?;
+                let sha = short_sha_for_oid(&repo, commit_oid);
+                (sha.clone(), sha, tree, changed_files, false)
+            };
 
         // `git commit --only` semantics: refresh just the committed paths in the user's index.
         sync_user_index_paths(&repo, &final_tree, &changed_files)?;
@@ -1995,6 +2088,12 @@ impl TrackerStorage {
         let repo = Repository::discover(self.project_root())?;
         let duplicate_ids = if repo.find_remote(&project.git.remote).is_ok() {
             let pull_outcome = self.git_pull_with_report(auth)?;
+            if !pull_outcome.duplicate_ids.is_empty() {
+                return Err(TrackerError::GitError(format!(
+                    "Sync aborted before push: duplicate item IDs detected after pull: {}",
+                    pull_outcome.duplicate_ids.join(", ")
+                )));
+            }
             self.git_push(auth)?;
             pull_outcome.duplicate_ids
         } else {

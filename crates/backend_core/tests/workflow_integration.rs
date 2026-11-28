@@ -1276,12 +1276,26 @@ fn test_git_commit_documented_policy_enforcement_and_atomic_doc_updates() {
         .description_markdown
         .contains("Verified with empty bugs and features arrays in unit tests."));
 
-    // Verify Git HEAD commit message in repository matches formatted message
+    // Verify HEAD is the doc-recording commit and HEAD~1 is the reachable fix commit with outcome.message
     let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+    let fix_commit = head_commit.parent(0).unwrap();
+    assert_eq!(fix_commit.message().unwrap().trim(), outcome.message.trim());
     assert_eq!(
-        head_commit.message().unwrap().trim(),
-        outcome.message.trim()
+        head_commit.summary().unwrap().unwrap(),
+        format!(
+            "[BUG-0001](backend_core) docs: record fix {}",
+            outcome.recorded_fix_sha
+        )
     );
+    let head_tree = head_commit.tree().unwrap();
+    assert!(head_tree
+        .get_path(std::path::Path::new("crates/backend_core/src/parser.rs"))
+        .is_ok());
+    assert!(head_tree
+        .get_path(std::path::Path::new(
+            ".tracker/phases/01_core_engine/domains/backend_core/items/BUG-0001/desc.md"
+        ))
+        .is_ok());
 
     // 10. Non-existent path in `with_paths` must fail with ValidationError
     let nonexistent_err = storage
@@ -2175,11 +2189,13 @@ fn git_pull_and_sync_with_report_surface_duplicate_item_ids() {
         .unwrap();
     storage.git_push(&GitAuthRequest::default()).unwrap();
 
-    let synced = cloned
+    let sync_err = cloned
         .git_sync_with_report(None, &GitAuthRequest::default())
-        .unwrap();
-    assert!(synced.sha.is_some());
-    assert_eq!(synced.duplicate_ids, vec![id]);
+        .expect_err("git_sync_with_report must abort before push on duplicate IDs");
+    assert!(
+        matches!(sync_err, TrackerError::GitError(ref msg) if msg.to_lowercase().contains("duplicate") && msg.contains(&id)),
+        "expected GitError mentioning duplicate and {id}, got {sync_err:?}"
+    );
 }
 
 #[test]
@@ -2289,11 +2305,13 @@ fn mcp_git_pull_and_sync_report_duplicate_item_ids() {
         .unwrap();
     storage.git_push(&GitAuthRequest::default()).unwrap();
 
-    let synced = server
+    let sync_err = server
         .call_tool("git_sync", json!({"dry_run": false}))
-        .unwrap();
-    assert!(synced["committed_or_head_sha"].is_string());
-    assert_eq!(synced["duplicate_ids"], json!([id]));
+        .expect_err("MCP git_sync must abort before push on duplicate IDs");
+    assert!(
+        matches!(sync_err, TrackerError::GitError(ref msg) if msg.to_lowercase().contains("duplicate") && msg.contains(&id)),
+        "expected GitError mentioning duplicate and {id}, got {sync_err:?}"
+    );
 }
 
 #[test]

@@ -91,23 +91,34 @@ fn done_commit_does_not_commit_untracked_secret_env() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    let (_, detail) = storage.load_item_detail_by_id("BUG-0001").unwrap();
+    assert_eq!(detail.manifest.item.status, ItemStatus::Closed);
+    assert_eq!(detail.manifest.history.previous_fixes.len(), 1);
+    let recorded_fix_sha = &detail.manifest.history.previous_fixes[0].commit;
+
     let head = repo.head().unwrap().peel_to_commit().unwrap();
+    let fix_commit = head.parent(0).unwrap();
+    assert_eq!(
+        fix_commit.summary().unwrap().unwrap(),
+        "[BUG-0001](backend_core) Fix lib entrypoint safely"
+    );
     assert_eq!(
         head.summary().unwrap().unwrap(),
-        "[BUG-0001](backend_core) Fix lib entrypoint safely"
+        format!("[BUG-0001](backend_core) docs: record fix {recorded_fix_sha}")
     );
     let tree = head.tree().unwrap();
     assert!(tree.get_path(Path::new("secret.env")).is_err());
     assert!(tree.get_path(Path::new("src/lib.rs")).is_ok());
+    assert!(tree
+        .get_path(Path::new(
+            ".tracker/phases/01_core_engine/domains/backend_core/items/BUG-0001/item.toml"
+        ))
+        .is_ok());
     assert!(dir.path().join("secret.env").is_file());
     assert!(repo
         .status_file(Path::new("secret.env"))
         .unwrap()
         .contains(git2::Status::WT_NEW));
-
-    let (_, detail) = storage.load_item_detail_by_id("BUG-0001").unwrap();
-    assert_eq!(detail.manifest.item.status, ItemStatus::Closed);
-    assert_eq!(detail.manifest.history.previous_fixes.len(), 1);
 
     // Without `--path`, `done -c` is a `.tracker/`-only commit: untracked files stay out.
     let (dir2, repo2, _storage2) = setup();
